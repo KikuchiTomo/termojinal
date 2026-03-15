@@ -1,0 +1,441 @@
+//! Keybinding system with 3-layer configuration.
+//!
+//! Layers:
+//! - **normal**: Active when jterm is focused and a regular shell is running.
+//! - **global**: Active even when jterm is not focused (via CGEventTap on macOS).
+//! - **alternate_screen**: Active when a TUI application (e.g., nvim) is running.
+//!
+//! Keybindings are loaded from `~/.config/jterm/keybindings.toml` with
+//! sensible defaults matching Ghostty-compatible bindings.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// An action that a keybinding can trigger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// Split the current pane to the right.
+    SplitRight,
+    /// Split the current pane downward.
+    SplitDown,
+    /// Toggle zoom on the current pane.
+    ZoomPane,
+    /// Focus the next pane.
+    NextPane,
+    /// Focus the previous pane.
+    PrevPane,
+    /// Create a new tab.
+    NewTab,
+    /// Close the current tab.
+    CloseTab,
+    /// Switch to workspace N (1-9).
+    Workspace(u8),
+    /// Open the command palette.
+    CommandPalette,
+    /// Open the AllowFlow AI panel.
+    AllowFlowPanel,
+    /// Jump to the next unread notification.
+    UnreadJump,
+    /// Increase font size.
+    FontIncrease,
+    /// Decrease font size.
+    FontDecrease,
+    /// Copy selection to clipboard.
+    Copy,
+    /// Paste from clipboard.
+    Paste,
+    /// Open search.
+    Search,
+    /// Open settings.
+    OpenSettings,
+    /// Force the key through to the PTY (bypass jterm).
+    Passthrough,
+    /// Ignore the key entirely.
+    None,
+    /// Run a named command or plugin.
+    Command(String),
+}
+
+/// 3-layer keybinding configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeybindingConfig {
+    /// Layer 1: keybindings active during normal shell usage.
+    #[serde(default)]
+    pub normal: HashMap<String, Action>,
+
+    /// Layer 2: keybindings active even when jterm is not focused.
+    #[serde(default)]
+    pub global: HashMap<String, Action>,
+
+    /// Layer 3: keybindings active when an alternate-screen TUI is running.
+    #[serde(default)]
+    pub alternate_screen: HashMap<String, Action>,
+}
+
+impl Default for KeybindingConfig {
+    fn default() -> Self {
+        let mut normal = HashMap::new();
+
+        // Pane management
+        normal.insert("cmd+d".to_string(), Action::SplitRight);
+        normal.insert("cmd+shift+d".to_string(), Action::SplitDown);
+        normal.insert("cmd+shift+enter".to_string(), Action::ZoomPane);
+
+        // Tab management
+        normal.insert("cmd+t".to_string(), Action::NewTab);
+        normal.insert("cmd+w".to_string(), Action::CloseTab);
+
+        // Workspace switching (Cmd+1 through Cmd+9)
+        for i in 1u8..=9 {
+            normal.insert(format!("cmd+{i}"), Action::Workspace(i));
+        }
+
+        // Command palette
+        normal.insert("cmd+shift+p".to_string(), Action::CommandPalette);
+
+        // Settings
+        normal.insert("cmd+,".to_string(), Action::OpenSettings);
+
+        // Copy / Paste
+        normal.insert("cmd+c".to_string(), Action::Copy);
+        normal.insert("cmd+v".to_string(), Action::Paste);
+
+        // Search
+        normal.insert("cmd+f".to_string(), Action::Search);
+
+        // Font sizing
+        normal.insert("cmd+=".to_string(), Action::FontIncrease);
+        normal.insert("cmd+-".to_string(), Action::FontDecrease);
+
+        // Global and alternate_screen start empty by default;
+        // users can populate them in the config file.
+        Self {
+            normal,
+            global: HashMap::new(),
+            alternate_screen: HashMap::new(),
+        }
+    }
+}
+
+impl KeybindingConfig {
+    /// Load keybinding config from the default path
+    /// (`~/.config/jterm/keybindings.toml`), falling back to defaults
+    /// if the file does not exist.
+    pub fn load() -> Self {
+        match Self::config_path() {
+            Some(path) if path.exists() => match Self::load_from(&path) {
+                Ok(config) => config,
+                Err(e) => {
+                    log::warn!(
+                        "failed to load keybindings from {}: {e}; using defaults",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
+            _ => Self::default(),
+        }
+    }
+
+    /// Load keybinding config from a specific file path.
+    ///
+    /// The file is parsed as TOML. Any keys not present in the file
+    /// will use their default values.
+    pub fn load_from(path: &std::path::Path) -> Result<Self, KeybindingError> {
+        let contents = std::fs::read_to_string(path)?;
+        Self::parse_toml(&contents)
+    }
+
+    /// Parse a TOML string into a keybinding config.
+    ///
+    /// The parsed config is merged with defaults: user-specified bindings
+    /// override defaults, but unspecified defaults are preserved.
+    pub fn parse_toml(toml_str: &str) -> Result<Self, KeybindingError> {
+        let user: KeybindingConfig = toml::from_str(toml_str)?;
+        let mut config = Self::default();
+
+        // User overrides win; merge into defaults.
+        for (key, action) in user.normal {
+            config.normal.insert(key, action);
+        }
+        for (key, action) in user.global {
+            config.global.insert(key, action);
+        }
+        for (key, action) in user.alternate_screen {
+            config.alternate_screen.insert(key, action);
+        }
+
+        Ok(config)
+    }
+
+    /// Look up an action in the normal layer.
+    pub fn lookup_normal(&self, key: &str) -> Option<&Action> {
+        self.normal.get(key)
+    }
+
+    /// Look up an action in the global layer.
+    pub fn lookup_global(&self, key: &str) -> Option<&Action> {
+        self.global.get(key)
+    }
+
+    /// Look up an action in the alternate screen layer.
+    pub fn lookup_alternate_screen(&self, key: &str) -> Option<&Action> {
+        self.alternate_screen.get(key)
+    }
+
+    /// Get the default config file path.
+    pub fn config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("jterm").join("keybindings.toml"))
+    }
+}
+
+/// Errors that can occur when loading keybinding config.
+#[derive(Debug, thiserror::Error)]
+pub enum KeybindingError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("TOML parse error: {0}")]
+    Toml(#[from] toml::de::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_defaults_exist() {
+        let config = KeybindingConfig::default();
+        assert_eq!(
+            config.lookup_normal("cmd+d"),
+            Some(&Action::SplitRight)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+shift+d"),
+            Some(&Action::SplitDown)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+shift+enter"),
+            Some(&Action::ZoomPane)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+t"),
+            Some(&Action::NewTab)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+w"),
+            Some(&Action::CloseTab)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+1"),
+            Some(&Action::Workspace(1))
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+9"),
+            Some(&Action::Workspace(9))
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+shift+p"),
+            Some(&Action::CommandPalette)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+,"),
+            Some(&Action::OpenSettings)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+c"),
+            Some(&Action::Copy)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+v"),
+            Some(&Action::Paste)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+f"),
+            Some(&Action::Search)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+="),
+            Some(&Action::FontIncrease)
+        );
+        assert_eq!(
+            config.lookup_normal("cmd+-"),
+            Some(&Action::FontDecrease)
+        );
+    }
+
+    #[test]
+    fn test_workspace_bindings() {
+        let config = KeybindingConfig::default();
+        for i in 1u8..=9 {
+            let key = format!("cmd+{i}");
+            assert_eq!(
+                config.lookup_normal(&key),
+                Some(&Action::Workspace(i)),
+                "workspace binding for {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_global_layer_empty_by_default() {
+        let config = KeybindingConfig::default();
+        assert!(config.global.is_empty());
+    }
+
+    #[test]
+    fn test_alternate_screen_layer_empty_by_default() {
+        let config = KeybindingConfig::default();
+        assert!(config.alternate_screen.is_empty());
+    }
+
+    #[test]
+    fn test_parse_toml_override() {
+        let toml = r#"
+[normal]
+"cmd+d" = "new_tab"
+"cmd+x" = { "command" = "my_plugin" }
+
+[global]
+"cmd+shift+space" = "command_palette"
+
+[alternate_screen]
+"cmd+c" = "passthrough"
+"#;
+        let config = KeybindingConfig::parse_toml(toml).unwrap();
+
+        // User override replaces default.
+        assert_eq!(
+            config.lookup_normal("cmd+d"),
+            Some(&Action::NewTab)
+        );
+
+        // User-added binding is present.
+        assert_eq!(
+            config.lookup_normal("cmd+x"),
+            Some(&Action::Command("my_plugin".to_string()))
+        );
+
+        // Other defaults are still present.
+        assert_eq!(
+            config.lookup_normal("cmd+t"),
+            Some(&Action::NewTab)
+        );
+
+        // Global layer populated.
+        assert_eq!(
+            config.lookup_global("cmd+shift+space"),
+            Some(&Action::CommandPalette)
+        );
+
+        // Alternate screen layer populated.
+        assert_eq!(
+            config.lookup_alternate_screen("cmd+c"),
+            Some(&Action::Passthrough)
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_empty() {
+        let config = KeybindingConfig::parse_toml("").unwrap();
+        // Should still have all defaults.
+        assert_eq!(
+            config.lookup_normal("cmd+d"),
+            Some(&Action::SplitRight)
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_partial() {
+        let toml = r#"
+[normal]
+"cmd+d" = "split_down"
+"#;
+        let config = KeybindingConfig::parse_toml(toml).unwrap();
+        assert_eq!(
+            config.lookup_normal("cmd+d"),
+            Some(&Action::SplitDown)
+        );
+        // Other defaults remain.
+        assert_eq!(
+            config.lookup_normal("cmd+t"),
+            Some(&Action::NewTab)
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_invalid() {
+        let result = KeybindingConfig::parse_toml("not valid {{ toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_action_serialization_roundtrip() {
+        let actions = vec![
+            Action::SplitRight,
+            Action::SplitDown,
+            Action::ZoomPane,
+            Action::NextPane,
+            Action::PrevPane,
+            Action::NewTab,
+            Action::CloseTab,
+            Action::Workspace(3),
+            Action::CommandPalette,
+            Action::AllowFlowPanel,
+            Action::UnreadJump,
+            Action::FontIncrease,
+            Action::FontDecrease,
+            Action::Copy,
+            Action::Paste,
+            Action::Search,
+            Action::OpenSettings,
+            Action::Passthrough,
+            Action::None,
+            Action::Command("test_cmd".to_string()),
+        ];
+
+        for action in &actions {
+            let json = serde_json::to_string(action).unwrap();
+            let deserialized: Action = serde_json::from_str(&json).unwrap();
+            assert_eq!(action, &deserialized, "roundtrip failed for {json}");
+        }
+    }
+
+    #[test]
+    fn test_lookup_missing_key() {
+        let config = KeybindingConfig::default();
+        assert_eq!(config.lookup_normal("ctrl+alt+delete"), Option::None);
+        assert_eq!(config.lookup_global("cmd+d"), Option::None);
+        assert_eq!(config.lookup_alternate_screen("cmd+d"), Option::None);
+    }
+
+    #[test]
+    fn test_none_action() {
+        let toml = r#"
+[normal]
+"cmd+q" = "none"
+"#;
+        let config = KeybindingConfig::parse_toml(toml).unwrap();
+        assert_eq!(config.lookup_normal("cmd+q"), Some(&Action::None));
+    }
+
+    #[test]
+    fn test_passthrough_action() {
+        let toml = r#"
+[alternate_screen]
+"cmd+c" = "passthrough"
+"cmd+v" = "passthrough"
+"#;
+        let config = KeybindingConfig::parse_toml(toml).unwrap();
+        assert_eq!(
+            config.lookup_alternate_screen("cmd+c"),
+            Some(&Action::Passthrough)
+        );
+        assert_eq!(
+            config.lookup_alternate_screen("cmd+v"),
+            Some(&Action::Passthrough)
+        );
+    }
+}

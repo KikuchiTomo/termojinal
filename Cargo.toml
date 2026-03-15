@@ -3,6 +3,9 @@ members = [
     "crates/jterm-pty",
     "crates/jterm-vt",
     "crates/jterm-session",
+    "crates/jterm-render",
+    "crates/jterm-layout",
+    "crates/jterm-ipc",
 ]
 resolver = "2"
 

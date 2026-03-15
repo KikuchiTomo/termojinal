@@ -1,0 +1,15 @@
+[package]
+name = "jterm-render"
+version = "0.1.0"
+edition.workspace = true
+description = "wgpu GPU renderer with font atlas for jterm"
+
+[dependencies]
+jterm-vt = { path = "../jterm-vt" }
+jterm-layout = { path = "../jterm-layout" }
+wgpu = "24"
+winit = "0.30"
+fontdue = "0.9"
+log = "0.4"
+thiserror = "2"
+bytemuck = { version = "1", features = ["derive"] }
