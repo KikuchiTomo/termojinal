@@ -1,18 +1,17 @@
 //! Font atlas — CPU glyph rasterization + texture packing.
 //!
-//! Uses `fontdue` to rasterize glyphs into a single atlas texture
-//! that the GPU shader samples from.
+//! Each glyph is rasterized into a **cell-sized** bitmap with the glyph
+//! placed at the correct position using font metrics (bearing). The shader
+//! can then map the cell quad directly to the atlas region without worrying
+//! about glyph positioning.
 
 use std::collections::HashMap;
 
 /// Configuration for loading the font.
 #[derive(Debug, Clone)]
 pub struct FontConfig {
-    /// Font family name (used for font file lookup; currently we embed a font).
     pub family: String,
-    /// Font size in pixels.
     pub size: f32,
-    /// Line height multiplier (e.g., 1.2 means 120% of the natural line height).
     pub line_height: f32,
 }
 
@@ -36,65 +35,40 @@ pub struct CellSize {
 /// UV region within the atlas for a single glyph (in texel coordinates).
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphInfo {
-    /// X offset in the atlas texture (texels).
     pub atlas_x: f32,
-    /// Y offset in the atlas texture (texels).
     pub atlas_y: f32,
-    /// Width of the glyph bitmap in the atlas (texels).
     pub atlas_w: f32,
-    /// Height of the glyph bitmap in the atlas (texels).
     pub atlas_h: f32,
-    /// Horizontal offset from the cell origin to place the glyph bitmap.
     pub bearing_x: f32,
-    /// Vertical offset from the cell top to place the glyph bitmap.
     pub bearing_y: f32,
 }
 
 /// A font atlas that maps characters to UV regions in a texture.
 pub struct Atlas {
-    /// The atlas texture data (single-channel alpha, R8).
     pub data: Vec<u8>,
-    /// Atlas width in pixels.
     pub width: u32,
-    /// Atlas height in pixels.
     pub height: u32,
-    /// Mapping from character to glyph info.
     glyphs: HashMap<char, GlyphInfo>,
-    /// Cell size derived from font metrics.
     pub cell_size: CellSize,
-    /// The fontdue font, kept for on-demand rasterization.
     font: fontdue::Font,
-    /// Font size in px.
     font_size: f32,
-    /// Ascent in pixels (distance from top of cell to baseline).
     ascent: f32,
-    /// Current packing cursor X.
+    cell_w: u32,
+    cell_h: u32,
     pack_x: u32,
-    /// Current packing cursor Y.
     pack_y: u32,
-    /// Current row height in the packing strip.
     pack_row_height: u32,
 }
 
 impl Atlas {
-    /// Create a new atlas from a font configuration.
-    ///
-    /// Pre-rasterizes ASCII printable characters (32-126) and packs them
-    /// into the atlas texture.
     pub fn new(config: &FontConfig) -> Result<Self, AtlasError> {
-        // Use the system's default monospace font data.
-        // For now, fall back to an embedded font or system font.
         let font_data = Self::load_font_data(&config.family)?;
         let font = fontdue::Font::from_bytes(
             font_data.as_slice(),
-            fontdue::FontSettings {
-                scale: config.size * 2.0, // Optimize for 2x the target size
-                ..Default::default()
-            },
+            fontdue::FontSettings::default(),
         )
         .map_err(|e| AtlasError::FontParsing(e.to_string()))?;
 
-        // Derive cell dimensions from font metrics.
         let line_metrics = font
             .horizontal_line_metrics(config.size)
             .ok_or(AtlasError::FontParsing(
@@ -102,20 +76,27 @@ impl Atlas {
             ))?;
 
         let ascent = line_metrics.ascent;
-        let descent = line_metrics.descent; // negative
+        let descent = line_metrics.descent;
         let natural_height = ascent - descent;
-        let cell_height = natural_height * config.line_height;
+        let cell_height = (natural_height * config.line_height).ceil();
 
-        // Use 'M' advance width as the cell width for monospace.
         let (m_metrics, _) = font.rasterize('M', config.size);
-        let cell_width = m_metrics.advance_width;
+        let cell_width = m_metrics.advance_width.ceil();
 
         let cell_size = CellSize {
-            width: cell_width.ceil(),
-            height: cell_height.ceil(),
+            width: cell_width,
+            height: cell_height,
         };
 
-        // Initial atlas dimensions: large enough for ASCII + room to grow.
+        let cell_w = cell_width as u32;
+        let cell_h = cell_height as u32;
+
+        log::info!(
+            "font metrics: ascent={ascent:.1}, descent={descent:.1}, \
+             cell={}x{}, size={}",
+            cell_w, cell_h, config.size
+        );
+
         let atlas_width = 1024u32;
         let atlas_height = 1024u32;
         let data = vec![0u8; (atlas_width * atlas_height) as usize];
@@ -129,7 +110,9 @@ impl Atlas {
             font,
             font_size: config.size,
             ascent,
-            pack_x: 1, // Start at 1 to leave a 1-pixel border
+            cell_w,
+            cell_h,
+            pack_x: 1,
             pack_y: 1,
             pack_row_height: 0,
         };
@@ -142,7 +125,6 @@ impl Atlas {
         Ok(atlas)
     }
 
-    /// Look up a glyph. If not yet rasterized, rasterize it on demand.
     pub fn get_glyph(&mut self, c: char) -> GlyphInfo {
         if let Some(&info) = self.glyphs.get(&c) {
             return info;
@@ -150,50 +132,78 @@ impl Atlas {
         self.rasterize_glyph(c)
     }
 
-    /// Check if a glyph is already in the atlas without rasterizing.
     pub fn has_glyph(&self, c: char) -> bool {
         self.glyphs.contains_key(&c)
     }
 
-    /// Returns whether new glyphs have been added since the last call.
-    /// Used to determine if the GPU texture needs re-uploading.
     pub fn glyph_count(&self) -> usize {
         self.glyphs.len()
     }
 
-    /// Rasterize a glyph and pack it into the atlas. Returns the glyph info.
+    /// Rasterize a glyph, place it at the correct bearing offset within a
+    /// cell-sized bitmap, and pack that bitmap into the atlas.
     fn rasterize_glyph(&mut self, c: char) -> GlyphInfo {
         let (metrics, bitmap) = self.font.rasterize(c, self.font_size);
 
         let glyph_w = metrics.width as u32;
         let glyph_h = metrics.height as u32;
 
-        // Handle zero-size glyphs (spaces, control chars)
+        // Always use cell-sized entries in the atlas so the shader can
+        // map the cell quad 1:1 to the atlas region.
+        let entry_w = self.cell_w;
+        let entry_h = self.cell_h;
+
+        // Handle zero-size glyphs (space, control chars) — still reserve a
+        // cell-sized slot so background rendering works correctly.
         if glyph_w == 0 || glyph_h == 0 {
-            let info = GlyphInfo {
-                atlas_x: 0.0,
-                atlas_y: 0.0,
-                atlas_w: 0.0,
-                atlas_h: 0.0,
-                bearing_x: 0.0,
-                bearing_y: 0.0,
-            };
+            let info = self.pack_cell_bitmap(&vec![0u8; (entry_w * entry_h) as usize]);
             self.glyphs.insert(c, info);
             return info;
         }
 
-        // Pack with 1-pixel padding between glyphs.
-        let padded_w = glyph_w + 1;
-        let padded_h = glyph_h + 1;
+        // Build a cell-sized bitmap with the glyph placed at the correct position.
+        let mut cell_bitmap = vec![0u8; (entry_w * entry_h) as usize];
 
-        // Check if we need to advance to the next row.
+        // Horizontal offset: xmin from fontdue (can be negative).
+        let offset_x = metrics.xmin.max(0) as u32;
+        // Vertical offset: ascent minus glyph-top-from-baseline.
+        let glyph_top_from_baseline = metrics.height as f32 + metrics.ymin as f32;
+        let offset_y = (self.ascent - glyph_top_from_baseline).max(0.0) as u32;
+
+        for row in 0..glyph_h {
+            for col in 0..glyph_w {
+                let dst_x = offset_x + col;
+                let dst_y = offset_y + row;
+                if dst_x < entry_w && dst_y < entry_h {
+                    let src_idx = (row * glyph_w + col) as usize;
+                    let dst_idx = (dst_y * entry_w + dst_x) as usize;
+                    if src_idx < bitmap.len() && dst_idx < cell_bitmap.len() {
+                        cell_bitmap[dst_idx] = bitmap[src_idx];
+                    }
+                }
+            }
+        }
+
+        let info = self.pack_cell_bitmap(&cell_bitmap);
+        self.glyphs.insert(c, info);
+        info
+    }
+
+    /// Pack a cell-sized bitmap into the atlas, returning the GlyphInfo.
+    fn pack_cell_bitmap(&mut self, bitmap: &[u8]) -> GlyphInfo {
+        let entry_w = self.cell_w;
+        let entry_h = self.cell_h;
+        let padded_w = entry_w + 1;
+        let padded_h = entry_h + 1;
+
+        // Advance to next row if needed.
         if self.pack_x + padded_w > self.width {
             self.pack_x = 1;
             self.pack_y += self.pack_row_height + 1;
             self.pack_row_height = 0;
         }
 
-        // Check if we've run out of vertical space (would need atlas resize).
+        // Grow atlas if needed.
         if self.pack_y + padded_h > self.height {
             self.grow_atlas();
         }
@@ -201,63 +211,52 @@ impl Atlas {
         let atlas_x = self.pack_x;
         let atlas_y = self.pack_y;
 
-        // Copy glyph bitmap into atlas.
-        for row in 0..glyph_h {
-            let src_offset = (row * glyph_w) as usize;
+        // Copy cell bitmap into atlas.
+        for row in 0..entry_h {
+            let src_offset = (row * entry_w) as usize;
             let dst_offset = ((atlas_y + row) * self.width + atlas_x) as usize;
-            let src_end = src_offset + glyph_w as usize;
-            let dst_end = dst_offset + glyph_w as usize;
+            let src_end = src_offset + entry_w as usize;
+            let dst_end = dst_offset + entry_w as usize;
             if src_end <= bitmap.len() && dst_end <= self.data.len() {
                 self.data[dst_offset..dst_end].copy_from_slice(&bitmap[src_offset..src_end]);
             }
         }
 
-        // The bearing_y for fontdue is: ymin (number of pixels below the baseline to the
-        // bottom of the glyph). We need to convert to "distance from cell top to glyph top".
-        // glyph_top_from_baseline = metrics.height as f32 + metrics.ymin as f32
-        // bearing_y = ascent - glyph_top_from_baseline
-        let glyph_top_from_baseline = metrics.height as f32 + metrics.ymin as f32;
-        let bearing_y = self.ascent - glyph_top_from_baseline;
-
-        let info = GlyphInfo {
-            atlas_x: atlas_x as f32,
-            atlas_y: atlas_y as f32,
-            atlas_w: glyph_w as f32,
-            atlas_h: glyph_h as f32,
-            bearing_x: metrics.xmin as f32,
-            bearing_y,
-        };
-
-        self.glyphs.insert(c, info);
-
         // Advance packing cursor.
         self.pack_x += padded_w;
         self.pack_row_height = self.pack_row_height.max(padded_h);
 
-        info
+        GlyphInfo {
+            atlas_x: atlas_x as f32,
+            atlas_y: atlas_y as f32,
+            atlas_w: entry_w as f32,
+            atlas_h: entry_h as f32,
+            bearing_x: 0.0, // Baked into the bitmap.
+            bearing_y: 0.0,
+        }
     }
 
-    /// Double the atlas height when we run out of space.
     fn grow_atlas(&mut self) {
         let new_height = self.height * 2;
         let mut new_data = vec![0u8; (self.width * new_height) as usize];
         new_data[..self.data.len()].copy_from_slice(&self.data);
         self.data = new_data;
         self.height = new_height;
-        log::info!("Atlas grew to {}x{}", self.width, self.height);
+        log::info!("atlas grew to {}x{}", self.width, self.height);
     }
 
-    /// Try to load a monospace font from the system.
-    /// Falls back to embedded font data if the system font is not found.
+    // TODO: load font path from ~/.config/jterm/config.toml instead of hardcoding
     fn load_font_data(family: &str) -> Result<Vec<u8>, AtlasError> {
-        // Try to find the font on macOS using known paths.
         let candidates = if family == "monospace" || family.is_empty() {
             vec![
-                "/System/Library/Fonts/SFMono-Regular.otf",
-                "/System/Library/Fonts/Menlo.ttc",
-                "/System/Library/Fonts/Monaco.dfont",
+                // Prefer single-file TTF/OTF over TTC (fontdue handles them better).
+                "/System/Library/Fonts/SFNSMono.ttf",
                 "/Library/Fonts/JetBrainsMono-Regular.ttf",
-                "/System/Library/Fonts/Courier.dfont",
+                "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+                "/System/Library/Fonts/Supplemental/Courier New.ttf",
+                // TTC files: fontdue uses collection_index=0 by default.
+                "/System/Library/Fonts/Menlo.ttc",
+                "/System/Library/Fonts/Courier.ttc",
             ]
         } else {
             vec![]
@@ -265,21 +264,18 @@ impl Atlas {
 
         for path in &candidates {
             if let Ok(data) = std::fs::read(path) {
-                log::info!("Loaded font from {path}");
+                log::info!("loaded font from {path}");
                 return Ok(data);
             }
         }
 
-        // Fall back to finding any monospace font.
-        // As a last resort, use the built-in font from the system.
-        // Try common cross-platform locations.
         let fallbacks = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
         ];
         for path in &fallbacks {
             if let Ok(data) = std::fs::read(path) {
-                log::info!("Loaded fallback font from {path}");
+                log::info!("loaded fallback font from {path}");
                 return Ok(data);
             }
         }
@@ -288,7 +284,6 @@ impl Atlas {
     }
 }
 
-/// Errors that can occur during atlas construction.
 #[derive(Debug, thiserror::Error)]
 pub enum AtlasError {
     #[error("font not found: {0}")]
@@ -302,8 +297,6 @@ pub enum AtlasError {
 mod tests {
     use super::*;
 
-    /// Helper: create an atlas from system fonts if available.
-    /// Tests are skipped (not failed) if no system font is found.
     fn try_create_atlas() -> Option<Atlas> {
         let config = FontConfig::default();
         match Atlas::new(&config) {
@@ -329,20 +322,32 @@ mod tests {
     #[test]
     fn test_ascii_glyphs_present() {
         if let Some(atlas) = try_create_atlas() {
-            // All printable ASCII should be pre-rasterized.
             for c in (32u8..=126).map(|b| b as char) {
-                assert!(atlas.has_glyph(c), "Missing glyph for '{c}' (0x{:02X})", c as u32);
+                assert!(
+                    atlas.has_glyph(c),
+                    "Missing glyph for '{c}' (0x{:02X})",
+                    c as u32
+                );
             }
         }
     }
 
     #[test]
-    fn test_space_glyph_zero_size() {
+    fn test_all_glyphs_are_cell_sized() {
         if let Some(atlas) = try_create_atlas() {
-            let glyph = atlas.glyphs.get(&' ').expect("space glyph missing");
-            // Space should have zero atlas dimensions (no visible glyph).
-            assert_eq!(glyph.atlas_w, 0.0);
-            assert_eq!(glyph.atlas_h, 0.0);
+            let cell_w = atlas.cell_size.width;
+            let cell_h = atlas.cell_size.height;
+            for (&c, &info) in &atlas.glyphs {
+                assert!(
+                    (info.atlas_w - cell_w).abs() < 0.01
+                        && (info.atlas_h - cell_h).abs() < 0.01,
+                    "Glyph '{c}' has atlas size {}x{}, expected {}x{}",
+                    info.atlas_w,
+                    info.atlas_h,
+                    cell_w,
+                    cell_h
+                );
+            }
         }
     }
 
@@ -350,8 +355,8 @@ mod tests {
     fn test_on_demand_rasterize() {
         if let Some(mut atlas) = try_create_atlas() {
             let initial_count = atlas.glyph_count();
-            let info = atlas.get_glyph('\u{2500}'); // Box drawing horizontal
-            assert!(atlas.glyph_count() > initial_count || info.atlas_w == 0.0);
+            let _info = atlas.get_glyph('\u{2500}');
+            assert!(atlas.glyph_count() > initial_count);
         }
     }
 
@@ -359,16 +364,14 @@ mod tests {
     fn test_glyph_info_a() {
         if let Some(atlas) = try_create_atlas() {
             let glyph = atlas.glyphs.get(&'A').expect("'A' glyph missing");
-            // 'A' should have non-zero dimensions.
-            assert!(glyph.atlas_w > 0.0, "A glyph width should be > 0");
-            assert!(glyph.atlas_h > 0.0, "A glyph height should be > 0");
+            assert!(glyph.atlas_w > 0.0);
+            assert!(glyph.atlas_h > 0.0);
         }
     }
 
     #[test]
     fn test_packing_no_overlap() {
         if let Some(atlas) = try_create_atlas() {
-            // Collect all non-zero glyphs and verify no overlap.
             let rects: Vec<_> = atlas
                 .glyphs
                 .values()
@@ -383,7 +386,7 @@ mod tests {
                         || b.atlas_y + b.atlas_h <= a.atlas_y;
                     assert!(
                         no_overlap,
-                        "Glyph overlap detected: ({}, {}, {}, {}) vs ({}, {}, {}, {})",
+                        "Overlap: ({},{},{},{}) vs ({},{},{},{})",
                         a.atlas_x, a.atlas_y, a.atlas_w, a.atlas_h, b.atlas_x, b.atlas_y,
                         b.atlas_w, b.atlas_h,
                     );

@@ -67,9 +67,12 @@ fn vs_main(
 ) -> VertexOutput {
     let quad = QUAD_POS[vertex_index];
 
-    // Cell position in NDC
-    let cell_origin = uniforms.grid_offset + instance.grid_pos * uniforms.cell_size;
-    // Flip Y: NDC goes from -1 (bottom) to +1 (top), but grid row 0 is at top
+    // Cell position in NDC.
+    // X: left-to-right (+), Y: top-to-bottom (rows increase downward).
+    let cell_origin = vec2<f32>(
+        uniforms.grid_offset.x + instance.grid_pos.x * uniforms.cell_size.x,
+        uniforms.grid_offset.y - instance.grid_pos.y * uniforms.cell_size.y,
+    );
     let pos = vec2<f32>(
         cell_origin.x + quad.x * uniforms.cell_size.x,
         cell_origin.y - quad.y * uniforms.cell_size.y,
@@ -114,35 +117,30 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Hidden text: just show background
     if (in.flags & FLAG_HIDDEN) != 0u {
         return in.bg_color;
     }
 
-    // Sample glyph alpha from atlas
     let glyph_alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
 
-    // Mix background and foreground based on glyph coverage
     var color = mix(in.bg_color.rgb, in.fg_color.rgb, glyph_alpha);
-    var alpha = max(in.bg_color.a, glyph_alpha * in.fg_color.a);
+    var alpha = 1.0;
 
-    // Underline: draw a line near the bottom of the cell
+    // Underline
     if (in.flags & FLAG_UNDERLINE) != 0u {
         if in.cell_uv.y > 0.875 && in.cell_uv.y < 0.9375 {
             color = in.fg_color.rgb;
-            alpha = 1.0;
         }
     }
 
-    // Strikethrough: draw a line through the middle of the cell
+    // Strikethrough
     if (in.flags & FLAG_STRIKETHROUGH) != 0u {
         if in.cell_uv.y > 0.46875 && in.cell_uv.y < 0.53125 {
             color = in.fg_color.rgb;
-            alpha = 1.0;
         }
     }
 
-    // Cursor rendering (block cursor fills the cell, underline/bar are partial)
+    // Cursor
     if (in.flags & FLAG_IS_CURSOR) != 0u {
         let cursor_shape = u32(uniforms.cursor_extra.y);
         let blink_on = uniforms.cursor_extra.z;
@@ -154,20 +152,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         if blink_on > 0.5 {
             if cursor_shape == 0u {
-                // Block cursor: invert colors
                 color = vec3<f32>(1.0) - color;
-                alpha = 1.0;
             } else if cursor_shape == 1u {
-                // Underline cursor
                 if in.cell_uv.y > 0.875 {
                     color = cursor_color;
-                    alpha = 1.0;
                 }
             } else if cursor_shape == 2u {
-                // Bar cursor
                 if in.cell_uv.x < 0.1 {
                     color = cursor_color;
-                    alpha = 1.0;
                 }
             }
         }
