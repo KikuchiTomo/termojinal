@@ -27,9 +27,11 @@ path = "src/main.rs"
 jterm-pty = { path = "crates/jterm-pty" }
 jterm-vt = { path = "crates/jterm-vt" }
 jterm-session = { path = "crates/jterm-session" }
+jterm-render = { path = "crates/jterm-render" }
 log = "0.4"
 env_logger = "0.11"
 nix = { version = "0.29", features = ["signal", "term"] }
 libc = "0.2"
 vte = "0.13"
-signal-hook = "0.3"
+winit = "0.30"
+pollster = "0.4"
