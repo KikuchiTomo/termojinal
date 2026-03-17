@@ -3,11 +3,9 @@
 use crate::cell::{Attrs, Cell, Pen};
 use crate::color::{Color, NamedColor};
 use crate::grid::Grid;
+use crate::scrollback::ScrollbackBuffer;
 use base64::Engine as _;
 use unicode_width::UnicodeWidthChar;
-
-/// Maximum number of scrollback lines retained.
-const MAX_SCROLLBACK: usize = 10_000;
 
 /// Cursor shape (DECSCUSR).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,8 +130,8 @@ pub struct Terminal {
     wrap_pending: bool,
     /// Tab stops.
     tab_stops: Vec<bool>,
-    /// Scrollback buffer (most recent line last).
-    scrollback: Vec<Vec<Cell>>,
+    /// Scrollback buffer with hot (in-memory) and warm (mmap) tiers.
+    scrollback: ScrollbackBuffer,
     /// Current scroll offset (0 = live view, >0 = looking at history).
     scroll_offset: usize,
     /// Kitty keyboard protocol flags stack.
@@ -173,7 +171,7 @@ impl Terminal {
             rows,
             wrap_pending: false,
             tab_stops,
-            scrollback: Vec::new(),
+            scrollback: ScrollbackBuffer::with_defaults(),
             scroll_offset: 0,
             kitty_keyboard_flags: Vec::new(),
             current_hyperlink: None,
@@ -228,12 +226,7 @@ impl Terminal {
 
     /// Get a row from scrollback history. Index 0 is the most recent scrollback line.
     pub fn scrollback_row(&self, idx: usize) -> Option<&[Cell]> {
-        if idx >= self.scrollback.len() {
-            return None;
-        }
-        // idx 0 = most recent = last element in Vec
-        let vec_idx = self.scrollback.len() - 1 - idx;
-        Some(&self.scrollback[vec_idx])
+        self.scrollback.get(idx)
     }
 
     /// Clear the screen and scrollback buffer (for Cmd+K).
@@ -287,9 +280,6 @@ impl Terminal {
             if self.scroll_top == 0 && !self.using_alt {
                 let row = self.grid().row_cells(0);
                 self.scrollback.push(row);
-                if self.scrollback.len() > MAX_SCROLLBACK {
-                    self.scrollback.remove(0);
-                }
             }
             let top = self.scroll_top;
             let bottom = self.scroll_bottom;

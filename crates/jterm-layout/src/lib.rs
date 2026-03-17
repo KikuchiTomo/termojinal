@@ -381,6 +381,14 @@ impl LayoutTree {
         }
     }
 
+    /// Set the next pane ID that will be generated on the next `split`.
+    ///
+    /// This is used to synchronize pane ID generation across multiple
+    /// layout trees (e.g., when using workspaces/tabs).
+    pub fn set_next_id(&mut self, id: PaneId) {
+        self.next_id = id;
+    }
+
     /// Split `pane` in the given direction. Returns a new tree and the ID of
     /// the newly created pane.
     pub fn split(&self, pane: PaneId, direction: SplitDirection) -> (Self, PaneId) {

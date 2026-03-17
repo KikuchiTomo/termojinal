@@ -26,10 +26,16 @@ pub enum Action {
     NextPane,
     /// Focus the previous pane.
     PrevPane,
-    /// Create a new tab.
+    /// Create a new tab in the current workspace.
     NewTab,
-    /// Close the current tab.
+    /// Close the current pane (cascades to tab/workspace/app).
     CloseTab,
+    /// Create a new workspace.
+    NewWorkspace,
+    /// Switch to next tab within the current workspace.
+    NextTab,
+    /// Switch to previous tab within the current workspace.
+    PrevTab,
     /// Switch to workspace N (1-9).
     Workspace(u8),
     /// Open the command palette.
@@ -86,6 +92,7 @@ impl Default for KeybindingConfig {
         // Tab management
         normal.insert("cmd+t".to_string(), Action::NewTab);
         normal.insert("cmd+w".to_string(), Action::CloseTab);
+        normal.insert("cmd+n".to_string(), Action::NewWorkspace);
 
         // Workspace switching (Cmd+1 through Cmd+9)
         for i in 1u8..=9 {
@@ -381,6 +388,9 @@ mod tests {
             Action::PrevPane,
             Action::NewTab,
             Action::CloseTab,
+            Action::NewWorkspace,
+            Action::NextTab,
+            Action::PrevTab,
             Action::Workspace(3),
             Action::CommandPalette,
             Action::AllowFlowPanel,

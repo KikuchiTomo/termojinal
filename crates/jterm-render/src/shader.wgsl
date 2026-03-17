@@ -12,6 +12,8 @@ struct Uniforms {
     grid_offset: vec2<f32>,
     // atlas texture dimensions (width, height) for UV normalization
     atlas_size: vec2<f32>,
+    // emoji atlas texture dimensions (width, height) for UV normalization
+    emoji_atlas_size: vec2<f32>,
     // extra: cursor_col, cursor_row, cursor_color_r, cursor_color_g
     cursor_pos: vec4<f32>,
     // cursor_color_b, cursor_shape (0=block, 1=underline, 2=bar), blink_on (0 or 1), _pad
@@ -21,6 +23,8 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
+@group(0) @binding(3) var emoji_texture: texture_2d<f32>;
+@group(0) @binding(4) var emoji_sampler: sampler;
 
 struct CellInstance {
     @location(0) grid_pos: vec2<f32>,    // column, row
@@ -49,6 +53,7 @@ const FLAG_HIDDEN: u32        = 64u;
 const FLAG_STRIKETHROUGH: u32 = 128u;
 const FLAG_IS_CURSOR: u32     = 0x10000u;
 const FLAG_SELECTED: u32      = 0x20000u;
+const FLAG_EMOJI: u32         = 0x40000u;
 
 // 6 vertices for a quad (two triangles)
 // Vertex positions within a cell: (0,0), (1,0), (0,1), (1,0), (1,1), (0,1)
@@ -79,10 +84,15 @@ fn vs_main(
         cell_origin.y - quad.y * uniforms.cell_size.y,
     );
 
-    // Atlas UV (convert from texel coords to normalized 0..1)
+    // Atlas UV (convert from texel coords to normalized 0..1).
+    // For emoji cells, normalize against the emoji atlas dimensions.
+    var norm_size = uniforms.atlas_size;
+    if (instance.flags & FLAG_EMOJI) != 0u {
+        norm_size = uniforms.emoji_atlas_size;
+    }
     let uv = vec2<f32>(
-        (instance.atlas_uv.x + quad.x * instance.atlas_uv.z) / uniforms.atlas_size.x,
-        (instance.atlas_uv.y + quad.y * instance.atlas_uv.w) / uniforms.atlas_size.y,
+        (instance.atlas_uv.x + quad.x * instance.atlas_uv.z) / norm_size.x,
+        (instance.atlas_uv.y + quad.y * instance.atlas_uv.w) / norm_size.y,
     );
 
     var out: VertexOutput;
@@ -122,10 +132,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return in.bg_color;
     }
 
-    let glyph_alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
-
-    var color = mix(in.bg_color.rgb, in.fg_color.rgb, glyph_alpha);
+    var color: vec3<f32>;
     var alpha = 1.0;
+    var glyph_alpha = 0.0;
+
+    if (in.flags & FLAG_EMOJI) != 0u {
+        // Sample from the emoji atlas (full RGBA color).
+        let emoji_color = textureSample(emoji_texture, emoji_sampler, in.uv);
+        // Blend emoji over background using premultiplied alpha.
+        color = in.bg_color.rgb * (1.0 - emoji_color.a) + emoji_color.rgb;
+        glyph_alpha = emoji_color.a;
+    } else {
+        // Existing monochrome path.
+        glyph_alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
+        color = mix(in.bg_color.rgb, in.fg_color.rgb, glyph_alpha);
+    }
 
     // Underline
     if (in.flags & FLAG_UNDERLINE) != 0u {

@@ -18,6 +18,7 @@
 
 pub mod atlas;
 pub mod color_convert;
+pub mod emoji_atlas;
 pub mod renderer;
 
 pub use atlas::{CellSize, FontConfig};

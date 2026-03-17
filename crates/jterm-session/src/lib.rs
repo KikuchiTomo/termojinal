@@ -9,6 +9,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod daemon;
+pub mod hotkey;
 pub mod persistence;
 
 #[derive(Error, Debug)]
@@ -96,6 +97,11 @@ impl Session {
     pub fn is_alive(&self) -> bool {
         self.pty.is_alive()
     }
+
+    /// Update the session's current working directory (e.g. from OSC 7).
+    pub fn update_cwd(&mut self, cwd: &str) {
+        self.state.cwd = cwd.to_string();
+    }
 }
 
 /// Manages multiple sessions.
@@ -162,6 +168,21 @@ impl SessionManager {
     /// Load saved session states from disk (does not reattach PTYs).
     pub fn load_saved_states(&self) -> Result<Vec<SessionState>, SessionError> {
         self.persistence.load_all()
+    }
+
+    /// Remove a saved session file from disk without affecting live sessions.
+    /// Used to clean up stale session files on daemon startup.
+    pub fn remove_saved(&self, id: &str) -> Result<(), SessionError> {
+        self.persistence.remove(id)
+    }
+
+    /// Update a session's CWD (e.g. when OSC 7 is received) and persist it.
+    pub fn update_session_cwd(&mut self, id: &str, cwd: &str) -> Result<(), SessionError> {
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.update_cwd(cwd);
+            self.persistence.save(&session.state)?;
+        }
+        Ok(())
     }
 
     /// Clean up dead sessions.

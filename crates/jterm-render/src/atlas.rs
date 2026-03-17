@@ -52,6 +52,7 @@ pub struct Atlas {
     pub cell_size: CellSize,
     font: fontdue::Font,
     fallback_font: Option<fontdue::Font>,
+    cjk_font: Option<fontdue::Font>,
     font_size: f32,
     ascent: f32,
     cell_w: u32,
@@ -100,6 +101,8 @@ impl Atlas {
 
         // Try to load a Nerd Font as fallback for PUA / box-drawing glyphs.
         let fallback_font = Self::load_fallback_nerd_font();
+        // Try to load a CJK font as fallback for Japanese/Chinese/Korean characters.
+        let cjk_font = Self::load_cjk_fallback_font();
 
         let atlas_width = 1024u32;
         let atlas_height = 1024u32;
@@ -113,6 +116,7 @@ impl Atlas {
             cell_size,
             font,
             fallback_font,
+            cjk_font,
             font_size: config.size,
             ascent,
             cell_w,
@@ -146,13 +150,25 @@ impl Atlas {
     }
 
     /// Returns true if the character is in a range that may need a fallback font:
-    /// Private Use Area (Nerd Font icons), box-drawing, or block elements.
+    /// Private Use Area (Nerd Font icons), box-drawing, block elements, or CJK.
     fn needs_fallback_check(c: char) -> bool {
         matches!(c,
             '\u{E000}'..='\u{F8FF}'   // BMP Private Use Area (Nerd Font icons)
             | '\u{F0000}'..='\u{FFFFF}' // Supplementary PUA-A
             | '\u{2500}'..='\u{257F}'  // Box-drawing characters
             | '\u{2580}'..='\u{259F}'  // Block elements
+            | '\u{3000}'..='\u{9FFF}'  // CJK Unified Ideographs + Hiragana/Katakana
+            | '\u{F900}'..='\u{FAFF}'  // CJK Compatibility Ideographs
+            | '\u{AC00}'..='\u{D7AF}'  // Hangul
+        )
+    }
+
+    /// Returns true if the character is in CJK ranges (needs CJK-specific fallback).
+    fn is_cjk(c: char) -> bool {
+        matches!(c,
+            '\u{3000}'..='\u{9FFF}'  // CJK Unified Ideographs + Hiragana/Katakana
+            | '\u{F900}'..='\u{FAFF}'  // CJK Compatibility Ideographs
+            | '\u{AC00}'..='\u{D7AF}'  // Hangul
         )
     }
 
@@ -169,20 +185,42 @@ impl Atlas {
         let entry_w = self.cell_w;
         let entry_h = self.cell_h;
 
-        // Check if we should use the fallback font instead.
+        // Check if we should use a fallback font instead.
         // Use fallback when: the primary returns a zero-size bitmap and the
         // char is in a special range, OR the primary font has no glyph for it.
         let primary_missing = (glyph_w == 0 || glyph_h == 0)
             || self.font.lookup_glyph_index(c) == 0;
 
-        let use_fallback = primary_missing
-            && Self::needs_fallback_check(c)
-            && self.fallback_font.is_some();
-
-        let (metrics, bitmap) = if use_fallback {
-            let fb = self.fallback_font.as_ref().unwrap();
-            if fb.lookup_glyph_index(c) != 0 {
-                fb.rasterize(c, self.font_size)
+        let (metrics, bitmap) = if primary_missing && Self::needs_fallback_check(c) {
+            // For CJK characters, try the CJK font first, then Nerd Font fallback.
+            if Self::is_cjk(c) {
+                if let Some(ref cjk) = self.cjk_font {
+                    if cjk.lookup_glyph_index(c) != 0 {
+                        cjk.rasterize(c, self.font_size)
+                    } else if let Some(ref fb) = self.fallback_font {
+                        if fb.lookup_glyph_index(c) != 0 {
+                            fb.rasterize(c, self.font_size)
+                        } else {
+                            (metrics, bitmap)
+                        }
+                    } else {
+                        (metrics, bitmap)
+                    }
+                } else if let Some(ref fb) = self.fallback_font {
+                    if fb.lookup_glyph_index(c) != 0 {
+                        fb.rasterize(c, self.font_size)
+                    } else {
+                        (metrics, bitmap)
+                    }
+                } else {
+                    (metrics, bitmap)
+                }
+            } else if let Some(ref fb) = self.fallback_font {
+                if fb.lookup_glyph_index(c) != 0 {
+                    fb.rasterize(c, self.font_size)
+                } else {
+                    (metrics, bitmap)
+                }
             } else {
                 (metrics, bitmap)
             }
@@ -363,6 +401,46 @@ impl Atlas {
         }
 
         log::info!("no Nerd Font found in {}, fallback disabled", fonts_dir.display());
+        None
+    }
+
+    /// Try to find and load a CJK font from system font directories for fallback
+    /// glyph rendering of Japanese/Chinese/Korean characters.
+    fn load_cjk_fallback_font() -> Option<fontdue::Font> {
+        // macOS system CJK font candidates.
+        // Prefer single-file TTF/OTF over TTC since fontdue handles them better.
+        // For TTC files, fontdue uses collection_index=0 by default.
+        let candidates = [
+            "/System/Library/Fonts/Supplemental/Hiragino Sans W3.ttc",
+            "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+        ];
+
+        for path in &candidates {
+            if let Ok(data) = std::fs::read(path) {
+                match fontdue::Font::from_bytes(
+                    data.as_slice(),
+                    fontdue::FontSettings::default(),
+                ) {
+                    Ok(font) => {
+                        // Verify the font can actually render a common CJK character.
+                        if font.lookup_glyph_index('あ') != 0 {
+                            log::info!("loaded CJK fallback font from {path}");
+                            return Some(font);
+                        }
+                        log::debug!("font {path} loaded but lacks CJK glyphs, skipping");
+                    }
+                    Err(e) => {
+                        log::debug!("failed to parse CJK font {path}: {e}");
+                    }
+                }
+            }
+        }
+
+        log::info!("no CJK fallback font found, CJK characters may not render");
         None
     }
 }

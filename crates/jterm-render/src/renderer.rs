@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::atlas::{Atlas, CellSize, FontConfig};
 use crate::color_convert;
+use crate::emoji_atlas::{self, EmojiAtlas};
 
 /// Per-pane dirty rendering cache. Keyed by an opaque pane identifier.
 type PaneKey = u64;
@@ -54,8 +55,8 @@ struct Uniforms {
     grid_offset: [f32; 2],
     /// Atlas texture size: (width, height).
     atlas_size: [f32; 2],
-    /// Padding.
-    _pad0: [f32; 2],
+    /// Emoji atlas texture size: (width, height).
+    emoji_atlas_size: [f32; 2],
     /// cursor_pos: (col, row, cursor_color_r, cursor_color_g)
     cursor_pos: [f32; 4],
     /// cursor_extra: (cursor_color_b, cursor_shape, blink_on, _pad)
@@ -70,6 +71,9 @@ const FLAG_IS_CURSOR: u32 = 0x10000;
 
 /// Flag indicating this cell is selected (for selection highlighting).
 const FLAG_SELECTED: u32 = 0x20000;
+
+/// Flag indicating this cell contains an emoji rendered via the color emoji atlas.
+const FLAG_EMOJI: u32 = 0x40000;
 
 /// Errors from the renderer.
 #[derive(Debug, thiserror::Error)]
@@ -105,6 +109,10 @@ pub struct Renderer {
     atlas: Atlas,
     atlas_texture: wgpu::Texture,
     atlas_texture_version: usize,
+    /// Color emoji atlas (RGBA).
+    emoji_atlas: EmojiAtlas,
+    emoji_texture: wgpu::Texture,
+    emoji_texture_version: usize,
     /// Whether the cursor blink is in the "on" state.
     pub cursor_blink_on: bool,
 
@@ -219,6 +227,59 @@ impl Renderer {
             ..Default::default()
         });
 
+        // Build emoji atlas.
+        let emoji_atlas = EmojiAtlas::new(
+            atlas.cell_size.width as u32,
+            atlas.cell_size.height as u32,
+            font_config.size,
+        );
+
+        // Create emoji atlas texture (RGBA8).
+        let emoji_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("emoji atlas"),
+            size: wgpu::Extent3d {
+                width: emoji_atlas.width,
+                height: emoji_atlas.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // Upload initial (empty) emoji atlas data.
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &emoji_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &emoji_atlas.data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(emoji_atlas.width * 4),
+                rows_per_image: Some(emoji_atlas.height),
+            },
+            wgpu::Extent3d {
+                width: emoji_atlas.width,
+                height: emoji_atlas.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let emoji_view = emoji_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let emoji_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("emoji sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         // Uniform buffer.
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
@@ -236,7 +297,8 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        // Bind group layout.
+        // Bind group layout (5 entries: uniform, atlas texture, atlas sampler,
+        // emoji texture, emoji sampler).
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("bind group layout"),
@@ -267,6 +329,22 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
 
@@ -285,6 +363,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&emoji_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&emoji_sampler),
                 },
             ],
         });
@@ -392,6 +478,9 @@ impl Renderer {
             atlas,
             atlas_texture,
             atlas_texture_version: atlas_glyph_count,
+            emoji_atlas,
+            emoji_texture,
+            emoji_texture_version: 0,
             cursor_blink_on: true,
             pane_caches: HashMap::new(),
             current_pane_key: 0,
@@ -445,13 +534,27 @@ impl Renderer {
                 cell.c
             };
 
-            // Get glyph info (rasterize on demand if needed).
-            let glyph = self.atlas.get_glyph(c);
+            // Check if this character is an emoji and get glyph from the
+            // appropriate atlas.
+            let (glyph, is_emoji_cell) = if emoji_atlas::is_emoji(c) {
+                if let Some(eg) = self.emoji_atlas.get_glyph(c) {
+                    (eg, true)
+                } else {
+                    // Fallback to monochrome atlas if emoji rasterization fails.
+                    (self.atlas.get_glyph(c), false)
+                }
+            } else {
+                (self.atlas.get_glyph(c), false)
+            };
 
             let fg = color_convert::color_to_rgba(cell.fg, true);
             let bg = color_convert::color_to_rgba(cell.bg, false);
 
             let mut flags = cell.attrs.bits() as u32;
+
+            if is_emoji_cell {
+                flags |= FLAG_EMOJI;
+            }
 
             // Mark cursor cell (only when viewing live output).
             if scroll_offset == 0
@@ -771,7 +874,7 @@ impl Renderer {
             cell_size: [cell_ndc_w, cell_ndc_h],
             grid_offset: [grid_offset_x, grid_offset_y],
             atlas_size: [self.atlas.width as f32, self.atlas.height as f32],
-            _pad0: [0.0; 2],
+            emoji_atlas_size: [self.emoji_atlas.width as f32, self.emoji_atlas.height as f32],
             cursor_pos: [
                 terminal.cursor_col as f32,
                 terminal.cursor_row as f32,
@@ -897,6 +1000,13 @@ impl Renderer {
             self.atlas_texture_version = current_glyph_count;
         }
 
+        // Re-upload emoji atlas if needed.
+        let current_emoji_count = self.emoji_atlas.glyph_count();
+        if current_emoji_count != self.emoji_texture_version {
+            self.reupload_emoji_atlas();
+            self.emoji_texture_version = current_emoji_count;
+        }
+
         // Compute uniforms for this viewport.
         let uniforms = self.compute_uniforms_viewport(terminal, vp_x, vp_y, vp_w, vp_h);
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -1016,6 +1126,13 @@ impl Renderer {
             self.atlas_texture_version = current_glyph_count;
         }
 
+        // Re-upload emoji atlas if needed.
+        let current_emoji_count = self.emoji_atlas.glyph_count();
+        if current_emoji_count != self.emoji_texture_version {
+            self.reupload_emoji_atlas();
+            self.emoji_texture_version = current_emoji_count;
+        }
+
         let count = preedit_instances.len();
 
         // Ensure instance buffer is large enough.
@@ -1121,6 +1238,13 @@ impl Renderer {
         if current_glyph_count != self.atlas_texture_version {
             self.reupload_atlas();
             self.atlas_texture_version = current_glyph_count;
+        }
+
+        // Re-upload emoji atlas if needed.
+        let current_emoji_count = self.emoji_atlas.glyph_count();
+        if current_emoji_count != self.emoji_texture_version {
+            self.reupload_emoji_atlas();
+            self.emoji_texture_version = current_emoji_count;
         }
 
         // Compute uniforms based on viewport.
@@ -1238,7 +1362,7 @@ impl Renderer {
             cell_size: [cell_ndc_w, cell_ndc_h],
             grid_offset: [sep_ndc_x, sep_ndc_y],
             atlas_size: [self.atlas.width as f32, self.atlas.height as f32],
-            _pad0: [0.0; 2],
+            emoji_atlas_size: [self.emoji_atlas.width as f32, self.emoji_atlas.height as f32],
             cursor_pos: [0.0; 4],
             cursor_extra: [0.0; 4],
         };
@@ -1290,6 +1414,145 @@ impl Renderer {
         }
 
         // Invalidate all pane caches since we overwrote the instance buffer.
+        self.pane_caches.clear();
+    }
+
+    /// Render a string of text at a specific pixel position on the surface.
+    ///
+    /// Each character is rendered as one cell instance. The text is positioned
+    /// at `(px_x, px_y)` in physical pixel coordinates (top-left origin).
+    pub fn render_text(
+        &mut self,
+        view: &wgpu::TextureView,
+        text: &str,
+        px_x: f32,
+        px_y: f32,
+        fg: [f32; 4],
+        bg: [f32; 4],
+    ) {
+        if text.is_empty() {
+            return;
+        }
+
+        let cell_w = self.atlas.cell_size.width;
+        let cell_h = self.atlas.cell_size.height;
+        let surface_w = self.surface_config.width as f32;
+        let surface_h = self.surface_config.height as f32;
+
+        // Build one instance per character.
+        let mut instances = Vec::with_capacity(text.len());
+        let mut col = 0usize;
+        for c in text.chars() {
+            let glyph = self.atlas.get_glyph(c);
+            let char_width = UnicodeWidthChar::width(c).unwrap_or(1);
+            instances.push(CellInstance {
+                grid_pos: [col as f32, 0.0],
+                atlas_uv: [
+                    glyph.atlas_x,
+                    glyph.atlas_y,
+                    glyph.atlas_w,
+                    glyph.atlas_h,
+                ],
+                fg_color: fg,
+                bg_color: bg,
+                flags: 0,
+                _pad: [0; 3],
+            });
+            col += char_width;
+        }
+
+        if instances.is_empty() {
+            return;
+        }
+
+        // Re-upload atlas if new glyphs were rasterized.
+        let current_glyph_count = self.atlas.glyph_count();
+        if current_glyph_count != self.atlas_texture_version {
+            self.reupload_atlas();
+            self.atlas_texture_version = current_glyph_count;
+        }
+
+        // Re-upload emoji atlas if needed.
+        let current_emoji_count = self.emoji_atlas.glyph_count();
+        if current_emoji_count != self.emoji_texture_version {
+            self.reupload_emoji_atlas();
+            self.emoji_texture_version = current_emoji_count;
+        }
+
+        // Compute NDC positioning for the text origin.
+        let ndc_x = (px_x / surface_w) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (px_y / surface_h) * 2.0;
+        let cell_ndc_w = (cell_w / surface_w) * 2.0;
+        let cell_ndc_h = (cell_h / surface_h) * 2.0;
+
+        let text_uniforms = Uniforms {
+            cell_size: [cell_ndc_w, cell_ndc_h],
+            grid_offset: [ndc_x, ndc_y],
+            atlas_size: [self.atlas.width as f32, self.atlas.height as f32],
+            emoji_atlas_size: [self.emoji_atlas.width as f32, self.emoji_atlas.height as f32],
+            cursor_pos: [0.0; 4],
+            cursor_extra: [0.0; 4],
+        };
+
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&text_uniforms));
+
+        // Ensure instance buffer is large enough.
+        if instances.len() > self.instance_capacity {
+            self.instance_capacity = instances.len().next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cell instances"),
+                size: (self.instance_capacity * std::mem::size_of::<CellInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&instances),
+        );
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("text encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("text render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Clip to the text region.
+            let text_width = (col as f32 * cell_w).ceil() as u32;
+            let text_height = cell_h.ceil() as u32;
+            render_pass.set_scissor_rect(
+                px_x as u32,
+                px_y as u32,
+                text_width.min(surface_w as u32 - px_x as u32),
+                text_height.min(surface_h as u32 - px_y as u32),
+            );
+
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            render_pass.draw(0..6, 0..instances.len() as u32);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Invalidate pane caches since we overwrote the instance buffer.
         self.pane_caches.clear();
     }
 
@@ -1351,35 +1614,7 @@ impl Renderer {
                 view_formats: &[],
             });
 
-            // Recreate bind group with new texture view.
-            let atlas_view = self
-                .atlas_texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            let atlas_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("atlas sampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            });
-
-            self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bind group"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&atlas_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&atlas_sampler),
-                    },
-                ],
-            });
+            self.recreate_bind_group();
         }
 
         // Upload atlas data.
@@ -1402,5 +1637,100 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    /// Re-upload the emoji atlas texture to the GPU.
+    fn reupload_emoji_atlas(&mut self) {
+        let needs_recreate = self.emoji_atlas.width != self.emoji_texture.width()
+            || self.emoji_atlas.height != self.emoji_texture.height();
+
+        if needs_recreate {
+            self.emoji_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("emoji atlas"),
+                size: wgpu::Extent3d {
+                    width: self.emoji_atlas.width,
+                    height: self.emoji_atlas.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+
+            self.recreate_bind_group();
+        }
+
+        // Upload emoji atlas data (RGBA, 4 bytes per pixel).
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.emoji_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &self.emoji_atlas.data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(self.emoji_atlas.width * 4),
+                rows_per_image: Some(self.emoji_atlas.height),
+            },
+            wgpu::Extent3d {
+                width: self.emoji_atlas.width,
+                height: self.emoji_atlas.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// Recreate the bind group with current atlas and emoji texture views.
+    fn recreate_bind_group(&mut self) {
+        let atlas_view = self
+            .atlas_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let atlas_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("atlas sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let emoji_view = self
+            .emoji_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let emoji_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("emoji sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&emoji_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&emoji_sampler),
+                },
+            ],
+        });
     }
 }
