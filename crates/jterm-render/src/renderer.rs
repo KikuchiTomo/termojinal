@@ -3,10 +3,24 @@
 //! Sets up the wgpu render pipeline and renders terminal cells as textured quads
 //! using instanced rendering for efficiency.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::atlas::{Atlas, CellSize, FontConfig};
 use crate::color_convert;
+
+/// Per-pane dirty rendering cache. Keyed by an opaque pane identifier.
+type PaneKey = u64;
+
+#[derive(Default)]
+struct PaneCache {
+    instances: Vec<CellInstance>,
+    instance_count: usize,
+    scroll_offset: usize,
+    grid_dims: (usize, usize),
+    selection: Option<((usize, usize), (usize, usize))>,
+    row_instance_counts: Vec<usize>,
+}
 
 /// Per-cell instance data sent to the GPU.
 ///
@@ -89,20 +103,10 @@ pub struct Renderer {
     /// Whether the cursor blink is in the "on" state.
     pub cursor_blink_on: bool,
 
-    // --- Dirty rendering state ---
-    /// Cached instance data from the last full rebuild.
-    cached_instances: Vec<CellInstance>,
-    /// Number of instances last uploaded to the GPU (including scrollbar, etc.).
-    cached_instance_count: usize,
-    /// The scroll offset that was active when the cache was built.
-    cached_scroll_offset: usize,
-    /// The grid dimensions (cols, rows) when the cache was built.
-    cached_grid_dims: (usize, usize),
-    /// The selection bounds when the cache was built.
-    cached_selection: Option<((usize, usize), (usize, usize))>,
-    /// The number of instances per row (varies because continuation cells are skipped).
-    /// Length = grid rows. Each entry is the count of CellInstance for that row.
-    cached_row_instance_counts: Vec<usize>,
+    // --- Dirty rendering: per-pane cache ---
+    pane_caches: HashMap<PaneKey, PaneCache>,
+    /// The pane key currently active (for single-pane render() calls).
+    current_pane_key: PaneKey,
 }
 
 impl Renderer {
@@ -384,12 +388,8 @@ impl Renderer {
             atlas_texture,
             atlas_texture_version: atlas_glyph_count,
             cursor_blink_on: true,
-            cached_instances: Vec::new(),
-            cached_instance_count: 0,
-            cached_scroll_offset: usize::MAX, // Force first rebuild
-            cached_grid_dims: (0, 0),
-            cached_selection: None,
-            cached_row_instance_counts: Vec::new(),
+            pane_caches: HashMap::new(),
+            current_pane_key: 0,
         })
     }
 
@@ -546,55 +546,47 @@ impl Renderer {
     /// When the grid reports dirty rows and the grid dimensions/scroll offset
     /// haven't changed, only the dirty rows are rebuilt and patched into the
     /// GPU buffer, avoiding a full re-upload.
+    /// Set which pane is being rendered (selects the per-pane cache).
+    fn set_active_pane(&mut self, pane_key: PaneKey) {
+        self.current_pane_key = pane_key;
+    }
+
     fn update_instances(
         &mut self,
         terminal: &jterm_vt::Terminal,
         selection: Option<((usize, usize), (usize, usize))>,
     ) -> usize {
+        let key = self.current_pane_key;
+        self.pane_caches.entry(key).or_default();
+
         let grid = terminal.grid();
         let cols = grid.cols();
         let rows = grid.rows();
         let scroll_offset = terminal.scroll_offset();
 
-        let dims_match = self.cached_grid_dims == (cols, rows);
-        let scroll_match = self.cached_scroll_offset == scroll_offset;
-        let selection_match = self.cached_selection == selection;
+        let cache = &self.pane_caches[&key];
+        let dims_match = cache.grid_dims == (cols, rows);
+        let scroll_match = cache.scroll_offset == scroll_offset;
+        let selection_match = cache.selection == selection;
 
-        // Determine if we can do an incremental update:
-        // - Grid dimensions must match the cache
-        // - Scroll offset must match
-        // - Selection must match (selection changes can affect any row's flags)
-        // - The grid must report some dirty rows (otherwise nothing to do)
         let can_incremental = dims_match
             && scroll_match
             && selection_match
-            && !self.cached_instances.is_empty()
+            && !cache.instances.is_empty()
             && grid.any_dirty();
 
         if can_incremental {
-            // Incremental: only rebuild dirty rows and patch into the buffer.
             let instance_stride = std::mem::size_of::<CellInstance>();
 
             for row in 0..rows {
-                // For rows sourced from scrollback, we always rebuild if dirty
-                // since scrollback content could have changed.
-                let is_grid_row = scroll_offset == 0 || row >= scroll_offset;
-                let row_dirty = if is_grid_row && scroll_offset == 0 {
+                let row_dirty = if scroll_offset == 0 {
                     grid.is_row_dirty(row)
+                } else if row >= scroll_offset {
+                    grid.is_row_dirty(row - scroll_offset)
                 } else {
-                    // Scrollback rows or shifted rows: always rebuild for safety.
-                    // (In practice, if scroll_match is true, scrollback rows
-                    // haven't changed, but the grid rows that map to grid_row
-                    // after scroll offset may still be dirty.)
-                    if scroll_offset > 0 && row >= scroll_offset {
-                        let grid_row = row - scroll_offset;
-                        grid.is_row_dirty(grid_row)
-                    } else {
-                        false
-                    }
+                    false
                 };
 
-                // Also check if this is the cursor row (cursor may have moved).
                 let is_cursor_row = scroll_offset == 0 && row == terminal.cursor_row;
 
                 if !row_dirty && !is_cursor_row {
@@ -603,16 +595,15 @@ impl Renderer {
 
                 let new_row_instances = self.build_row_instances(terminal, row, selection);
 
-                // Calculate the byte offset into the cached instances for this row.
-                let row_start_instance: usize = self.cached_row_instance_counts[..row]
-                    .iter()
-                    .sum();
-                let old_count = self.cached_row_instance_counts[row];
+                let cache = &self.pane_caches[&key];
+                let row_start_instance: usize =
+                    cache.row_instance_counts[..row].iter().sum();
+                let old_count = cache.row_instance_counts[row];
 
                 if new_row_instances.len() == old_count {
-                    // Same number of instances: patch in place.
+                    let cache = self.pane_caches.get_mut(&key).unwrap();
                     for (i, inst) in new_row_instances.iter().enumerate() {
-                        self.cached_instances[row_start_instance + i] = *inst;
+                        cache.instances[row_start_instance + i] = *inst;
                     }
                     let byte_offset = (row_start_instance * instance_stride) as u64;
                     self.queue.write_buffer(
@@ -621,41 +612,29 @@ impl Renderer {
                         bytemuck::cast_slice(&new_row_instances),
                     );
                 } else {
-                    // Row instance count changed (e.g., wide chars appeared/disappeared).
-                    // Fall back to full rebuild.
                     return self.full_rebuild(terminal, selection);
                 }
             }
 
-            // Also rebuild scrollbar if present (it depends on scroll_offset which
-            // hasn't changed here, so it's the same — skip).
-
             grid.clear_dirty();
-            return self.cached_instance_count;
+            return self.pane_caches[&key].instance_count;
         }
 
-        // Full rebuild needed.
+        // Check if nothing changed at all.
+        let cache = &self.pane_caches[&key];
         if !grid.any_dirty()
             && dims_match
             && scroll_match
             && selection_match
-            && !self.cached_instances.is_empty()
+            && !cache.instances.is_empty()
         {
-            // Nothing changed at all — skip rebuild entirely.
-            return self.cached_instance_count;
+            return cache.instance_count;
         }
 
         self.full_rebuild(terminal, selection)
     }
 
-    /// Clear the dirty rendering cache so the next render does a full rebuild.
-    fn invalidate_cache(&mut self) {
-        self.cached_instances.clear();
-        self.cached_instance_count = 0;
-        self.cached_grid_dims = (0, 0);
-    }
-
-    /// Perform a full rebuild of all instance data.
+    /// Perform a full rebuild of all instance data for the current pane.
     fn full_rebuild(
         &mut self,
         terminal: &jterm_vt::Terminal,
@@ -676,11 +655,9 @@ impl Renderer {
             instances.extend_from_slice(&row_instances);
         }
 
-        // Add scrollbar instances.
         let scrollbar_instances = self.build_scrollbar_instances(terminal);
         instances.extend_from_slice(&scrollbar_instances);
 
-        // Ensure instance buffer is large enough.
         if instances.len() > self.instance_capacity {
             self.instance_capacity = instances.len().next_power_of_two();
             self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -691,7 +668,6 @@ impl Renderer {
             });
         }
 
-        // Upload all instance data.
         if !instances.is_empty() {
             self.queue.write_buffer(
                 &self.instance_buffer,
@@ -702,13 +678,14 @@ impl Renderer {
 
         let count = instances.len();
 
-        // Update cache.
-        self.cached_instances = instances;
-        self.cached_instance_count = count;
-        self.cached_scroll_offset = scroll_offset;
-        self.cached_grid_dims = (cols, rows);
-        self.cached_selection = selection;
-        self.cached_row_instance_counts = row_counts;
+        let key = self.current_pane_key;
+        let cache = self.pane_caches.entry(key).or_default();
+        cache.instances = instances;
+        cache.instance_count = count;
+        cache.scroll_offset = scroll_offset;
+        cache.grid_dims = (cols, rows);
+        cache.selection = selection;
+        cache.row_instance_counts = row_counts;
 
         grid.clear_dirty();
         count
@@ -819,6 +796,7 @@ impl Renderer {
         terminal: &jterm_vt::Terminal,
         selection: Option<((usize, usize), (usize, usize))>,
     ) -> Result<(), RenderError> {
+        self.set_active_pane(0); // Single-pane always uses key 0.
         let (output, mut encoder) = self.begin_frame()?;
         let view = output
             .texture
@@ -888,15 +866,14 @@ impl Renderer {
         terminal: &jterm_vt::Terminal,
         selection: Option<((usize, usize), (usize, usize))>,
         viewport: (u32, u32, u32, u32),
+        pane_key: PaneKey,
         view: &wgpu::TextureView,
     ) -> Result<(), RenderError> {
         let (vp_x, vp_y, vp_w, vp_h) = viewport;
 
-        // Multi-pane mode: always do a full rebuild because the dirty cache
-        // is per-renderer, not per-pane. Reusing it across different terminals
-        // would show the wrong pane's content.
-        self.invalidate_cache();
-        let instance_count = self.full_rebuild(terminal, selection);
+        // Select the per-pane cache so dirty optimization works across panes.
+        self.set_active_pane(pane_key);
+        let instance_count = self.update_instances(terminal, selection);
 
         // Re-upload atlas if needed.
         let current_glyph_count = self.atlas.glyph_count();
@@ -1146,10 +1123,8 @@ impl Renderer {
             render_pass.draw(0..6, 0..instances.len() as u32);
         }
 
-        // Invalidate the cached instances since we overwrote the instance buffer
-        // with separator data.
-        self.cached_instance_count = 0;
-        self.cached_instances.clear();
+        // Invalidate all pane caches since we overwrote the instance buffer.
+        self.pane_caches.clear();
     }
 
     /// Handle a window resize.
@@ -1160,9 +1135,7 @@ impl Renderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-        // Invalidate cache on resize since surface dimensions changed.
-        self.cached_instance_count = 0;
-        self.cached_instances.clear();
+        self.pane_caches.clear();
     }
 
     /// Get the cell size in pixels.

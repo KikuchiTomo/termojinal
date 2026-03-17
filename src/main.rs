@@ -1053,7 +1053,7 @@ fn render_frame(state: &mut AppState) -> Result<(), jterm_render::RenderError> {
             );
             state
                 .renderer
-                .render_pane(&pane.terminal, sel_bounds, viewport, &view)?;
+                .render_pane(&pane.terminal, sel_bounds, viewport, *pid, &view)?;
         }
     }
 
