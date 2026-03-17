@@ -7,6 +7,10 @@ pub struct Grid {
     rows: usize,
     /// Row-major cell storage.
     cells: Vec<Cell>,
+    /// Per-row dirty flags: true means the row has been modified since last clear.
+    /// Uses interior mutability so dirty flags can be cleared with only `&self`,
+    /// enabling the renderer to clear them after drawing without `&mut` access.
+    dirty_rows: Vec<std::cell::Cell<bool>>,
 }
 
 impl Grid {
@@ -15,6 +19,7 @@ impl Grid {
             cols,
             rows,
             cells: vec![Cell::default(); cols * rows],
+            dirty_rows: vec![std::cell::Cell::new(true); rows],
         }
     }
 
@@ -40,12 +45,14 @@ impl Grid {
 
     #[inline]
     pub fn cell_mut(&mut self, col: usize, row: usize) -> &mut Cell {
+        self.dirty_rows[row].set(true);
         let i = self.idx(col, row);
         &mut self.cells[i]
     }
 
     /// Clear a row with default cells.
     pub fn clear_row(&mut self, row: usize) {
+        self.dirty_rows[row].set(true);
         let start = self.idx(0, row);
         for i in start..start + self.cols {
             self.cells[i] = Cell::default();
@@ -57,10 +64,14 @@ impl Grid {
         for cell in &mut self.cells {
             *cell = Cell::default();
         }
+        for d in &self.dirty_rows {
+            d.set(true);
+        }
     }
 
     /// Clear cells from (col, row) to end of line.
     pub fn clear_to_eol(&mut self, col: usize, row: usize) {
+        self.dirty_rows[row].set(true);
         let start = self.idx(col, row);
         let end = self.idx(0, row) + self.cols;
         for i in start..end {
@@ -70,6 +81,7 @@ impl Grid {
 
     /// Clear cells from start of line to (col, row) inclusive.
     pub fn clear_from_bol(&mut self, col: usize, row: usize) {
+        self.dirty_rows[row].set(true);
         let row_start = self.idx(0, row);
         let end = self.idx(col, row) + 1;
         for i in row_start..end {
@@ -89,6 +101,7 @@ impl Grid {
                 for c in 0..self.cols {
                     self.cells[dst_start + c] = self.cells[src_start + c];
                 }
+                self.dirty_rows[row].set(true);
             }
             self.clear_row(bottom);
         }
@@ -104,6 +117,7 @@ impl Grid {
                 for c in 0..self.cols {
                     self.cells[dst_start + c] = self.cells[src_start + c];
                 }
+                self.dirty_rows[row].set(true);
             }
             self.clear_row(top);
         }
@@ -123,6 +137,7 @@ impl Grid {
 
     /// Insert blank cells at (col, row), shifting existing cells right.
     pub fn insert_cells(&mut self, col: usize, row: usize, count: usize) {
+        self.dirty_rows[row].set(true);
         let row_start = self.idx(0, row);
         let n = count.min(self.cols - col);
         // Shift right.
@@ -137,6 +152,7 @@ impl Grid {
 
     /// Delete cells at (col, row), shifting remaining cells left.
     pub fn delete_cells(&mut self, col: usize, row: usize, count: usize) {
+        self.dirty_rows[row].set(true);
         let row_start = self.idx(0, row);
         let n = count.min(self.cols - col);
         for c in col..self.cols - n {
@@ -160,6 +176,7 @@ impl Grid {
         self.cells = new_cells;
         self.cols = new_cols;
         self.rows = new_rows;
+        self.dirty_rows = vec![std::cell::Cell::new(true); new_rows];
     }
 
     /// Copy a row's cells for scrollback storage.
@@ -181,6 +198,24 @@ impl Grid {
         self.clear_from_bol(col, row);
         for r in 0..row {
             self.clear_row(r);
+        }
+    }
+
+    /// Returns true if the given row has been modified since the last `clear_dirty()`.
+    #[inline]
+    pub fn is_row_dirty(&self, row: usize) -> bool {
+        self.dirty_rows[row].get()
+    }
+
+    /// Returns true if any row has been modified since the last `clear_dirty()`.
+    pub fn any_dirty(&self) -> bool {
+        self.dirty_rows.iter().any(|d| d.get())
+    }
+
+    /// Mark all rows as clean. Uses interior mutability so this works with `&self`.
+    pub fn clear_dirty(&self) {
+        for d in &self.dirty_rows {
+            d.set(false);
         }
     }
 }

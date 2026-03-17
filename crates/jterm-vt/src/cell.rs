@@ -35,6 +35,8 @@ pub struct Cell {
     pub underline_color: Color,
     /// Display width: 1 for normal, 2 for wide (CJK/emoji), 0 for continuation.
     pub width: u8,
+    /// Whether this cell is part of a hyperlink (OSC 8).
+    pub hyperlink: bool,
 }
 
 impl Default for Cell {
@@ -46,6 +48,7 @@ impl Default for Cell {
             attrs: Attrs::empty(),
             underline_color: Color::Default,
             width: 1,
+            hyperlink: false,
         }
     }
 }

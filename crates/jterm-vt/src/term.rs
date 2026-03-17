@@ -3,6 +3,7 @@
 use crate::cell::{Attrs, Cell, Pen};
 use crate::color::{Color, NamedColor};
 use crate::grid::Grid;
+use base64::Engine as _;
 use unicode_width::UnicodeWidthChar;
 
 /// Maximum number of scrollback lines retained.
@@ -33,6 +34,42 @@ struct SavedCursor {
     pen: Pen,
 }
 
+/// Which mouse events to report to the application.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MouseMode {
+    #[default]
+    None,
+    /// Mode 1000 — report button press/release.
+    Click,
+    /// Mode 1002 — report motion while button held.
+    ButtonMotion,
+    /// Mode 1003 — report all motion.
+    AnyMotion,
+}
+
+/// How mouse coordinates are encoded in reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MouseFormat {
+    #[default]
+    /// Default legacy format.
+    X10,
+    /// Mode 1005 — UTF-8 encoding.
+    Utf8,
+    /// Mode 1006 — modern SGR format ESC[<btn;col;row;M/m.
+    Sgr,
+    /// Mode 1015 — urxvt format.
+    Urxvt,
+}
+
+/// Clipboard event produced by OSC 52 sequences.
+#[derive(Debug, Clone)]
+pub enum ClipboardEvent {
+    /// Set clipboard contents. `data` is already decoded from base64.
+    Set { selection: String, data: String },
+    /// Query clipboard contents.
+    Query { selection: String },
+}
+
 /// Terminal mode flags.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Modes {
@@ -42,6 +79,12 @@ pub struct Modes {
     pub origin_mode: bool,
     pub insert_mode: bool,
     pub cursor_visible: bool,
+    /// Which mouse events to report.
+    pub mouse_mode: MouseMode,
+    /// How to encode mouse coordinates.
+    pub mouse_format: MouseFormat,
+    /// Whether focus in/out events are reported (mode 1004).
+    pub focus_events: bool,
 }
 
 /// OSC-derived state.
@@ -93,6 +136,12 @@ pub struct Terminal {
     scrollback: Vec<Vec<Cell>>,
     /// Current scroll offset (0 = live view, >0 = looking at history).
     scroll_offset: usize,
+    /// Kitty keyboard protocol flags stack.
+    kitty_keyboard_flags: Vec<u32>,
+    /// Current hyperlink URI (set by OSC 8).
+    current_hyperlink: Option<String>,
+    /// Clipboard event from OSC 52 (consumed by application layer).
+    pub clipboard_event: Option<ClipboardEvent>,
 }
 
 impl Terminal {
@@ -126,6 +175,9 @@ impl Terminal {
             tab_stops,
             scrollback: Vec::new(),
             scroll_offset: 0,
+            kitty_keyboard_flags: Vec::new(),
+            current_hyperlink: None,
+            clipboard_event: None,
         }
     }
 
@@ -167,6 +219,11 @@ impl Terminal {
     /// Set the scroll offset, clamped to scrollback length.
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset.min(self.scrollback.len());
+    }
+
+    /// Get the current Kitty keyboard protocol flags (0 if none set).
+    pub fn kitty_keyboard_mode(&self) -> u32 {
+        self.kitty_keyboard_flags.last().copied().unwrap_or(0)
     }
 
     /// Get a row from scrollback history. Index 0 is the most recent scrollback line.
@@ -389,10 +446,70 @@ impl Terminal {
                     self.leave_alt_screen();
                 }
             }
-            1000 | 1002 | 1003 | 1006 | 1015 => {
-                log::trace!("mouse mode {code} {}", if enable { "on" } else { "off" });
+            // Mouse tracking modes — only one can be active at a time.
+            1000 => {
+                self.modes.mouse_mode = if enable {
+                    MouseMode::Click
+                } else {
+                    MouseMode::None
+                };
+                log::trace!("mouse mode 1000 (click) {}", if enable { "on" } else { "off" });
             }
-            1004 => {}
+            1002 => {
+                self.modes.mouse_mode = if enable {
+                    MouseMode::ButtonMotion
+                } else {
+                    MouseMode::None
+                };
+                log::trace!(
+                    "mouse mode 1002 (button motion) {}",
+                    if enable { "on" } else { "off" }
+                );
+            }
+            1003 => {
+                self.modes.mouse_mode = if enable {
+                    MouseMode::AnyMotion
+                } else {
+                    MouseMode::None
+                };
+                log::trace!(
+                    "mouse mode 1003 (any motion) {}",
+                    if enable { "on" } else { "off" }
+                );
+            }
+            // Focus events (mode 1004).
+            1004 => {
+                self.modes.focus_events = enable;
+                log::trace!("focus events {}", if enable { "on" } else { "off" });
+            }
+            // Mouse format modes.
+            1005 => {
+                self.modes.mouse_format = if enable {
+                    MouseFormat::Utf8
+                } else {
+                    MouseFormat::X10
+                };
+                log::trace!("mouse format 1005 (utf8) {}", if enable { "on" } else { "off" });
+            }
+            1006 => {
+                self.modes.mouse_format = if enable {
+                    MouseFormat::Sgr
+                } else {
+                    MouseFormat::X10
+                };
+                log::trace!("mouse format 1006 (sgr) {}", if enable { "on" } else { "off" });
+            }
+            1015 => {
+                self.modes.mouse_format = if enable {
+                    MouseFormat::Urxvt
+                } else {
+                    MouseFormat::X10
+                };
+                log::trace!(
+                    "mouse format 1015 (urxvt) {}",
+                    if enable { "on" } else { "off" }
+                );
+            }
             1049 => {
                 if enable {
                     self.enter_alt_screen();
@@ -463,6 +580,8 @@ impl vte::Perform for Terminal {
         let row = self.cursor_row;
         let pen = self.pen;
 
+        let has_hyperlink = self.current_hyperlink.is_some();
+
         {
             let cell = self.grid_mut().cell_mut(col, row);
             cell.c = c;
@@ -471,6 +590,7 @@ impl vte::Perform for Terminal {
             cell.attrs = pen.attrs;
             cell.underline_color = pen.underline_color;
             cell.width = char_width as u8;
+            cell.hyperlink = has_hyperlink;
         }
 
         if char_width == 2 && col + 1 < self.cols {
@@ -480,6 +600,7 @@ impl vte::Perform for Terminal {
             cell.fg = pen.fg;
             cell.bg = pen.bg;
             cell.attrs = pen.attrs;
+            cell.hyperlink = has_hyperlink;
         }
 
         self.cursor_col += char_width;
@@ -806,6 +927,29 @@ impl vte::Perform for Terminal {
                     self.modes.insert_mode = false;
                 }
             }
+            // Kitty keyboard protocol: CSI > flags u — push keyboard mode.
+            ([b'>'], 'u') => {
+                let flags = param(0, 0) as u32;
+                self.kitty_keyboard_flags.push(flags);
+                log::trace!("kitty keyboard: push flags={flags}");
+            }
+            // Kitty keyboard protocol: CSI < number u — pop keyboard mode(s).
+            ([b'<'], 'u') => {
+                let count = param(0, 1).max(1) as usize;
+                for _ in 0..count {
+                    if self.kitty_keyboard_flags.pop().is_none() {
+                        break;
+                    }
+                }
+                log::trace!("kitty keyboard: pop {count}");
+            }
+            // Kitty keyboard protocol: CSI ? u — query current keyboard mode.
+            ([b'?'], 'u') => {
+                log::trace!(
+                    "kitty keyboard: query (current={})",
+                    self.kitty_keyboard_mode()
+                );
+            }
             _ => {
                 log::trace!(
                     "unhandled CSI: intermediates={intermediates:?}, action={action}, params={p:?}"
@@ -879,6 +1023,55 @@ impl vte::Perform for Terminal {
                                 log::debug!("OSC 133: command finished");
                             }
                             _ => {}
+                        }
+                    }
+                }
+            }
+            // OSC 8 — Hyperlinks: OSC 8 ; params ; URI ST
+            "8" => {
+                // params[1] = hyperlink params (e.g. "id=xyz"), params[2] = URI
+                let uri = params
+                    .get(2)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or("");
+                if uri.is_empty() {
+                    // End hyperlink.
+                    self.current_hyperlink = None;
+                    log::trace!("OSC 8: end hyperlink");
+                } else {
+                    // Start hyperlink.
+                    self.current_hyperlink = Some(uri.to_string());
+                    log::trace!("OSC 8: start hyperlink uri={uri}");
+                }
+            }
+            // OSC 52 — Clipboard: OSC 52 ; selection ; data ST
+            "52" => {
+                let selection = params
+                    .get(1)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or("c")
+                    .to_string();
+                let raw_data = params
+                    .get(2)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or("");
+                if raw_data == "?" {
+                    self.clipboard_event = Some(ClipboardEvent::Query {
+                        selection,
+                    });
+                    log::trace!("OSC 52: query clipboard selection={}", &self.clipboard_event.as_ref().map(|e| match e { ClipboardEvent::Query { selection } => selection.as_str(), _ => "" }).unwrap_or(""));
+                } else {
+                    match base64::engine::general_purpose::STANDARD.decode(raw_data) {
+                        Ok(bytes) => {
+                            let decoded = String::from_utf8_lossy(&bytes).to_string();
+                            log::trace!("OSC 52: set clipboard selection={selection}");
+                            self.clipboard_event = Some(ClipboardEvent::Set {
+                                selection,
+                                data: decoded,
+                            });
+                        }
+                        Err(e) => {
+                            log::trace!("OSC 52: invalid base64: {e}");
                         }
                     }
                 }
@@ -1054,5 +1247,267 @@ mod tests {
         assert_eq!(term.grid().cell(1, 0).width, 2);
         assert_eq!(term.grid().cell(2, 0).width, 0);
         assert_eq!(term.grid().cell(3, 0).c, 'B');
+    }
+
+    // --- Mouse tracking mode tests ---
+
+    #[test]
+    fn test_mouse_mode_click() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert_eq!(term.modes.mouse_mode, MouseMode::None);
+
+        // Enable mode 1000 (click tracking).
+        feed_str(&mut term, &mut parser, "\x1b[?1000h");
+        assert_eq!(term.modes.mouse_mode, MouseMode::Click);
+
+        // Disable mode 1000.
+        feed_str(&mut term, &mut parser, "\x1b[?1000l");
+        assert_eq!(term.modes.mouse_mode, MouseMode::None);
+    }
+
+    #[test]
+    fn test_mouse_mode_button_motion() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\x1b[?1002h");
+        assert_eq!(term.modes.mouse_mode, MouseMode::ButtonMotion);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1002l");
+        assert_eq!(term.modes.mouse_mode, MouseMode::None);
+    }
+
+    #[test]
+    fn test_mouse_mode_any_motion() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\x1b[?1003h");
+        assert_eq!(term.modes.mouse_mode, MouseMode::AnyMotion);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1003l");
+        assert_eq!(term.modes.mouse_mode, MouseMode::None);
+    }
+
+    #[test]
+    fn test_mouse_format_sgr() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert_eq!(term.modes.mouse_format, MouseFormat::X10);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1006h");
+        assert_eq!(term.modes.mouse_format, MouseFormat::Sgr);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1006l");
+        assert_eq!(term.modes.mouse_format, MouseFormat::X10);
+    }
+
+    #[test]
+    fn test_mouse_format_utf8() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\x1b[?1005h");
+        assert_eq!(term.modes.mouse_format, MouseFormat::Utf8);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1005l");
+        assert_eq!(term.modes.mouse_format, MouseFormat::X10);
+    }
+
+    #[test]
+    fn test_mouse_format_urxvt() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\x1b[?1015h");
+        assert_eq!(term.modes.mouse_format, MouseFormat::Urxvt);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1015l");
+        assert_eq!(term.modes.mouse_format, MouseFormat::X10);
+    }
+
+    // --- Focus events mode test ---
+
+    #[test]
+    fn test_focus_events_mode() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(!term.modes.focus_events);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1004h");
+        assert!(term.modes.focus_events);
+
+        feed_str(&mut term, &mut parser, "\x1b[?1004l");
+        assert!(!term.modes.focus_events);
+    }
+
+    // --- Kitty keyboard protocol tests ---
+
+    #[test]
+    fn test_kitty_keyboard_push_pop() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert_eq!(term.kitty_keyboard_mode(), 0);
+
+        // Push flags=1.
+        feed_str(&mut term, &mut parser, "\x1b[>1u");
+        assert_eq!(term.kitty_keyboard_mode(), 1);
+
+        // Push flags=3.
+        feed_str(&mut term, &mut parser, "\x1b[>3u");
+        assert_eq!(term.kitty_keyboard_mode(), 3);
+
+        // Pop one.
+        feed_str(&mut term, &mut parser, "\x1b[<1u");
+        assert_eq!(term.kitty_keyboard_mode(), 1);
+
+        // Pop one more.
+        feed_str(&mut term, &mut parser, "\x1b[<1u");
+        assert_eq!(term.kitty_keyboard_mode(), 0);
+    }
+
+    #[test]
+    fn test_kitty_keyboard_pop_multiple() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\x1b[>1u");
+        feed_str(&mut term, &mut parser, "\x1b[>2u");
+        feed_str(&mut term, &mut parser, "\x1b[>3u");
+        assert_eq!(term.kitty_keyboard_mode(), 3);
+
+        // Pop 2 at once.
+        feed_str(&mut term, &mut parser, "\x1b[<2u");
+        assert_eq!(term.kitty_keyboard_mode(), 1);
+    }
+
+    #[test]
+    fn test_kitty_keyboard_pop_empty_stack() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Popping from empty stack should be safe.
+        feed_str(&mut term, &mut parser, "\x1b[<5u");
+        assert_eq!(term.kitty_keyboard_mode(), 0);
+    }
+
+    #[test]
+    fn test_kitty_keyboard_query() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Query should not crash (just logs).
+        feed_str(&mut term, &mut parser, "\x1b[?u");
+        assert_eq!(term.kitty_keyboard_mode(), 0);
+
+        feed_str(&mut term, &mut parser, "\x1b[>5u");
+        feed_str(&mut term, &mut parser, "\x1b[?u");
+        assert_eq!(term.kitty_keyboard_mode(), 5);
+    }
+
+    // --- OSC 8 hyperlinks tests ---
+
+    #[test]
+    fn test_osc8_hyperlink() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Start hyperlink: OSC 8 ; ; https://example.com ST
+        feed_str(
+            &mut term,
+            &mut parser,
+            "\x1b]8;;https://example.com\x1b\\",
+        );
+        // Print some text while hyperlink is active.
+        feed_str(&mut term, &mut parser, "link");
+
+        assert!(term.grid().cell(0, 0).hyperlink);
+        assert!(term.grid().cell(1, 0).hyperlink);
+        assert!(term.grid().cell(2, 0).hyperlink);
+        assert!(term.grid().cell(3, 0).hyperlink);
+
+        // End hyperlink: OSC 8 ; ; ST
+        feed_str(&mut term, &mut parser, "\x1b]8;;\x1b\\");
+        // Print text after hyperlink ends.
+        feed_str(&mut term, &mut parser, "text");
+
+        assert!(!term.grid().cell(4, 0).hyperlink);
+        assert!(!term.grid().cell(5, 0).hyperlink);
+    }
+
+    #[test]
+    fn test_osc8_hyperlink_not_set_by_default() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "hello");
+        assert!(!term.grid().cell(0, 0).hyperlink);
+        assert!(!term.grid().cell(4, 0).hyperlink);
+    }
+
+    // --- OSC 52 clipboard tests ---
+
+    #[test]
+    fn test_osc52_set_clipboard() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(term.clipboard_event.is_none());
+
+        // "hello" in base64 is "aGVsbG8="
+        // OSC 52 ; c ; aGVsbG8= ST
+        feed_str(&mut term, &mut parser, "\x1b]52;c;aGVsbG8=\x1b\\");
+
+        match &term.clipboard_event {
+            Some(ClipboardEvent::Set { selection, data }) => {
+                assert_eq!(selection, "c");
+                assert_eq!(data, "hello");
+            }
+            other => panic!("expected ClipboardEvent::Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_osc52_query_clipboard() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // OSC 52 ; c ; ? ST
+        feed_str(&mut term, &mut parser, "\x1b]52;c;?\x1b\\");
+
+        match &term.clipboard_event {
+            Some(ClipboardEvent::Query { selection }) => {
+                assert_eq!(selection, "c");
+            }
+            other => panic!("expected ClipboardEvent::Query, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_osc52_primary_selection() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // "test" base64 = "dGVzdA=="
+        feed_str(&mut term, &mut parser, "\x1b]52;p;dGVzdA==\x1b\\");
+
+        match &term.clipboard_event {
+            Some(ClipboardEvent::Set { selection, data }) => {
+                assert_eq!(selection, "p");
+                assert_eq!(data, "test");
+            }
+            other => panic!("expected ClipboardEvent::Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_osc52_invalid_base64() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Invalid base64 — should not set clipboard_event.
+        feed_str(&mut term, &mut parser, "\x1b]52;c;!!!invalid!!!\x1b\\");
+
+        assert!(term.clipboard_event.is_none());
     }
 }
