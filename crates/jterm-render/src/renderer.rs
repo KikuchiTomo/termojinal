@@ -643,9 +643,10 @@ impl Renderer {
             let width_scale = if cell.width > 1 { cell.width as f32 } else { 1.0 };
 
             // Apply background opacity: default bg gets transparent, colored bg stays opaque.
-            // The shader handles premultiplied alpha output, so we only set alpha here.
+            // In alternate screen mode (TUI apps like neovim), never make bg transparent
+            // — respect the app's background color.
             let mut bg_final = bg;
-            if bg == color_convert::DEFAULT_BG {
+            if !terminal.modes.alternate_screen && bg == color_convert::DEFAULT_BG {
                 bg_final[3] = self.bg_opacity;
             }
 
@@ -1184,13 +1185,14 @@ impl Renderer {
             let char_width = ch.width().unwrap_or(1);
             let glyph = self.atlas.get_glyph(ch);
 
+            let width_scale = if char_width > 1 { char_width as f32 } else { 1.0 };
             preedit_instances.push(CellInstance {
                 grid_pos: [(cursor_col + col_offset) as f32, cursor_row as f32],
                 atlas_uv: [glyph.atlas_x, glyph.atlas_y, glyph.atlas_w, glyph.atlas_h],
                 fg_color: fg,
                 bg_color: bg,
                 flags: FLAG_UNDERLINE,
-                cell_width_scale: 1.0,
+                cell_width_scale: width_scale,
                 _pad: [0; 2],
             });
 

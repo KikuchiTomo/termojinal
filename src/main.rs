@@ -3030,7 +3030,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 line_y += info_line_gap;
 
                 // Build git status string: branch ⇡N ⇣N !N ?N
-                let mut git_parts = format!("{branch}");
+                let mut git_parts = format!("\u{E0A0} {branch}"); // git branch icon
                 if info.git_ahead > 0 {
                     git_parts.push_str(&format!(" \u{21E1}{}", info.git_ahead));
                 }
@@ -3063,12 +3063,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             // --- Ports line (below git) ---
             if !info.ports.is_empty() {
                 line_y += info_line_gap;
-                let ports_str: String = info
-                    .ports
-                    .iter()
-                    .map(|p| format!(":{p}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let ports_str: String = format!("\u{F0AC} {}",  // globe icon
+                    info.ports.iter()
+                        .map(|p| format!(":{p}"))
+                        .collect::<Vec<_>>()
+                        .join(" "));
                 let ports_display: String = ports_str.chars().take(max_chars).collect();
                 let indent = text_left + cell_w;
                 state.renderer.render_text(view, &ports_display, indent, line_y, dim_fg, bg);
@@ -3094,7 +3093,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     // --- "New Workspace" button ---
     let new_ws_y = sep_y + 8.0 + 1.0; // 8px below separator
     if new_ws_y + cell_h <= phys_h {
-        let new_ws_label = "\u{2295} New Workspace"; // ⊕
+        let new_ws_label = "+ New Workspace";
         state.renderer.render_text(view, new_ws_label, side_pad, new_ws_y, dim_fg, sidebar_bg);
     }
 }

@@ -149,16 +149,37 @@ impl Atlas {
         self.glyphs.len()
     }
 
-    /// Try to draw block elements / shade characters procedurally.
-    /// Returns None if the character is not a block element.
+    /// Try to draw block elements, shade characters, and box-drawing characters
+    /// procedurally. Returns None if the character is not handled.
     fn try_procedural_block(&mut self, c: char) -> Option<GlyphInfo> {
         let w = self.cell_w;
         let h = self.cell_h;
         let hw = w / 2; // half width
         let hh = h / 2; // half height
 
-        // Define which region of the cell to fill: (x_start, y_start, x_end, y_end)
-        // relative to cell dimensions. Returns None for non-block chars.
+        // --- Shade characters ---
+        let shade = match c {
+            '░' => Some(64u8),    // LIGHT SHADE ~25%
+            '▒' => Some(128u8),   // MEDIUM SHADE ~50%
+            '▓' => Some(192u8),   // DARK SHADE ~75%
+            _ => None,
+        };
+        if let Some(alpha) = shade {
+            let mut bitmap = vec![0u8; (w * h) as usize];
+            for pixel in &mut bitmap {
+                *pixel = alpha;
+            }
+            let info = self.pack_cell_bitmap(&bitmap, w, h);
+            return Some(info);
+        }
+
+        // --- Box-drawing characters (U+2500–U+257F) ---
+        // Draw lines that extend to the exact cell edges to ensure seamless joining.
+        if c >= '\u{2500}' && c <= '\u{257F}' {
+            return self.try_procedural_box_drawing(c);
+        }
+
+        // --- Block elements (U+2580–U+259F) ---
         let regions: Vec<(u32, u32, u32, u32)> = match c {
             '█' => vec![(0, 0, w, h)],           // FULL BLOCK
             '▀' => vec![(0, 0, w, hh)],          // UPPER HALF
@@ -169,29 +190,12 @@ impl Atlas {
             '▗' => vec![(hw, hh, w, h)],         // QUADRANT LOWER RIGHT
             '▘' => vec![(0, 0, hw, hh)],         // QUADRANT UPPER LEFT
             '▝' => vec![(hw, 0, w, hh)],         // QUADRANT UPPER RIGHT
-            '▙' => vec![(0, 0, hw, h), (hw, hh, w, h)],   // UL + LL + LR
-            '▛' => vec![(0, 0, w, hh), (0, hh, hw, h)],   // UL + UR + LL
-            '▜' => vec![(0, 0, w, hh), (hw, hh, w, h)],   // UL + UR + LR
-            '▟' => vec![(hw, 0, w, hh), (0, hh, w, h)],   // UR + LL + LR
+            '▙' => vec![(0, 0, hw, h), (hw, hh, w, h)],
+            '▛' => vec![(0, 0, w, hh), (0, hh, hw, h)],
+            '▜' => vec![(0, 0, w, hh), (hw, hh, w, h)],
+            '▟' => vec![(hw, 0, w, hh), (0, hh, w, h)],
             _ => return None,
         };
-
-        let shade = match c {
-            '░' => Some(64u8),    // LIGHT SHADE ~25%
-            '▒' => Some(128u8),   // MEDIUM SHADE ~50%
-            '▓' => Some(192u8),   // DARK SHADE ~75%
-            _ => None,
-        };
-
-        // Shade characters fill entire cell with a specific alpha.
-        if let Some(alpha) = shade {
-            let mut bitmap = vec![0u8; (w * h) as usize];
-            for pixel in &mut bitmap {
-                *pixel = alpha;
-            }
-            let info = self.pack_cell_bitmap(&bitmap, w, h);
-            return Some(info);
-        }
 
         if regions.is_empty() {
             return None;
@@ -207,6 +211,152 @@ impl Atlas {
                 }
             }
         }
+        let info = self.pack_cell_bitmap(&bitmap, w, h);
+        Some(info)
+    }
+
+    /// Draw box-drawing characters procedurally.
+    /// Lines extend to the exact cell edges for seamless joining between cells.
+    fn try_procedural_box_drawing(&mut self, c: char) -> Option<GlyphInfo> {
+        let w = self.cell_w;
+        let h = self.cell_h;
+        let cx = w / 2; // center x
+        let cy = h / 2; // center y
+
+        // Line thickness: thin = 1px, heavy = 2-3px depending on cell size.
+        let thin = 1u32.max(w / 10);
+        let heavy = (thin * 2).max(2).min(w / 4);
+
+        // Segments: (left, right, up, down) with thickness.
+        // 0 = none, 1 = thin, 2 = heavy, 3 = double
+        let (left, right, up, down) = match c {
+            '─' => (1, 1, 0, 0), // horizontal thin
+            '━' => (2, 2, 0, 0), // horizontal heavy
+            '│' => (0, 0, 1, 1), // vertical thin
+            '┃' => (0, 0, 2, 2), // vertical heavy
+            '┌' => (0, 1, 0, 1), // top-left thin
+            '┐' => (1, 0, 0, 1), // top-right thin
+            '└' => (0, 1, 1, 0), // bottom-left thin
+            '┘' => (1, 0, 1, 0), // bottom-right thin
+            '├' => (0, 1, 1, 1), // left-T thin
+            '┤' => (1, 0, 1, 1), // right-T thin
+            '┬' => (1, 1, 0, 1), // top-T thin
+            '┴' => (1, 1, 1, 0), // bottom-T thin
+            '┼' => (1, 1, 1, 1), // cross thin
+            '╌' => (1, 1, 0, 0), // dashed horizontal (draw as solid)
+            '╎' => (0, 0, 1, 1), // dashed vertical (draw as solid)
+            '┄' => (1, 1, 0, 0), // triple-dash horizontal
+            '┆' => (0, 0, 1, 1), // triple-dash vertical
+            '┈' => (1, 1, 0, 0), // quad-dash horizontal
+            '┊' => (0, 0, 1, 1), // quad-dash vertical
+            // Heavy corners
+            '┍' => (0, 2, 0, 1), '┎' => (0, 1, 0, 2),
+            '┏' => (0, 2, 0, 2),
+            '┑' => (2, 0, 0, 1), '┒' => (1, 0, 0, 2),
+            '┓' => (2, 0, 0, 2),
+            '┕' => (0, 2, 1, 0), '┖' => (0, 1, 2, 0),
+            '┗' => (0, 2, 2, 0),
+            '┙' => (2, 0, 1, 0), '┚' => (1, 0, 2, 0),
+            '┛' => (2, 0, 2, 0),
+            // Heavy T-junctions
+            '┝' => (0, 2, 1, 1), '┞' => (0, 1, 2, 1), '┟' => (0, 1, 1, 2),
+            '┠' => (0, 1, 2, 2), '┡' => (0, 2, 2, 1), '┢' => (0, 2, 1, 2),
+            '┣' => (0, 2, 2, 2),
+            '┥' => (2, 0, 1, 1), '┦' => (1, 0, 2, 1), '┧' => (1, 0, 1, 2),
+            '┨' => (1, 0, 2, 2), '┩' => (2, 0, 2, 1), '┪' => (2, 0, 1, 2),
+            '┫' => (2, 0, 2, 2),
+            '┭' => (2, 1, 0, 1), '┮' => (1, 2, 0, 1), '┯' => (2, 2, 0, 1),
+            '┰' => (1, 1, 0, 2), '┱' => (2, 1, 0, 2), '┲' => (1, 2, 0, 2),
+            '┳' => (2, 2, 0, 2),
+            '┵' => (2, 1, 1, 0), '┶' => (1, 2, 1, 0), '┷' => (2, 2, 1, 0),
+            '┸' => (1, 1, 2, 0), '┹' => (2, 1, 2, 0), '┺' => (1, 2, 2, 0),
+            '┻' => (2, 2, 2, 0),
+            // Heavy crosses
+            '┽' => (2, 1, 1, 1), '┾' => (1, 2, 1, 1), '┿' => (2, 2, 1, 1),
+            '╀' => (1, 1, 2, 1), '╁' => (1, 1, 1, 2), '╂' => (1, 1, 2, 2),
+            '╃' => (2, 1, 2, 1), '╄' => (1, 2, 2, 1), '╅' => (2, 1, 1, 2),
+            '╆' => (1, 2, 1, 2), '╇' => (2, 2, 2, 1), '╈' => (2, 2, 1, 2),
+            '╉' => (2, 1, 2, 2), '╊' => (1, 2, 2, 2),
+            '╋' => (2, 2, 2, 2),
+            // Double lines
+            '═' => (3, 3, 0, 0), // double horizontal
+            '║' => (0, 0, 3, 3), // double vertical
+            '╔' => (0, 3, 0, 3), '╗' => (3, 0, 0, 3),
+            '╚' => (0, 3, 3, 0), '╝' => (3, 0, 3, 0),
+            '╠' => (0, 3, 3, 3), '╣' => (3, 0, 3, 3),
+            '╦' => (3, 3, 0, 3), '╩' => (3, 3, 3, 0),
+            '╬' => (3, 3, 3, 3),
+            // Mixed single/double
+            '╒' => (0, 3, 0, 1), '╓' => (0, 1, 0, 3),
+            '╕' => (3, 0, 0, 1), '╖' => (1, 0, 0, 3),
+            '╘' => (0, 3, 1, 0), '╙' => (0, 1, 3, 0),
+            '╛' => (3, 0, 1, 0), '╜' => (1, 0, 3, 0),
+            '╞' => (0, 3, 1, 1), '╟' => (0, 1, 3, 3),
+            '╡' => (3, 0, 1, 1), '╢' => (1, 0, 3, 3),
+            '╤' => (3, 3, 0, 1), '╥' => (1, 1, 0, 3),
+            '╧' => (3, 3, 1, 0), '╨' => (1, 1, 3, 0),
+            '╪' => (3, 3, 1, 1), '╫' => (1, 1, 3, 3),
+            // Rounded corners
+            '╭' => (0, 1, 0, 1), '╮' => (1, 0, 0, 1),
+            '╯' => (1, 0, 1, 0), '╰' => (0, 1, 1, 0),
+            _ => return None,
+        };
+
+        let mut bitmap = vec![0u8; (w * h) as usize];
+
+        // Helper: draw a filled rect into bitmap
+        let mut fill = |x0: u32, y0: u32, x1: u32, y1: u32| {
+            for y in y0..y1.min(h) {
+                for x in x0..x1.min(w) {
+                    bitmap[(y * w + x) as usize] = 255;
+                }
+            }
+        };
+
+        let draw_segment = |fill: &mut dyn FnMut(u32, u32, u32, u32), dir: u32, thickness: u32, is_double: bool| {
+            if is_double {
+                let gap = (thickness + 1).max(2);
+                let t = thickness.max(1);
+                match dir {
+                    0 => { // left
+                        fill(0, cy - gap, cx, cy - gap + t);
+                        fill(0, cy + gap - t, cx, cy + gap);
+                    }
+                    1 => { // right
+                        fill(cx, cy - gap, w, cy - gap + t);
+                        fill(cx, cy + gap - t, w, cy + gap);
+                    }
+                    2 => { // up
+                        fill(cx - gap, 0, cx - gap + t, cy);
+                        fill(cx + gap - t, 0, cx + gap, cy);
+                    }
+                    3 => { // down
+                        fill(cx - gap, cy, cx - gap + t, h);
+                        fill(cx + gap - t, cy, cx + gap, h);
+                    }
+                    _ => {}
+                }
+            } else {
+                let half_t = thickness / 2;
+                match dir {
+                    0 => fill(0, cy.saturating_sub(half_t), cx + half_t, cy + thickness - half_t), // left
+                    1 => fill(cx.saturating_sub(half_t), cy.saturating_sub(half_t), w, cy + thickness - half_t), // right
+                    2 => fill(cx.saturating_sub(half_t), 0, cx + thickness - half_t, cy + half_t), // up
+                    3 => fill(cx.saturating_sub(half_t), cy.saturating_sub(half_t), cx + thickness - half_t, h), // down
+                    _ => {}
+                }
+            }
+        };
+
+        // Draw each segment.
+        let segments = [(0u32, left), (1, right), (2, up), (3, down)];
+        for (dir, style) in segments {
+            if style == 0 { continue; }
+            let is_double = style == 3;
+            let thickness = if style == 2 { heavy } else { thin };
+            draw_segment(&mut fill, dir, thickness, is_double);
+        }
+
         let info = self.pack_cell_bitmap(&bitmap, w, h);
         Some(info)
     }
