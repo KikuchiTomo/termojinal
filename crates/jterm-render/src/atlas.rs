@@ -19,7 +19,7 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             family: String::from("monospace"),
-            size: 14.0,
+            size: 16.0,
             line_height: 1.2,
         }
     }

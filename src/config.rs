@@ -5,8 +5,14 @@
 use serde::Deserialize;
 
 /// Top-level jterm configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct JtermConfig {
+    #[serde(default)]
+    pub font: FontSection,
+    #[serde(default)]
+    pub window: WindowSection,
+    #[serde(default)]
+    pub theme: ThemeSection,
     #[serde(default)]
     pub tab_bar: TabBarConfig,
 }
@@ -14,13 +20,117 @@ pub struct JtermConfig {
 impl Default for JtermConfig {
     fn default() -> Self {
         Self {
+            font: FontSection::default(),
+            window: WindowSection::default(),
+            theme: ThemeSection::default(),
             tab_bar: TabBarConfig::default(),
         }
     }
 }
 
+/// Theme/color configuration section (`[theme]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThemeSection {
+    #[serde(default = "default_bg")]
+    pub background: String,
+    #[serde(default = "default_fg")]
+    pub foreground: String,
+    #[serde(default = "default_cursor_color")]
+    pub cursor: String,
+    #[serde(default = "default_selection_bg")]
+    pub selection_bg: String,
+}
+
+fn default_bg() -> String { "#11111A".into() }
+fn default_fg() -> String { "#D9D9D9".into() }
+fn default_cursor_color() -> String { "#D9D9D9".into() }
+fn default_selection_bg() -> String { "#3A3A50".into() }
+
+impl Default for ThemeSection {
+    fn default() -> Self {
+        Self {
+            background: default_bg(),
+            foreground: default_fg(),
+            cursor: default_cursor_color(),
+            selection_bg: default_selection_bg(),
+        }
+    }
+}
+
+/// Parse a hex color string (#RRGGBB) to [f32; 4] RGBA.
+pub fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
+    let s = s.trim_start_matches('#');
+    if s.len() != 6 { return None; }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
+}
+
+/// Font configuration section (`[font]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FontSection {
+    #[serde(default = "default_font_family")]
+    pub family: String,
+    #[serde(default = "default_font_size")]
+    pub size: f32,
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
+}
+
+fn default_font_family() -> String { "monospace".into() }
+fn default_font_size() -> f32 { 16.0 }
+fn default_line_height() -> f32 { 1.2 }
+
+impl Default for FontSection {
+    fn default() -> Self {
+        Self {
+            family: default_font_family(),
+            size: default_font_size(),
+            line_height: default_line_height(),
+        }
+    }
+}
+
+/// Window configuration section (`[window]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WindowSection {
+    #[serde(default = "default_width")]
+    pub width: u32,
+    #[serde(default = "default_height")]
+    pub height: u32,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    #[serde(default = "default_padding_x")]
+    pub padding_x: f32,
+    #[serde(default = "default_padding_y")]
+    pub padding_y: f32,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
+}
+
+fn default_width() -> u32 { 960 }
+fn default_height() -> u32 { 640 }
+fn default_opacity() -> f32 { 1.0 }
+fn default_padding_x() -> f32 { 1.0 }
+fn default_padding_y() -> f32 { 0.5 }
+fn default_sidebar_width() -> f32 { 200.0 }
+
+impl Default for WindowSection {
+    fn default() -> Self {
+        Self {
+            width: default_width(),
+            height: default_height(),
+            opacity: default_opacity(),
+            padding_x: default_padding_x(),
+            padding_y: default_padding_y(),
+            sidebar_width: default_sidebar_width(),
+        }
+    }
+}
+
 /// Tab bar configuration section (`[tab_bar]`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TabBarConfig {
     /// Format string for tab title.
     ///

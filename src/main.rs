@@ -639,14 +639,16 @@ struct App {
     state: Option<AppState>,
     proxy: EventLoopProxy<UserEvent>,
     pty_buffers: Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+    config: Option<JtermConfig>,
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    fn new(proxy: EventLoopProxy<UserEvent>, config: JtermConfig) -> Self {
         Self {
             state: None,
             proxy,
             pty_buffers: Arc::new(Mutex::new(HashMap::new())),
+            config: Some(config),
         }
     }
 }
@@ -895,7 +897,10 @@ impl ApplicationHandler<UserEvent> for App {
 
         let attrs = WindowAttributes::default()
             .with_title("jterm")
-            .with_inner_size(LogicalSize::new(960, 640));
+            .with_inner_size(LogicalSize::new(
+                self.config.as_ref().map_or(960, |c| c.window.width),
+                self.config.as_ref().map_or(640, |c| c.window.height),
+            ));
 
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -906,7 +911,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
         };
 
-        let font_config = FontConfig::default();
+        let cfg = self.config.as_ref().map(|c| c.clone()).unwrap_or_default();
+        let font_config = FontConfig {
+            family: cfg.font.family.clone(),
+            size: cfg.font.size,
+            line_height: cfg.font.line_height,
+        };
         let renderer = match pollster::block_on(Renderer::new(window.clone(), &font_config)) {
             Ok(r) => r,
             Err(e) => {
@@ -968,7 +978,7 @@ impl ApplicationHandler<UserEvent> for App {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_drag: false,
             command_palette: CommandPalette::new(),
-            font_size: 14.0,
+            font_size: 16.0,
             search: None,
             workspace_infos: vec![WorkspaceInfo::new()],
             tab_drag: None,
@@ -993,6 +1003,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
         }
+
+        // Set Dock icon now that NSApplication is fully initialized.
+        set_dock_icon();
 
         // Enable IME after window is fully created and request initial redraw.
         let state = self.state.as_ref().unwrap();
@@ -3195,6 +3208,71 @@ fn sel_bounds_for(pane: &Pane) -> Option<((usize, usize), (usize, usize))> {
 }
 
 // ---------------------------------------------------------------------------
+// Window icon
+// ---------------------------------------------------------------------------
+
+/// Set the macOS Dock icon from an embedded PNG using raw objc messaging.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{class, msg_send, msg_send_id};
+    use objc2::rc::Id;
+    use objc2::runtime::NSObject;
+
+    // Load icon PNG and add ~18% transparent padding (Apple HIG standard).
+    let png_bytes = include_bytes!("../resources/Assets.xcassets/AppIcon.appiconset/256.png");
+    let padded = match add_icon_padding(png_bytes) {
+        Some(data) => data,
+        None => png_bytes.to_vec(),
+    };
+
+    unsafe {
+        let cls = class!(NSData);
+        let ptr = padded.as_ptr() as *const std::ffi::c_void;
+        let len = padded.len();
+        let data: Id<NSObject> = msg_send_id![
+            cls, dataWithBytes: ptr, length: len
+        ];
+
+        let cls = class!(NSImage);
+        let image: Option<Id<NSObject>> = msg_send_id![
+            msg_send_id![cls, alloc],
+            initWithData: &*data
+        ];
+
+        if let Some(image) = image {
+            let cls = class!(NSApplication);
+            let app: Id<NSObject> = msg_send_id![cls, sharedApplication];
+            let () = msg_send![&*app, setApplicationIconImage: &*image];
+            log::info!("dock icon set");
+        }
+    }
+}
+
+/// Add transparent padding around an icon PNG (~18% on each side per Apple HIG).
+#[cfg(target_os = "macos")]
+fn add_icon_padding(png_bytes: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png).ok()?;
+    let src = img.to_rgba8();
+
+    // Target: 1024x1024 canvas with icon at ~824x824 (80% of canvas), centered.
+    let canvas_size = 1024u32;
+    let icon_size = (canvas_size as f32 * 0.80) as u32;
+    let offset = (canvas_size - icon_size) / 2;
+
+    let resized = image::imageops::resize(&src, icon_size, icon_size, image::imageops::FilterType::Lanczos3);
+
+    let mut canvas = image::RgbaImage::new(canvas_size, canvas_size);
+    image::imageops::overlay(&mut canvas, &resized, offset as i64, offset as i64);
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    canvas.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(buf.into_inner())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_icon() {}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -3213,7 +3291,9 @@ fn main() {
     let event_loop = builder.build().expect("failed to create event loop");
 
     let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy);
+    let config = load_config();
+    log::info!("config: font.size={}, window={}x{}", config.font.size, config.window.width, config.window.height);
+    let mut app = App::new(proxy, config);
 
     if let Err(e) = event_loop.run_app(&mut app) {
         log::error!("event loop error: {e}");
