@@ -56,6 +56,10 @@ pub enum Action {
     Search,
     /// Open settings.
     OpenSettings,
+    /// Clear the screen (send ESC[2J ESC[H to PTY).
+    ClearScreen,
+    /// Clear scrollback + screen.
+    ClearScrollback,
     /// Force the key through to the PTY (bypass jterm).
     Passthrough,
     /// Quit the application.
@@ -119,6 +123,10 @@ impl Default for KeybindingConfig {
 
         // Search
         normal.insert("cmd+f".to_string(), Action::Search);
+
+        // Clear
+        normal.insert("cmd+k".to_string(), Action::ClearScrollback);
+        normal.insert("cmd+l".to_string(), Action::ClearScreen);
 
         // Font sizing
         normal.insert("cmd+=".to_string(), Action::FontIncrease);

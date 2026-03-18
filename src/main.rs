@@ -2154,6 +2154,21 @@ fn dispatch_action(
             }
             true
         }
+        Action::ClearScreen => {
+            let focused_id = active_tab(state).layout.focused();
+            if let Some(pane) = active_tab_mut(state).panes.get(&focused_id) {
+                let _ = pane.pty.write(b"\x1b[2J\x1b[H");
+            }
+            true
+        }
+        Action::ClearScrollback => {
+            let focused_id = active_tab(state).layout.focused();
+            if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                pane.terminal.clear_all();
+            }
+            state.window.request_redraw();
+            true
+        }
         Action::Quit => {
             event_loop.exit();
             true
