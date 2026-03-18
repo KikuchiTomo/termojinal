@@ -149,6 +149,68 @@ impl Atlas {
         self.glyphs.len()
     }
 
+    /// Try to draw block elements / shade characters procedurally.
+    /// Returns None if the character is not a block element.
+    fn try_procedural_block(&mut self, c: char) -> Option<GlyphInfo> {
+        let w = self.cell_w;
+        let h = self.cell_h;
+        let hw = w / 2; // half width
+        let hh = h / 2; // half height
+
+        // Define which region of the cell to fill: (x_start, y_start, x_end, y_end)
+        // relative to cell dimensions. Returns None for non-block chars.
+        let regions: Vec<(u32, u32, u32, u32)> = match c {
+            '█' => vec![(0, 0, w, h)],           // FULL BLOCK
+            '▀' => vec![(0, 0, w, hh)],          // UPPER HALF
+            '▄' => vec![(0, hh, w, h)],          // LOWER HALF
+            '▌' => vec![(0, 0, hw, h)],          // LEFT HALF
+            '▐' => vec![(hw, 0, w, h)],          // RIGHT HALF
+            '▖' => vec![(0, hh, hw, h)],         // QUADRANT LOWER LEFT
+            '▗' => vec![(hw, hh, w, h)],         // QUADRANT LOWER RIGHT
+            '▘' => vec![(0, 0, hw, hh)],         // QUADRANT UPPER LEFT
+            '▝' => vec![(hw, 0, w, hh)],         // QUADRANT UPPER RIGHT
+            '▙' => vec![(0, 0, hw, h), (hw, hh, w, h)],   // UL + LL + LR
+            '▛' => vec![(0, 0, w, hh), (0, hh, hw, h)],   // UL + UR + LL
+            '▜' => vec![(0, 0, w, hh), (hw, hh, w, h)],   // UL + UR + LR
+            '▟' => vec![(hw, 0, w, hh), (0, hh, w, h)],   // UR + LL + LR
+            _ => return None,
+        };
+
+        let shade = match c {
+            '░' => Some(64u8),    // LIGHT SHADE ~25%
+            '▒' => Some(128u8),   // MEDIUM SHADE ~50%
+            '▓' => Some(192u8),   // DARK SHADE ~75%
+            _ => None,
+        };
+
+        // Shade characters fill entire cell with a specific alpha.
+        if let Some(alpha) = shade {
+            let mut bitmap = vec![0u8; (w * h) as usize];
+            for pixel in &mut bitmap {
+                *pixel = alpha;
+            }
+            let info = self.pack_cell_bitmap(&bitmap, w, h);
+            return Some(info);
+        }
+
+        if regions.is_empty() {
+            return None;
+        }
+
+        let mut bitmap = vec![0u8; (w * h) as usize];
+        for (x0, y0, x1, y1) in &regions {
+            for y in *y0..*y1 {
+                for x in *x0..*x1 {
+                    if x < w && y < h {
+                        bitmap[(y * w + x) as usize] = 255;
+                    }
+                }
+            }
+        }
+        let info = self.pack_cell_bitmap(&bitmap, w, h);
+        Some(info)
+    }
+
     /// Returns true if the character is in a range that may need a fallback font:
     /// Private Use Area (Nerd Font icons), box-drawing, block elements, or CJK.
     fn needs_fallback_check(c: char) -> bool {
@@ -175,6 +237,13 @@ impl Atlas {
     /// Rasterize a glyph, place it at the correct bearing offset within a
     /// cell-sized bitmap, and pack that bitmap into the atlas.
     fn rasterize_glyph(&mut self, c: char) -> GlyphInfo {
+        // Block elements and shade characters: draw procedurally to fill cells
+        // perfectly (font glyphs leave gaps that break ASCII art).
+        if let Some(info) = self.try_procedural_block(c) {
+            self.glyphs.insert(c, info);
+            return info;
+        }
+
         let (metrics, bitmap) = self.font.rasterize(c, self.font_size);
 
         let glyph_w = metrics.width as u32;
