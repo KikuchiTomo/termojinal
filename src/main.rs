@@ -1467,7 +1467,18 @@ impl ApplicationHandler<UserEvent> for App {
                         };
                         state.window.set_cursor(icon);
                     } else {
-                        state.window.set_cursor(CursorIcon::Text);
+                        // Context-aware cursor: sidebar → pointer, tab bar → pointer/hand, pane → text
+                        let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                        let tab_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+                        if mx < sidebar_w {
+                            state.window.set_cursor(CursorIcon::Pointer);
+                        } else if my < tab_h {
+                            // In tab bar: hand on close buttons, pointer elsewhere
+                            let cursor = tab_bar_cursor(state, mx, my);
+                            state.window.set_cursor(cursor);
+                        } else {
+                            state.window.set_cursor(CursorIcon::Text);
+                        }
                     }
 
                     // --- Original mouse handling (motion reporting / selection) ---
@@ -2529,6 +2540,40 @@ fn close_focused_pane(
     }
 }
 
+/// Determine the cursor icon for a position within the tab bar.
+fn tab_bar_cursor(state: &AppState, mx: f32, _my: f32) -> CursorIcon {
+    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let local_cx = mx - sidebar_w;
+    if local_cx < 0.0 {
+        return CursorIcon::Default;
+    }
+
+    let cell_w = state.renderer.cell_size().width;
+    let max_tab_w = state.config.tab_bar.max_width;
+    let ws = &state.workspaces[state.active_workspace];
+    let mut tab_x: f32 = 0.0;
+
+    for tab in ws.tabs.iter() {
+        let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
+        if local_cx >= tab_x && local_cx < tab_x + tab_w {
+            // Check if over close button (rightmost 1.5 cells)
+            let close_start = tab_x + tab_w - 1.5 * cell_w;
+            if local_cx >= close_start {
+                return CursorIcon::Pointer;
+            }
+            return CursorIcon::Default;
+        }
+        tab_x += tab_w;
+    }
+
+    // Over new-tab button
+    if local_cx >= tab_x && local_cx < tab_x + state.config.tab_bar.new_tab_button_width {
+        return CursorIcon::Pointer;
+    }
+
+    CursorIcon::Default
+}
+
 /// Result of clicking in the tab bar.
 enum TabBarClickResult {
     /// Clicked on a tab body — switch to it (and potentially start drag).
@@ -2663,10 +2708,17 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let bar_x = sidebar_w as u32;
     let bar_w = (phys_w - sidebar_w).max(0.0) as u32;
     let bar_h = state.config.tab_bar.height as u32;
-    let accent_h: u32 = 2; // 2px accent underline
+    let accent_h = state.config.tab_bar.accent_height;
+    let tab_pad_y = state.config.tab_bar.padding_y;
 
     // Draw tab bar background.
     state.renderer.submit_separator(view, bar_x, 0, bar_w, bar_h, tab_bar_bg);
+
+    // Draw bottom border if enabled.
+    if state.config.tab_bar.bottom_border {
+        let border_color = color_or(&state.config.tab_bar.bottom_border_color, [0.16, 0.16, 0.20, 1.0]);
+        state.renderer.submit_separator(view, bar_x, bar_h.saturating_sub(1), bar_w, 1, border_color);
+    }
 
     // Draw each tab in the current workspace.
     let ws_idx = state.active_workspace;
@@ -2674,7 +2726,7 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let active_tab_idx = ws.active_tab;
     let num_tabs = ws.tabs.len();
     let mut tab_x: f32 = sidebar_w;
-    let text_y = (state.config.tab_bar.height - cell_h) / 2.0;
+    let text_y = tab_pad_y + (state.config.tab_bar.height - 2.0 * tab_pad_y - cell_h) / 2.0;
 
     for (i, tab) in ws.tabs.iter().enumerate() {
         let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
@@ -2847,10 +2899,27 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         let info = state.workspace_infos.get(i);
         let ws_color = WORKSPACE_COLORS[i % WORKSPACE_COLORS.len()];
 
+        // Get additional workspace info: cwd and pane count.
+        let ws_cwd = {
+            let ws = &state.workspaces[i];
+            let tab = &ws.tabs[ws.active_tab];
+            let fid = tab.layout.focused();
+            tab.panes.get(&fid)
+                .map(|p| p.terminal.osc.cwd.clone())
+                .unwrap_or_default()
+        };
+        let ws_pane_count: usize = state.workspaces[i].tabs.iter()
+            .map(|t| t.panes.len())
+            .sum();
+
         // Calculate entry height for active highlight background.
         let has_git = info.map_or(false, |inf| inf.git_branch.is_some());
         let has_ports = info.map_or(false, |inf| !inf.ports.is_empty());
+        let has_cwd = !ws_cwd.is_empty();
         let mut content_h = cell_h; // name line
+        if has_cwd {
+            content_h += info_line_gap + cell_h; // cwd line
+        }
         if has_git {
             content_h += info_line_gap + cell_h; // git info line
         }
@@ -2912,10 +2981,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             state.workspaces[i].name.clone()
         };
 
-        // Tab count badge: [N] if workspace has >1 tab.
+        // Tab/pane count badge.
         let tab_count = state.workspaces[i].tabs.len();
-        let badge = if tab_count > 1 {
-            format!(" [{}]", tab_count)
+        let badge = if tab_count > 1 || ws_pane_count > 1 {
+            let pane_str = if ws_pane_count > 1 { format!(" \u{25A8}{ws_pane_count}") } else { String::new() };
+            format!(" [{tab_count}\u{25AB}{pane_str}]")
         } else {
             String::new()
         };
@@ -2927,7 +2997,34 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
 
         let mut line_y = entry_y + cell_h;
 
-        // --- Git info line (below name) ---
+        // --- CWD line (below name) ---
+        if has_cwd {
+            line_y += info_line_gap;
+            let cwd_short = if let Ok(home) = std::env::var("HOME") {
+                if ws_cwd.starts_with(&home) {
+                    format!("~{}", &ws_cwd[home.len()..])
+                } else {
+                    ws_cwd.clone()
+                }
+            } else {
+                ws_cwd.clone()
+            };
+            // Show only last 2 path components
+            let cwd_display: String = {
+                let parts: Vec<&str> = cwd_short.rsplitn(3, '/').collect();
+                if parts.len() >= 2 {
+                    format!("\u{1F4C1} {}/{}", parts[1], parts[0])
+                } else {
+                    format!("\u{1F4C1} {cwd_short}")
+                }
+            };
+            let cwd_trimmed: String = cwd_display.chars().take(max_chars).collect();
+            let indent = text_left + cell_w;
+            state.renderer.render_text(view, &cwd_trimmed, indent, line_y, dim_fg, bg);
+            line_y += cell_h;
+        }
+
+        // --- Git info line (below cwd) ---
         if let Some(info) = info {
             if let Some(ref branch) = info.git_branch {
                 line_y += info_line_gap;
@@ -3153,26 +3250,29 @@ fn render_status_bar(
         status_bg,
     );
 
-    // Optional: draw a 1px top border for visual separation.
-    let border_color = [
-        status_bg[0] + 0.08,
-        status_bg[1] + 0.08,
-        status_bg[2] + 0.08,
-        1.0,
-    ];
-    state.renderer.submit_separator(
-        view,
-        bar_x as u32,
-        bar_y as u32,
-        bar_w as u32,
-        1,
-        border_color,
-    );
+    // Draw top border if enabled.
+    if cfg.top_border {
+        let border_color = color_or(&cfg.top_border_color, [
+            status_bg[0] + 0.08,
+            status_bg[1] + 0.08,
+            status_bg[2] + 0.08,
+            1.0,
+        ]);
+        state.renderer.submit_separator(
+            view,
+            bar_x as u32,
+            bar_y as u32,
+            bar_w as u32,
+            1,
+            border_color,
+        );
+    }
 
     let text_y = bar_y + (bar_h - cell_h) / 2.0;
+    let pad_x = cfg.padding_x;
 
     // Render left-aligned segments.
-    let mut cursor_x = bar_x;
+    let mut cursor_x = bar_x + pad_x;
     for seg in &cfg.left {
         let expanded = expand_status_variables(&seg.content, &ctx);
         if segment_is_empty(&expanded) {
@@ -3217,7 +3317,7 @@ fn render_status_bar(
         .map(|(text, _, _)| text.len() as f32 * cell_w)
         .sum();
 
-    let mut right_x = bar_x + bar_w - total_right_w;
+    let mut right_x = bar_x + bar_w - total_right_w - pad_x;
     for (text, fg, bg) in &right_segments {
         let seg_w = text.len() as f32 * cell_w;
 
@@ -3254,6 +3354,21 @@ fn render_frame(state: &mut AppState) -> Result<(), jterm_render::RenderError> {
 
     // Clear entire surface.
     state.renderer.clear_surface(&view);
+
+    // Fill content area with terminal background (prevents transparent padding).
+    // Apply bg_opacity so transparency still works.
+    {
+        let mut term_bg = color_or(&state.config.theme.background, [0.067, 0.067, 0.09, 1.0]);
+        term_bg[3] = state.config.window.opacity;
+        let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+        let tab_h = if has_tab_bar { state.config.tab_bar.height } else { 0.0 };
+        let status_h = if state.config.status_bar.enabled { state.config.status_bar.height } else { 0.0 };
+        let content_x = sidebar_w as u32;
+        let content_y = tab_h as u32;
+        let content_w = (phys_w - sidebar_w).max(0.0) as u32;
+        let content_h = (phys_h - tab_h - status_h).max(0.0) as u32;
+        state.renderer.submit_separator(&view, content_x, content_y, content_w, content_h, term_bg);
+    }
 
     // Render sidebar if visible.
     if state.sidebar_visible {

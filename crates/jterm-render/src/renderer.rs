@@ -1577,6 +1577,7 @@ impl Renderer {
         for c in text.chars() {
             let glyph = self.atlas.get_glyph(c);
             let char_width = UnicodeWidthChar::width(c).unwrap_or(1);
+            let width_scale = if char_width > 1 { char_width as f32 } else { 1.0 };
             instances.push(CellInstance {
                 grid_pos: [col as f32, 0.0],
                 atlas_uv: [
@@ -1588,7 +1589,7 @@ impl Renderer {
                 fg_color: fg,
                 bg_color: bg,
                 flags: 0,
-                cell_width_scale: 1.0,
+                cell_width_scale: width_scale,
                 _pad: [0; 2],
             });
             col += char_width;

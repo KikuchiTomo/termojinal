@@ -242,7 +242,7 @@ pub struct SidebarConfig {
     pub info_line_gap: f32,
 }
 
-fn default_sidebar_width() -> f32 { 200.0 }
+fn default_sidebar_width() -> f32 { 240.0 }
 fn default_sidebar_min_width() -> f32 { 120.0 }
 fn default_sidebar_max_width() -> f32 { 400.0 }
 fn default_sidebar_bg() -> String { "#0D0D12".into() }
@@ -320,12 +320,23 @@ pub struct TabBarConfig {
     pub close_button_fg: String,
     #[serde(default = "default_tab_new_button_fg")]
     pub new_button_fg: String,
+    #[allow(dead_code)]
+    #[serde(default = "default_tab_padding_x")]
+    pub padding_x: f32,
+    #[serde(default = "default_tab_padding_y")]
+    pub padding_y: f32,
+    #[serde(default = "default_tab_accent_height")]
+    pub accent_height: u32,
+    #[serde(default = "default_tab_bottom_border")]
+    pub bottom_border: bool,
+    #[serde(default = "default_tab_bottom_border_color")]
+    pub bottom_border_color: String,
 }
 
 fn default_tab_format() -> String { "{title|cwd_base|Tab {index}}".into() }
 fn default_tab_position() -> String { "top".into() }
 fn default_max_width() -> f32 { 200.0 }
-fn default_tab_bar_height() -> f32 { 24.0 }
+fn default_tab_bar_height() -> f32 { 36.0 }
 fn default_min_tab_width() -> f32 { 60.0 }
 fn default_new_tab_button_width() -> f32 { 32.0 }
 fn default_tab_bar_bg() -> String { "#1A1A1F".into() }
@@ -336,6 +347,11 @@ fn default_tab_accent_color() -> String { "#4D8CFF".into() }
 fn default_tab_separator_color() -> String { "#383840".into() }
 fn default_tab_close_button_fg() -> String { "#808088".into() }
 fn default_tab_new_button_fg() -> String { "#808088".into() }
+fn default_tab_padding_x() -> f32 { 8.0 }
+fn default_tab_padding_y() -> f32 { 4.0 }
+fn default_tab_accent_height() -> u32 { 2 }
+fn default_tab_bottom_border() -> bool { true }
+fn default_tab_bottom_border_color() -> String { "#2A2A34".into() }
 
 impl Default for TabBarConfig {
     fn default() -> Self {
@@ -355,6 +371,11 @@ impl Default for TabBarConfig {
             separator_color: default_tab_separator_color(),
             close_button_fg: default_tab_close_button_fg(),
             new_button_fg: default_tab_new_button_fg(),
+            padding_x: default_tab_padding_x(),
+            padding_y: default_tab_padding_y(),
+            accent_height: default_tab_accent_height(),
+            bottom_border: default_tab_bottom_border(),
+            bottom_border_color: default_tab_bottom_border_color(),
         }
     }
 }
@@ -520,6 +541,12 @@ pub struct StatusBarConfig {
     pub height: f32,
     #[serde(default = "default_status_bg")]
     pub background: String,
+    #[serde(default = "default_status_padding_x")]
+    pub padding_x: f32,
+    #[serde(default = "default_status_top_border")]
+    pub top_border: bool,
+    #[serde(default = "default_status_top_border_color")]
+    pub top_border_color: String,
     #[serde(default = "default_left_segments")]
     pub left: Vec<StatusSegment>,
     #[serde(default = "default_right_segments")]
@@ -527,8 +554,11 @@ pub struct StatusBarConfig {
 }
 
 fn default_status_enabled() -> bool { true }
-fn default_status_height() -> f32 { 24.0 }
-fn default_status_bg() -> String { "#1A1A24".into() }
+fn default_status_height() -> f32 { 28.0 }
+fn default_status_bg() -> String { "#141420".into() }
+fn default_status_padding_x() -> f32 { 8.0 }
+fn default_status_top_border() -> bool { true }
+fn default_status_top_border_color() -> String { "#2A2A34".into() }
 
 fn default_left_segments() -> Vec<StatusSegment> {
     vec![
@@ -554,6 +584,9 @@ impl Default for StatusBarConfig {
             enabled: default_status_enabled(),
             height: default_status_height(),
             background: default_status_bg(),
+            padding_x: default_status_padding_x(),
+            top_border: default_status_top_border(),
+            top_border_color: default_status_top_border_color(),
             left: default_left_segments(),
             right: default_right_segments(),
         }
