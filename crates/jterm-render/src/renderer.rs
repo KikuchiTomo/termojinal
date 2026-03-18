@@ -122,6 +122,8 @@ pub struct Renderer {
     emoji_texture_version: usize,
     /// Whether the cursor blink is in the "on" state.
     pub cursor_blink_on: bool,
+    /// Background opacity (0.0 = fully transparent, 1.0 = opaque).
+    pub bg_opacity: f32,
 
     // --- Dirty rendering: per-pane cache ---
     pane_caches: HashMap<PaneKey, PaneCache>,
@@ -185,7 +187,16 @@ impl Renderer {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            alpha_mode: {
+                let caps = surface.get_capabilities(&adapter);
+                if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+                    wgpu::CompositeAlphaMode::PostMultiplied
+                } else if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                    wgpu::CompositeAlphaMode::PreMultiplied
+                } else {
+                    wgpu::CompositeAlphaMode::Auto
+                }
+            },
             view_formats: vec![],
         };
         surface.configure(&device, &surface_config);
@@ -504,6 +515,7 @@ impl Renderer {
             emoji_texture,
             emoji_texture_version: 0,
             cursor_blink_on: true,
+            bg_opacity: 1.0,
             pane_caches: HashMap::new(),
             current_pane_key: 0,
             image_renderer,
@@ -621,11 +633,20 @@ impl Renderer {
 
             let width_scale = if cell.width > 1 { cell.width as f32 } else { 1.0 };
 
+            // Apply background opacity: default bg gets transparent, colored bg stays opaque.
+            let mut bg_final = bg;
+            if bg == color_convert::DEFAULT_BG {
+                bg_final[0] *= self.bg_opacity;
+                bg_final[1] *= self.bg_opacity;
+                bg_final[2] *= self.bg_opacity;
+                bg_final[3] = self.bg_opacity;
+            }
+
             row_instances.push(CellInstance {
                 grid_pos: [col as f32, row as f32],
                 atlas_uv: [glyph.atlas_x, glyph.atlas_y, glyph.atlas_w, glyph.atlas_h],
                 fg_color: fg,
-                bg_color: bg,
+                bg_color: bg_final,
                 flags,
                 cell_width_scale: width_scale,
                 _pad: [0; 2],
@@ -1007,10 +1028,10 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: color_convert::DEFAULT_BG[0] as f64,
-                            g: color_convert::DEFAULT_BG[1] as f64,
-                            b: color_convert::DEFAULT_BG[2] as f64,
-                            a: 1.0,
+                            r: (color_convert::DEFAULT_BG[0] * self.bg_opacity) as f64,
+                            g: (color_convert::DEFAULT_BG[1] * self.bg_opacity) as f64,
+                            b: (color_convert::DEFAULT_BG[2] * self.bg_opacity) as f64,
+                            a: self.bg_opacity as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },

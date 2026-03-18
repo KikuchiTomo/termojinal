@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 /// Top-level jterm configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct JtermConfig {
     #[serde(default)]
     pub font: FontSection,
@@ -33,6 +34,7 @@ impl Default for JtermConfig {
 
 /// Theme/color configuration section (`[theme]`).
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct ThemeSection {
     #[serde(default = "default_bg")]
     pub background: String,
@@ -97,6 +99,7 @@ impl Default for FontSection {
 
 /// Window configuration section (`[window]`).
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct WindowSection {
     #[serde(default = "default_width")]
     pub width: u32,

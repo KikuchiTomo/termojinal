@@ -1026,12 +1026,16 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
 
+        let opacity = self.config.as_ref().map_or(1.0, |c| c.window.opacity);
+        let transparent = opacity < 1.0;
+
         let attrs = WindowAttributes::default()
             .with_title("jterm")
             .with_inner_size(LogicalSize::new(
                 self.config.as_ref().map_or(960, |c| c.window.width),
                 self.config.as_ref().map_or(640, |c| c.window.height),
-            ));
+            ))
+            .with_transparent(transparent);
 
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -1048,7 +1052,7 @@ impl ApplicationHandler<UserEvent> for App {
             size: cfg.font.size,
             line_height: cfg.font.line_height,
         };
-        let renderer = match pollster::block_on(Renderer::new(window.clone(), &font_config)) {
+        let mut renderer = match pollster::block_on(Renderer::new(window.clone(), &font_config)) {
             Ok(r) => r,
             Err(e) => {
                 log::error!("failed to create renderer: {e}");
@@ -1056,6 +1060,9 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
         };
+
+        // Set background opacity from config.
+        renderer.bg_opacity = opacity;
 
         let size = window.inner_size();
         let phys_w = size.width as f32;
