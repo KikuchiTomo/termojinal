@@ -102,6 +102,8 @@ impl Default for KeybindingConfig {
         normal.insert("cmd+d".to_string(), Action::SplitRight);
         normal.insert("cmd+shift+d".to_string(), Action::SplitDown);
         normal.insert("cmd+shift+enter".to_string(), Action::ZoomPane);
+        normal.insert("cmd+]".to_string(), Action::NextPane);
+        normal.insert("cmd+[".to_string(), Action::PrevPane);
 
         // Tab management
         normal.insert("cmd+t".to_string(), Action::NewTab);
