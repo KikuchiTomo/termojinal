@@ -1800,6 +1800,9 @@ impl ApplicationHandler<UserEvent> for App {
         // Set Dock icon now that NSApplication is fully initialized.
         set_dock_icon();
 
+        // Initialize notification system (sets bundle ID for app icon in notifications).
+        notification::init();
+
         // Enable IME after window is fully created and request initial redraw.
         let state = self.state.as_ref().unwrap();
         state.window.set_ime_allowed(true);
