@@ -31,7 +31,6 @@ jterm-session = { path = "crates/jterm-session" }
 jterm-render = { path = "crates/jterm-render" }
 jterm-layout = { path = "crates/jterm-layout" }
 jterm-ipc = { path = "crates/jterm-ipc" }
-jterm-claude = { path = "crates/jterm-claude" }
 log = "0.4"
 env_logger = "0.11"
 nix = { version = "0.29", features = ["signal", "term"] }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use unicode_width::UnicodeWidthChar;
 
 use crate::atlas::{Atlas, CellSize, FontConfig};
-use crate::color_convert;
+use crate::color_convert::{self, ThemePalette};
 use crate::emoji_atlas::{self, EmojiAtlas};
 use crate::image_render::ImageRenderer;
 
@@ -136,6 +136,8 @@ pub struct Renderer {
     pub scrollbar_thumb_opacity: f32,
     /// Scrollbar track opacity.
     pub scrollbar_track_opacity: f32,
+    /// Theme palette for ANSI 16-color overrides and default fg/bg.
+    pub theme_palette: ThemePalette,
 
     // --- Dirty rendering: per-pane cache ---
     pane_caches: HashMap<PaneKey, PaneCache>,
@@ -540,6 +542,7 @@ impl Renderer {
             preedit_bg: [0.15, 0.15, 0.20, 1.0],
             scrollbar_thumb_opacity: 0.5,
             scrollbar_track_opacity: 0.1,
+            theme_palette: ThemePalette::default(),
             pane_caches: HashMap::new(),
             current_pane_key: 0,
             image_renderer,
@@ -608,8 +611,8 @@ impl Renderer {
                 (self.atlas.get_glyph(c), false)
             };
 
-            let fg = color_convert::color_to_rgba(cell.fg, true);
-            let bg = color_convert::color_to_rgba(cell.bg, false);
+            let fg = color_convert::color_to_rgba_themed(cell.fg, true, &self.theme_palette);
+            let bg = color_convert::color_to_rgba_themed(cell.bg, false, &self.theme_palette);
 
             let mut flags = cell.attrs.bits() as u32;
 
@@ -660,8 +663,8 @@ impl Renderer {
             // In alternate screen mode (TUI apps like neovim), never make bg transparent
             // — respect the app's background color.
             let mut bg_final = bg;
-            if !terminal.modes.alternate_screen && bg == color_convert::DEFAULT_BG {
-                // Use the configured default_bg (from theme) instead of hardcoded DEFAULT_BG.
+            if !terminal.modes.alternate_screen && bg == self.theme_palette.bg {
+                // Use the configured default_bg (from theme) with opacity applied.
                 bg_final = self.default_bg;
                 bg_final[3] = self.bg_opacity;
             }
@@ -1191,7 +1194,7 @@ impl Renderer {
         let cursor_col = terminal.cursor_col;
         let cursor_row = terminal.cursor_row;
 
-        let fg = color_convert::DEFAULT_FG;
+        let fg = self.theme_palette.fg;
         let bg = self.preedit_bg;
 
         let mut col_offset: usize = 0;
@@ -1822,6 +1825,16 @@ impl Renderer {
         } else {
             false
         }
+    }
+
+    /// Update the theme palette for live theme switching.
+    ///
+    /// Replaces the current palette and clears all per-pane render caches
+    /// so that the next frame is fully re-rendered with the new colors.
+    pub fn set_theme(&mut self, palette: ThemePalette) {
+        self.default_bg = palette.bg;
+        self.theme_palette = palette;
+        self.pane_caches.clear();
     }
 
     /// Handle a window resize.

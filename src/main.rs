@@ -1,17 +1,23 @@
 //! jterm — GPU-accelerated multi-pane terminal emulator.
 
+mod allow_flow;
+mod appearance;
+mod command_ui;
 mod config;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use config::{color_or, format_tab_title, load_config, parse_hex_color, JtermConfig};
+use config::{color_or, format_tab_title, load_config, parse_hex_color, resolve_theme, JtermConfig};
 
+use jterm_ipc::command_loader::{self, LoadedCommand};
 use jterm_ipc::keybinding::{Action, KeybindingConfig};
+
+use command_ui::{CommandExecution, CommandKeyResult, CommandUIState};
 use jterm_layout::{Direction, LayoutTree, PaneId, SplitDirection};
 use jterm_pty::{Pty, PtyConfig, PtySize};
-use jterm_render::{FontConfig, Renderer};
+use jterm_render::{FontConfig, Renderer, ThemePalette};
 use jterm_vt::{ClipboardEvent, MouseMode, Terminal};
 
 use winit::application::ApplicationHandler;
@@ -122,6 +128,11 @@ impl CommandPalette {
                 name: "Search".to_string(),
                 description: "Find in terminal".to_string(),
                 action: Action::Search,
+            },
+            PaletteCommand {
+                name: "Allow Flow Panel".to_string(),
+                description: "Toggle AI permission panel".to_string(),
+                action: Action::AllowFlowPanel,
             },
         ];
         let filtered: Vec<usize> = (0..commands.len()).collect();
@@ -941,6 +952,12 @@ struct AppState {
     status_collector: AsyncStatusCollector,
     /// Current display scale factor (e.g. 2.0 for Retina, 1.0 for FHD).
     scale_factor: f64,
+    /// Allow Flow UI state for AI agent permission management.
+    allow_flow: allow_flow::AllowFlowUI,
+    /// Active command execution (None when showing the palette action list).
+    command_execution: Option<CommandExecution>,
+    /// Loaded external commands (cached at startup).
+    external_commands: Vec<LoadedCommand>,
 }
 
 /// Helper to access the active workspace immutably.
@@ -1330,10 +1347,37 @@ impl ApplicationHandler<UserEvent> for App {
             }
         };
 
+        // Resolve theme (with auto-switch if enabled).
+        let current_appearance = appearance::detect_macos_appearance();
+        let effective_theme = resolve_theme(&cfg, current_appearance);
+
+        // Build theme palette from effective theme and apply to renderer.
+        let palette = ThemePalette::from_theme_colors(
+            &effective_theme.background,
+            &effective_theme.foreground,
+            &effective_theme.black,
+            &effective_theme.red,
+            &effective_theme.green,
+            &effective_theme.yellow,
+            &effective_theme.blue,
+            &effective_theme.magenta,
+            &effective_theme.cyan,
+            &effective_theme.white,
+            &effective_theme.bright_black,
+            &effective_theme.bright_red,
+            &effective_theme.bright_green,
+            &effective_theme.bright_yellow,
+            &effective_theme.bright_blue,
+            &effective_theme.bright_magenta,
+            &effective_theme.bright_cyan,
+            &effective_theme.bright_white,
+        );
+        renderer.set_theme(palette);
+
         // Set renderer fields from config.
-        renderer.default_bg = color_or(&cfg.theme.background, [0.067, 0.067, 0.09, 1.0]);
+        renderer.default_bg = color_or(&effective_theme.background, [0.067, 0.067, 0.09, 1.0]);
         renderer.bg_opacity = opacity;
-        renderer.preedit_bg = color_or(&cfg.theme.preedit_bg, [0.15, 0.15, 0.20, 1.0]);
+        renderer.preedit_bg = color_or(&effective_theme.preedit_bg, [0.15, 0.15, 0.20, 1.0]);
         renderer.scrollbar_thumb_opacity = cfg.pane.scrollbar_thumb_opacity;
         renderer.scrollbar_track_opacity = cfg.pane.scrollbar_track_opacity;
 
@@ -1389,6 +1433,21 @@ impl ApplicationHandler<UserEvent> for App {
 
         let keybindings = KeybindingConfig::load();
 
+        // Load external commands from ~/.config/jterm/commands/.
+        let external_commands = command_loader::load_commands();
+        log::info!("loaded {} external commands", external_commands.len());
+
+        // Build the command palette with external commands appended.
+        let mut palette = CommandPalette::new();
+        for cmd in &external_commands {
+            palette.commands.push(PaletteCommand {
+                name: cmd.meta.name.clone(),
+                description: cmd.meta.description.clone(),
+                action: Action::Command(cmd.meta.name.clone()),
+            });
+        }
+        palette.update_filter();
+
         self.state = Some(AppState {
             window,
             renderer,
@@ -1402,7 +1461,7 @@ impl ApplicationHandler<UserEvent> for App {
             sidebar_visible: true,
             sidebar_width: cfg.sidebar.width,
             sidebar_drag: false,
-            command_palette: CommandPalette::new(),
+            command_palette: palette,
             font_size: cfg.font.size,
             search: None,
             workspace_infos: vec![WorkspaceInfo::new()],
@@ -1412,6 +1471,9 @@ impl ApplicationHandler<UserEvent> for App {
             pane_git_cache: PaneGitCache::new(),
             status_collector: AsyncStatusCollector::new(self.proxy.clone()),
             scale_factor: initial_scale_factor,
+            allow_flow: allow_flow::AllowFlowUI::new(cfg.allow_flow.clone()),
+            command_execution: None,
+            external_commands,
         });
 
         // Detect ProMotion display and try low-latency present mode.
@@ -1535,6 +1597,23 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
+                // Active command execution intercepts ALL keyboard input.
+                if state.command_execution.is_some() && state.command_palette.visible {
+                    let result = state.command_execution.as_mut().unwrap().handle_key(&event);
+                    match result {
+                        CommandKeyResult::Consumed => {
+                            state.window.request_redraw();
+                            return;
+                        }
+                        CommandKeyResult::Cancelled | CommandKeyResult::Dismiss => {
+                            state.command_execution = None;
+                            state.command_palette.visible = false;
+                            state.window.request_redraw();
+                            return;
+                        }
+                    }
+                }
+
                 // Command palette intercepts ALL keyboard input when visible.
                 if state.command_palette.visible {
                     match state.command_palette.handle_key(&event) {
@@ -1579,6 +1658,32 @@ impl ApplicationHandler<UserEvent> for App {
                         SearchKeyResult::Pass => {
                             // Escape was not pressed, fall through.
                         }
+                    }
+                }
+
+                // Allow Flow: intercept Y/N/A/Esc when pending requests
+                // exist for the active workspace.
+                if state.allow_flow.has_pending_for_workspace(state.active_workspace) {
+                    let active_ws = state.active_workspace;
+                    // Build a map of pane_id -> Pty pointers for writing responses.
+                    let mut pane_ptys: std::collections::HashMap<u64, *mut Pty> = std::collections::HashMap::new();
+                    for ws in &mut state.workspaces {
+                        for tab in &mut ws.tabs {
+                            for (pid, pane) in &mut tab.panes {
+                                pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
+                            }
+                        }
+                    }
+
+                    let consumed = state.allow_flow.process_key(
+                        &event.logical_key,
+                        active_ws,
+                        &mut pane_ptys,
+                    );
+
+                    if consumed {
+                        state.window.request_redraw();
+                        return;
                     }
                 }
 
@@ -2159,7 +2264,57 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
 
+            WindowEvent::ThemeChanged(_winit_theme) => {
+                // macOS appearance changed (Dark <-> Light).
+                if state.config.theme.auto_switch {
+                    let new_appearance = appearance::detect_macos_appearance();
+                    let effective_theme = resolve_theme(&state.config, new_appearance);
+                    let palette = ThemePalette::from_theme_colors(
+                        &effective_theme.background,
+                        &effective_theme.foreground,
+                        &effective_theme.black,
+                        &effective_theme.red,
+                        &effective_theme.green,
+                        &effective_theme.yellow,
+                        &effective_theme.blue,
+                        &effective_theme.magenta,
+                        &effective_theme.cyan,
+                        &effective_theme.white,
+                        &effective_theme.bright_black,
+                        &effective_theme.bright_red,
+                        &effective_theme.bright_green,
+                        &effective_theme.bright_yellow,
+                        &effective_theme.bright_blue,
+                        &effective_theme.bright_magenta,
+                        &effective_theme.bright_cyan,
+                        &effective_theme.bright_white,
+                    );
+                    state.renderer.set_theme(palette);
+                    state.renderer.default_bg =
+                        color_or(&effective_theme.background, [0.067, 0.067, 0.09, 1.0]);
+                    state.renderer.preedit_bg =
+                        color_or(&effective_theme.preedit_bg, [0.15, 0.15, 0.20, 1.0]);
+                    log::info!("theme switched to {:?}", new_appearance);
+                    state.window.request_redraw();
+                }
+            }
+
             WindowEvent::RedrawRequested => {
+                // Poll active command execution for new messages.
+                if let Some(ref mut exec) = state.command_execution {
+                    if exec.poll() {
+                        // State changed; check if the command completed.
+                        if exec.is_done() {
+                            // Check for macOS notification on Done.
+                            if let CommandUIState::Done(Some(ref msg)) = exec.ui_state {
+                                log::info!("command '{}' done: {}", exec.command_name, msg);
+                            }
+                        }
+                    }
+                    // Keep requesting redraws while a command is active
+                    // so we poll for new messages.
+                    state.window.request_redraw();
+                }
                 if let Err(e) = render_frame(state) {
                     log::error!("render error: {e}");
                 }
@@ -2230,6 +2385,60 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                             }
                             break 'outer_clip;
+                        }
+                    }
+                }
+
+                // ---------------------------------------------------------------
+                // Allow Flow: check for OSC notifications and scan output
+                // ---------------------------------------------------------------
+                if total > 0 {
+                    // Check for Allow Flow notifications via OSC 9/99/777.
+                    let ws_idx = found_ws_idx.unwrap_or(state.active_workspace);
+                    let mut has_notification = false;
+                    'outer_osc: for ws in &mut state.workspaces {
+                        for tab in &mut ws.tabs {
+                            if let Some(pane) = tab.panes.get_mut(&pane_id) {
+                                if let Some(notification) = pane.terminal.osc.last_notification.take() {
+                                    if let Some(_req) = state.allow_flow.engine.process_osc(
+                                        pane_id, ws_idx, &notification
+                                    ) {
+                                        state.allow_flow.pane_hint_visible = true;
+                                        has_notification = true;
+                                    }
+                                }
+                                break 'outer_osc;
+                            }
+                        }
+                    }
+
+                    // Scan visible lines for Allow prompts (only on new data).
+                    if !has_notification {
+                        'outer_scan: for ws in &state.workspaces {
+                            for tab in &ws.tabs {
+                                if let Some(pane) = tab.panes.get(&pane_id) {
+                                    let grid = pane.terminal.grid();
+                                    let scan_rows = grid.rows().min(5);
+                                    let visible_lines: Vec<String> = (0..scan_rows)
+                                        .rev()
+                                        .map(|row_idx| {
+                                            (0..grid.cols())
+                                                .map(|col| {
+                                                    let c = grid.cell(col, row_idx).c;
+                                                    if c == '\0' { ' ' } else { c }
+                                                })
+                                                .collect::<String>()
+                                        })
+                                        .collect();
+                                    let line_refs: Vec<&str> = visible_lines.iter().map(|s| s.as_str()).collect();
+                                    if let Some(_req) = state.allow_flow.engine.process_output(
+                                        pane_id, ws_idx, &line_refs
+                                    ) {
+                                        state.allow_flow.pane_hint_visible = true;
+                                    }
+                                    break 'outer_scan;
+                                }
+                            }
                         }
                     }
                 }
@@ -2651,6 +2860,13 @@ fn dispatch_action(
             true
         }
         Action::CommandPalette => {
+            // If a command execution is active, cancel it on toggle off.
+            if state.command_palette.visible {
+                if let Some(ref mut exec) = state.command_execution {
+                    exec.runner.cancel();
+                }
+                state.command_execution = None;
+            }
             state.command_palette.toggle();
             state.window.request_redraw();
             true
@@ -2768,10 +2984,38 @@ fn dispatch_action(
             false
         }
         Action::None => true,
-        Action::AllowFlowPanel
-        | Action::UnreadJump
-        | Action::OpenSettings
-        | Action::Command(_) => {
+        Action::AllowFlowPanel => {
+            // Open sidebar if closed, then jump to the first workspace
+            // with pending Allow Flow requests.
+            if !state.sidebar_visible {
+                state.sidebar_visible = true;
+            }
+            if let Some(ws_idx) = state.allow_flow.first_workspace_with_pending() {
+                if state.active_workspace != ws_idx {
+                    state.active_workspace = ws_idx;
+                    resize_all_panes(state);
+                }
+            }
+            state.window.request_redraw();
+            true
+        }
+        Action::Command(name) => {
+            if let Some(cmd) = state.external_commands.iter().find(|c| c.meta.name == *name) {
+                match CommandExecution::new(cmd) {
+                    Ok(exec) => {
+                        state.command_execution = Some(exec);
+                        state.command_palette.visible = true;
+                        state.window.request_redraw();
+                    }
+                    Err(e) => log::error!("failed to start command '{}': {}", name, e),
+                }
+            } else {
+                log::warn!("unknown command: {}", name);
+            }
+            true
+        }
+        Action::UnreadJump
+        | Action::OpenSettings => {
             log::debug!("unhandled action: {:?}", action);
             true
         }
@@ -2951,6 +3195,18 @@ fn compute_tab_width(title: &str, cell_w: f32, max_width: f32, min_width: f32) -
     text_width.clamp(min_width, max_width)
 }
 
+/// Truncate a string to at most `max_chars` characters, appending an
+/// ellipsis if truncation occurs.
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('\u{2026}'); // ellipsis
+        out
+    }
+}
+
 /// Handle a click in the tab bar area. Determine which tab was clicked and switch to it.
 /// Returns a `TabBarClickResult` describing what was clicked.
 fn handle_tab_bar_click(state: &mut AppState) -> TabBarClickResult {
@@ -2995,22 +3251,38 @@ fn handle_tab_bar_click(state: &mut AppState) -> TabBarClickResult {
 
 /// Handle a click in the sidebar area. Determine which workspace was clicked.
 /// The new sidebar layout has:
-///   - 8px top padding
-///   - Each workspace: name line + git info line + optional ports line + 12px gap
+///   - config top_padding
+///   - Each workspace: name + cwd + git + ports + allow flow lines + entry_gap
 ///   - Separator line (1px + 8px padding each side)
 ///   - "New Workspace" button
 fn handle_sidebar_click(state: &mut AppState) {
     let cy = state.cursor_pos.1 as f32;
     let cell_h = state.renderer.cell_size().height;
-    let top_pad = 8.0_f32;
-    let entry_gap = 12.0_f32;
-    let info_line_gap = 4.0_f32;
+    let sc = &state.config.sidebar;
+    let top_pad = sc.top_padding;
+    let entry_gap = sc.entry_gap;
+    let info_line_gap = sc.info_line_gap;
 
     let mut entry_y = top_pad;
     for (i, _ws) in state.workspaces.iter().enumerate() {
         let info = state.workspace_infos.get(i);
+        let is_active = i == state.active_workspace;
+        let has_allow_pending = state.allow_flow.has_pending_for_workspace(i);
+
         // Name line
         let mut entry_h = cell_h;
+        // CWD line
+        let ws_cwd = {
+            let ws = &state.workspaces[i];
+            let tab = &ws.tabs[ws.active_tab];
+            let fid = tab.layout.focused();
+            tab.panes.get(&fid)
+                .map(|p| p.terminal.osc.cwd.clone())
+                .unwrap_or_default()
+        };
+        if !ws_cwd.is_empty() {
+            entry_h += info_line_gap + cell_h;
+        }
         // Git info line (always present if branch known)
         if let Some(info) = info {
             if info.git_branch.is_some() {
@@ -3018,6 +3290,20 @@ fn handle_sidebar_click(state: &mut AppState) {
             }
             // Ports line
             if !info.ports.is_empty() {
+                entry_h += info_line_gap + cell_h;
+            }
+        }
+        // Allow Flow lines.
+        if has_allow_pending {
+            if is_active {
+                let pending = state.allow_flow.pending_for_workspace(i);
+                let shown = pending.len().min(3);
+                entry_h += info_line_gap;
+                entry_h += (shown as f32) * (cell_h * 3.0 + info_line_gap);
+                if pending.len() > 3 {
+                    entry_h += cell_h;
+                }
+            } else {
                 entry_h += info_line_gap + cell_h;
             }
         }
@@ -3205,6 +3491,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     let separator_color = color_or(&sc.separator_color, [0.20, 0.20, 0.22, 1.0]);
     let notification_dot = color_or(&sc.notification_dot, [1.0, 0.58, 0.26, 1.0]);
     let yellow_fg = color_or(&sc.git_dirty_color, [0.8, 0.7, 0.3, 1.0]);
+    // Allow Flow accent colors.
+    let allow_accent_color = color_or(&sc.allow_accent_color, [0.31, 0.76, 1.0, 1.0]);
+    let allow_hint_fg = color_or(&sc.allow_hint_fg, [0.49, 0.78, 1.0, 1.0]);
 
     let cell_h = state.renderer.cell_size().height;
     let cell_w = state.renderer.cell_size().width;
@@ -3279,6 +3568,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         let has_git = info.map_or(false, |inf| inf.git_branch.is_some());
         let has_ports = info.map_or(false, |inf| !inf.ports.is_empty());
         let has_cwd = !ws_cwd.is_empty();
+        let has_allow_pending = state.allow_flow.has_pending_for_workspace(i);
         let mut content_h = cell_h; // name line
         if has_cwd {
             content_h += info_line_gap + cell_h; // cwd line
@@ -3289,16 +3579,48 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         if has_ports {
             content_h += info_line_gap + cell_h; // ports line
         }
+        // Allow Flow lines: expanded for active workspace, collapsed for inactive.
+        if has_allow_pending {
+            if is_active {
+                // Active workspace: up to 3 expanded requests, each has
+                // tool+action line + detail line + key hints line = 3 lines.
+                let pending = state.allow_flow.pending_for_workspace(i);
+                let shown = pending.len().min(3);
+                content_h += info_line_gap; // gap before first request
+                content_h += (shown as f32) * (cell_h * 3.0 + info_line_gap);
+                if pending.len() > 3 {
+                    content_h += cell_h; // "+N more..." line
+                }
+            } else {
+                // Inactive workspace: single collapsed badge line.
+                content_h += info_line_gap + cell_h;
+            }
+        }
 
-        // --- Active workspace: highlight background (full sidebar width) ---
+        // --- Allow Flow accent stripe (rendered BEFORE entry background) ---
+        // A 3px colored stripe on the left edge when pending requests exist.
         let entry_pad_y = entry_gap / 2.0; // vertical padding around highlight
-        let bg = if is_active { active_entry_bg } else { sidebar_bg };
-        if is_active {
+        if has_allow_pending {
             state.renderer.submit_separator(
                 view,
                 0,
                 (entry_y - entry_pad_y).max(0.0) as u32,
-                sidebar_w as u32,
+                3, // 3px wide accent stripe
+                (content_h + entry_pad_y * 2.0) as u32,
+                allow_accent_color,
+            );
+        }
+
+        // --- Active workspace: highlight background (full sidebar width) ---
+        let bg = if is_active { active_entry_bg } else { sidebar_bg };
+        if is_active {
+            // Start highlight after the accent stripe (3px) to keep it visible.
+            let bg_x = if has_allow_pending { 3 } else { 0 };
+            state.renderer.submit_separator(
+                view,
+                bg_x,
+                (entry_y - entry_pad_y).max(0.0) as u32,
+                (sidebar_w as u32).saturating_sub(bg_x),
                 (content_h + entry_pad_y * 2.0) as u32,
                 active_entry_bg,
             );
@@ -3434,6 +3756,69 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 let ports_display: String = ports_str.chars().take(max_chars).collect();
                 let indent = text_left;
                 state.renderer.render_text(view, &ports_display, indent, line_y, dim_fg, bg);
+                line_y += cell_h;
+            }
+        }
+
+        // --- Inline Allow Flow requests (below ports) ---
+        if has_allow_pending {
+            if is_active {
+                // Active workspace: expanded view with full request details.
+                let pending = state.allow_flow.pending_for_workspace(i);
+                for (ri, req) in pending.iter().take(3).enumerate() {
+                    line_y += info_line_gap;
+                    // Tool + action line (lightning bolt icon).
+                    let tool_line = format!(
+                        "\u{26A1} {}: {}",
+                        req.tool_name,
+                        truncate_str(&req.action, max_chars.saturating_sub(4))
+                    );
+                    state.renderer.render_text(
+                        view, &tool_line, text_left, line_y, allow_hint_fg, bg,
+                    );
+                    line_y += cell_h;
+
+                    // Detail line (quoted, slightly dimmed).
+                    let detail_line = format!(
+                        "  \"{}\"",
+                        truncate_str(&req.detail, max_chars.saturating_sub(4))
+                    );
+                    state.renderer.render_text(
+                        view, &detail_line, text_left, line_y, dim_fg, bg,
+                    );
+                    line_y += cell_h;
+
+                    // Key hints line (only on the first request to avoid clutter,
+                    // unless there's only one request).
+                    if ri == 0 || pending.len() == 1 {
+                        let hint = if pending.len() > 1 {
+                            "  y/n one  Y/N all  A always"
+                        } else {
+                            "  Y Allow  N Deny  A Always"
+                        };
+                        let hint_fg_col = [0.45, 0.55, 0.65, 1.0];
+                        state.renderer.render_text(
+                            view, hint, text_left, line_y, hint_fg_col, bg,
+                        );
+                    }
+                    line_y += cell_h;
+                }
+                if pending.len() > 3 {
+                    let more = format!("  +{} more...", pending.len() - 3);
+                    state.renderer.render_text(
+                        view, &more, text_left, line_y, dim_fg, bg,
+                    );
+                    // line_y not used further; entry_y advances by content_h.
+                }
+            } else {
+                // Inactive workspace: collapsed badge.
+                line_y += info_line_gap;
+                let count = state.allow_flow.pending_count_for_workspace(i);
+                let badge = format!("\u{26A1} {} pending", count);
+                state.renderer.render_text(
+                    view, &badge, text_left, line_y, allow_accent_color, bg,
+                );
+                // line_y not used further; entry_y advances by content_h.
             }
         }
 
@@ -3898,6 +4283,15 @@ fn render_frame(state: &mut AppState) -> Result<(), jterm_render::RenderError> {
         render_search_bar(state, &view, phys_w);
     }
 
+    // Render Allow Flow overlay at the bottom of the focused pane.
+    // Render Allow Flow pane hint bar (thin 1-line bar at the bottom of the
+    // focused pane) when there are pending requests for the active workspace.
+    if state.allow_flow.pane_hint_visible
+        && state.allow_flow.has_pending_for_workspace(state.active_workspace)
+    {
+        render_allow_flow_pane_hint(state, &view, &pane_rects, focused_id);
+    }
+
     // Render command palette overlay if visible.
     if state.command_palette.visible {
         render_command_palette(state, &view, phys_w, phys_h);
@@ -3955,6 +4349,51 @@ fn render_search_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32
     );
 }
 
+/// Render a minimal 1-line hint bar at the bottom of the focused pane.
+///
+/// This is a thin reminder that pending Allow Flow requests exist; the
+/// full request details live in the sidebar.
+fn render_allow_flow_pane_hint(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    pane_rects: &[(PaneId, jterm_layout::Rect)],
+    focused_id: PaneId,
+) {
+    // Find the focused pane's rect.
+    let rect = match pane_rects.iter().find(|(id, _)| *id == focused_id) {
+        Some((_, r)) => r,
+        None => return,
+    };
+
+    let cell_size = state.renderer.cell_size();
+    let cell_h = cell_size.height;
+    let cell_w = cell_size.width;
+
+    // Thin bar: 1 cell row + small vertical padding.
+    let bar_pad = 2.0_f32;
+    let bar_h = cell_h + bar_pad * 2.0;
+    let bar_x = rect.x as u32;
+    let bar_y = ((rect.y + rect.h) - bar_h).max(rect.y) as u32;
+    let bar_w = rect.w as u32;
+
+    // Semi-transparent dark background.
+    let bar_bg = [0.06, 0.06, 0.10, 0.88];
+    state.renderer.submit_separator(view, bar_x, bar_y, bar_w, bar_h as u32, bar_bg);
+
+    // Top accent line (blue glow).
+    let accent = [0.31, 0.76, 1.0, 0.6]; // #4FC1FF at 60% alpha
+    state.renderer.submit_separator(view, bar_x, bar_y, bar_w, 1, accent);
+
+    // Text: lightning bolt + short message + key hints.
+    let text_x = bar_x as f32 + cell_w;
+    let text_y = bar_y as f32 + bar_pad;
+    let hint_fg = [0.49, 0.78, 1.0, 1.0]; // bright cyan-blue
+    let max_chars = ((bar_w as f32 - 2.0 * cell_w) / cell_w).max(1.0) as usize;
+    let msg = "\u{26A1} AI permission needed \u{2014} y/n one \u{00B7} Y/N all \u{00B7} A always";
+    let display: String = msg.chars().take(max_chars).collect();
+    state.renderer.render_text(view, &display, text_x, text_y, hint_fg, bar_bg);
+}
+
 /// Render the command palette as an overlay on top of the terminal.
 fn render_command_palette(
     state: &mut AppState,
@@ -3962,6 +4401,12 @@ fn render_command_palette(
     phys_w: f32,
     phys_h: f32,
 ) {
+    // If a command execution is active, render its UI instead.
+    if state.command_execution.is_some() {
+        render_command_execution(state, view, phys_w, phys_h);
+        return;
+    }
+
     let cell_size = state.renderer.cell_size();
     let cell_w = cell_size.width;
     let cell_h = cell_size.height;
@@ -4108,6 +4553,245 @@ fn render_command_palette(
             empty_fg,
             box_bg,
         );
+    }
+}
+
+/// Render the command execution UI as an overlay (replaces normal palette content).
+fn render_command_execution(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    phys_w: f32,
+    phys_h: f32,
+) {
+    let cell_size = state.renderer.cell_size();
+    let cell_w = cell_size.width;
+    let cell_h = cell_size.height;
+
+    let pc = &state.config.palette;
+
+    // 1. Semi-transparent dark overlay covering the entire window.
+    let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
+    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+
+    // Borrow the execution state to compute box dimensions.
+    let exec = state.command_execution.as_ref().unwrap();
+    let max_visible = pc.max_visible_items;
+
+    // Determine how many rows the content needs.
+    let content_rows = match &exec.ui_state {
+        CommandUIState::Loading => 2,
+        CommandUIState::Fuzzy { .. } | CommandUIState::Multi { .. } => {
+            let visible = exec.filtered_items.len().min(max_visible);
+            2 + visible // prompt/input + separator + items
+        }
+        CommandUIState::Confirm { .. } => 3,
+        CommandUIState::Text { .. } => 3,
+        CommandUIState::Info => 2,
+        CommandUIState::Done(_) => 3,
+        CommandUIState::Error(_) => 3,
+    };
+
+    // 2. Centered floating box.
+    let box_w = (phys_w * pc.width_ratio).min(phys_w - 40.0).max(200.0);
+    let max_box_h = pc.max_height;
+    let box_h = ((content_rows as f32) * cell_h + cell_h).min(max_box_h);
+    let box_x = (phys_w - box_w) / 2.0;
+    let box_y = (phys_h * 0.2).min(phys_h - box_h - 20.0).max(20.0);
+
+    let box_bg = color_or(&pc.bg, [0.12, 0.12, 0.16, 0.95]);
+    state.renderer.submit_separator(view, box_x as u32, box_y as u32, box_w as u32, box_h as u32, box_bg);
+
+    // Border.
+    let border_color = color_or(&pc.border_color, [0.3, 0.3, 0.4, 1.0]);
+    let b = 1u32;
+    let bx = box_x as u32;
+    let by = box_y as u32;
+    let bw = box_w as u32;
+    let bh = box_h as u32;
+    state.renderer.submit_separator(view, bx, by, bw, b, border_color);
+    state.renderer.submit_separator(view, bx, by + bh - b, bw, b, border_color);
+    state.renderer.submit_separator(view, bx, by, b, bh, border_color);
+    state.renderer.submit_separator(view, bx + bw - b, by, b, bh, border_color);
+
+    let input_x = box_x + cell_w;
+    let input_y = box_y + cell_h * 0.25;
+    let palette_input_fg = color_or(&pc.input_fg, [0.95, 0.95, 0.95, 1.0]);
+    let cmd_fg = color_or(&pc.command_fg, [0.8, 0.8, 0.82, 1.0]);
+    let selected_bg = color_or(&pc.selected_bg, [0.22, 0.22, 0.32, 1.0]);
+    let desc_fg = color_or(&pc.description_fg, [0.5, 0.5, 0.55, 1.0]);
+    let palette_sep_color = color_or(&pc.separator_color, [0.25, 0.25, 0.3, 1.0]);
+    let max_chars = ((box_w - 2.0 * cell_w) / cell_w) as usize;
+
+    // Re-borrow exec (the earlier borrow was dropped before renderer calls).
+    let exec = state.command_execution.as_ref().unwrap();
+
+    match &exec.ui_state {
+        CommandUIState::Loading => {
+            let msg = format!("Running {}...", exec.command_name);
+            let display: String = msg.chars().take(max_chars).collect();
+            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+        }
+
+        CommandUIState::Fuzzy { prompt } | CommandUIState::Multi { prompt } => {
+            let is_multi = matches!(exec.ui_state, CommandUIState::Multi { .. });
+            let prompt_str = prompt.clone();
+            let input_str = exec.input.clone();
+            let filtered: Vec<usize> = exec.filtered_items.clone();
+            let selected_idx = exec.selected;
+            let selected_set_snapshot: std::collections::HashSet<usize> = exec.selected_set.clone();
+            let items_snapshot: Vec<_> = exec.items.iter().map(|item| {
+                (
+                    item.label.clone(),
+                    item.value.clone(),
+                    item.description.clone(),
+                )
+            }).collect();
+
+            // Prompt and input at the top.
+            let prompt_display = format!("{}: {}", prompt_str, input_str);
+            let display: String = prompt_display.chars().take(max_chars).collect();
+            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+
+            // Separator below prompt.
+            let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
+            state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, palette_sep_color);
+
+            // Item list.
+            let list_start_y = sep_y as f32 + cell_h * 0.25;
+            for (i, &item_idx) in filtered.iter().enumerate().take(max_visible) {
+                let item_y = list_start_y + (i as f32) * cell_h;
+                if item_y + cell_h > box_y + box_h {
+                    break;
+                }
+
+                let is_selected = i == selected_idx;
+                let bg = if is_selected { selected_bg } else { box_bg };
+
+                if is_selected {
+                    state.renderer.submit_separator(
+                        view,
+                        box_x as u32 + 1,
+                        item_y as u32,
+                        box_w as u32 - 2,
+                        cell_h as u32,
+                        selected_bg,
+                    );
+                }
+
+                let (ref label_opt, ref value, ref desc_opt) = items_snapshot[item_idx];
+                let label = label_opt.as_deref().unwrap_or(value.as_str());
+
+                // Multi-select: show check mark for toggled items.
+                let prefix = if is_multi {
+                    if selected_set_snapshot.contains(&item_idx) { "[x] " } else { "[ ] " }
+                } else {
+                    ""
+                };
+
+                let name_display: String = format!("{}{}", prefix, label)
+                    .chars()
+                    .take(max_chars)
+                    .collect();
+                let fg = if is_selected { palette_input_fg } else { cmd_fg };
+                state.renderer.render_text(view, &name_display, input_x, item_y, fg, bg);
+
+                // Description after the name.
+                if let Some(ref desc) = desc_opt {
+                    let desc_offset = name_display.len() as f32 * cell_w + 2.0 * cell_w;
+                    if desc_offset < box_w - 2.0 * cell_w {
+                        let remaining = max_chars.saturating_sub(name_display.len() + 2);
+                        let desc_display: String = desc.chars().take(remaining).collect();
+                        state.renderer.render_text(view, &desc_display, input_x + desc_offset, item_y, desc_fg, bg);
+                    }
+                }
+            }
+
+            // Show "No matches" if filtered list is empty.
+            if filtered.is_empty() {
+                let no_match = "No matching items";
+                let empty_fg = [0.5, 0.5, 0.55, 1.0];
+                let list_start_y = (input_y + cell_h + cell_h * 0.25) as f32 + cell_h * 0.25;
+                state.renderer.render_text(view, no_match, input_x, list_start_y, empty_fg, box_bg);
+            }
+        }
+
+        CommandUIState::Confirm { message, default } => {
+            let message_str = message.clone();
+            let default_val = *default;
+            let display: String = message_str.chars().take(max_chars).collect();
+            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+
+            let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
+            state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, palette_sep_color);
+
+            let hint = if default_val {
+                "Press Enter for Yes, or N for No"
+            } else {
+                "Press Y for Yes, or Enter for No"
+            };
+            let hint_y = sep_y as f32 + cell_h * 0.25;
+            state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
+        }
+
+        CommandUIState::Text { label, placeholder } => {
+            let label_str = label.clone();
+            let placeholder_str = placeholder.clone();
+            let input_str = exec.input.clone();
+            let label_display: String = format!("{}:", label_str).chars().take(max_chars).collect();
+            state.renderer.render_text(view, &label_display, input_x, input_y, palette_input_fg, box_bg);
+
+            let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
+            state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, palette_sep_color);
+
+            let text_y = sep_y as f32 + cell_h * 0.25;
+            if input_str.is_empty() && !placeholder_str.is_empty() {
+                let ph_display: String = placeholder_str.chars().take(max_chars).collect();
+                state.renderer.render_text(view, &ph_display, input_x, text_y, desc_fg, box_bg);
+            } else {
+                let input_display: String = input_str.chars().take(max_chars).collect();
+                state.renderer.render_text(view, &input_display, input_x, text_y, palette_input_fg, box_bg);
+            }
+        }
+
+        CommandUIState::Info => {
+            let info_msg = exec.info_message.clone();
+            let spinner_chars = ["|", "/", "-", "\\"];
+            let tick = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() / 200)
+                .unwrap_or(0) % 4) as usize;
+            let spinner = spinner_chars[tick];
+            let msg = format!("{} {}", spinner, info_msg);
+            let display: String = msg.chars().take(max_chars).collect();
+            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+        }
+
+        CommandUIState::Done(notify) => {
+            let msg = if let Some(ref text) = notify {
+                format!("Done: {}", text)
+            } else {
+                let name = exec.command_name.clone();
+                format!("Command '{}' completed", name)
+            };
+            let display: String = msg.chars().take(max_chars).collect();
+            let done_fg = [0.55, 0.82, 0.33, 1.0]; // green
+            state.renderer.render_text(view, &display, input_x, input_y, done_fg, box_bg);
+
+            let hint = "Press any key to dismiss";
+            let hint_y = input_y + cell_h;
+            state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
+        }
+
+        CommandUIState::Error(message) => {
+            let msg = format!("Error: {}", message);
+            let display: String = msg.chars().take(max_chars).collect();
+            let error_fg = [1.0, 0.42, 0.42, 1.0]; // red
+            state.renderer.render_text(view, &display, input_x, input_y, error_fg, box_bg);
+
+            let hint = "Press Esc to dismiss";
+            let hint_y = input_y + cell_h;
+            state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
+        }
     }
 }
 

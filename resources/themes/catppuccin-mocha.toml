@@ -1,0 +1,36 @@
+# Catppuccin Mocha — a warm dark theme
+# Install to ~/.config/jterm/themes/catppuccin-mocha.toml
+#
+# Usage in config.toml:
+#   [theme]
+#   auto_switch = true
+#   dark = "catppuccin-mocha"
+#   light = "catppuccin-latte"
+
+background = "#1E1E2E"
+foreground = "#CDD6F4"
+cursor = "#F5E0DC"
+selection_bg = "#45475A"
+preedit_bg = "#313244"
+search_highlight_bg = "#F9E2AF"
+search_highlight_fg = "#1E1E2E"
+
+# ANSI Normal
+black = "#45475A"
+red = "#F38BA8"
+green = "#A6E3A1"
+yellow = "#F9E2AF"
+blue = "#89B4FA"
+magenta = "#F5C2E7"
+cyan = "#94E2D5"
+white = "#BAC2DE"
+
+# ANSI Bright
+bright_black = "#585B70"
+bright_red = "#F38BA8"
+bright_green = "#A6E3A1"
+bright_yellow = "#F9E2AF"
+bright_blue = "#89B4FA"
+bright_magenta = "#F5C2E7"
+bright_cyan = "#94E2D5"
+bright_white = "#A6ADC8"

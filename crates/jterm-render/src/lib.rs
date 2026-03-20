@@ -25,5 +25,6 @@ pub mod image_render;
 pub mod renderer;
 
 pub use atlas::{CellSize, FontConfig};
+pub use color_convert::ThemePalette;
 pub use image_render::ImageRenderer;
 pub use renderer::{RenderError, Renderer};

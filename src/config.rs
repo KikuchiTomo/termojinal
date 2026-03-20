@@ -26,6 +26,8 @@ pub struct JtermConfig {
     pub palette: PaletteConfig,
     #[serde(default)]
     pub status_bar: StatusBarConfig,
+    #[serde(default)]
+    pub allow_flow: jterm_claude::AllowFlowConfig,
 }
 
 impl Default for JtermConfig {
@@ -40,6 +42,7 @@ impl Default for JtermConfig {
             search: SearchConfig::default(),
             palette: PaletteConfig::default(),
             status_bar: StatusBarConfig::default(),
+            allow_flow: jterm_claude::AllowFlowConfig::default(),
         }
     }
 }
@@ -48,10 +51,21 @@ impl Default for JtermConfig {
 // Helper: parse hex color
 // ---------------------------------------------------------------------------
 
-/// Parse a hex color string (#RRGGBB or #RRGGBBAA) to [f32; 4] RGBA.
+/// Parse a hex color string (#RGB, #RRGGBB, or #RRGGBBAA) to [f32; 4] RGBA.
 pub fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
     let s = s.trim_start_matches('#');
-    if s.len() == 6 {
+    if s.len() == 3 {
+        // #RGB -> expand each nibble: R -> RR, G -> GG, B -> BB
+        let r = u8::from_str_radix(&s[0..1], 16).ok()?;
+        let g = u8::from_str_radix(&s[1..2], 16).ok()?;
+        let b = u8::from_str_radix(&s[2..3], 16).ok()?;
+        Some([
+            (r * 17) as f32 / 255.0,
+            (g * 17) as f32 / 255.0,
+            (b * 17) as f32 / 255.0,
+            1.0,
+        ])
+    } else if s.len() == 6 {
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
         let b = u8::from_str_radix(&s[4..6], 16).ok()?;
@@ -98,17 +112,77 @@ pub struct ThemeSection {
     pub bold_brightness: f32,
     #[serde(default = "default_dim_opacity")]
     pub dim_opacity: f32,
+
+    // ANSI 16 colors
+    #[serde(default = "default_ansi_black")]
+    pub black: String,
+    #[serde(default = "default_ansi_bright_black")]
+    pub bright_black: String,
+    #[serde(default = "default_ansi_red")]
+    pub red: String,
+    #[serde(default = "default_ansi_bright_red")]
+    pub bright_red: String,
+    #[serde(default = "default_ansi_green")]
+    pub green: String,
+    #[serde(default = "default_ansi_bright_green")]
+    pub bright_green: String,
+    #[serde(default = "default_ansi_yellow")]
+    pub yellow: String,
+    #[serde(default = "default_ansi_bright_yellow")]
+    pub bright_yellow: String,
+    #[serde(default = "default_ansi_blue")]
+    pub blue: String,
+    #[serde(default = "default_ansi_bright_blue")]
+    pub bright_blue: String,
+    #[serde(default = "default_ansi_magenta")]
+    pub magenta: String,
+    #[serde(default = "default_ansi_bright_magenta")]
+    pub bright_magenta: String,
+    #[serde(default = "default_ansi_cyan")]
+    pub cyan: String,
+    #[serde(default = "default_ansi_bright_cyan")]
+    pub bright_cyan: String,
+    #[serde(default = "default_ansi_white")]
+    pub white: String,
+    #[serde(default = "default_ansi_bright_white")]
+    pub bright_white: String,
+
+    // Dark/Light auto-switch
+    #[serde(default)]
+    pub auto_switch: bool,
+    #[serde(default)]
+    pub dark: String,
+    #[serde(default)]
+    pub light: String,
 }
 
-fn default_bg() -> String { "#11111A".into() }
-fn default_fg() -> String { "#D9D9D9".into() }
-fn default_cursor_color() -> String { "#D9D9D9".into() }
-fn default_selection_bg() -> String { "#3A3A50".into() }
-fn default_preedit_bg() -> String { "#262633".into() }
-fn default_search_highlight_bg() -> String { "#998019".into() }
-fn default_search_highlight_fg() -> String { "#000000".into() }
+fn default_bg() -> String { "#1E1E2E".into() }
+fn default_fg() -> String { "#CDD6F4".into() }
+fn default_cursor_color() -> String { "#F5E0DC".into() }
+fn default_selection_bg() -> String { "#45475A".into() }
+fn default_preedit_bg() -> String { "#313244".into() }
+fn default_search_highlight_bg() -> String { "#F9E2AF".into() }
+fn default_search_highlight_fg() -> String { "#1E1E2E".into() }
 fn default_bold_brightness() -> f32 { 1.2 }
 fn default_dim_opacity() -> f32 { 0.6 }
+
+// ANSI 16 color defaults (Catppuccin Mocha)
+fn default_ansi_black() -> String { "#45475A".into() }
+fn default_ansi_bright_black() -> String { "#585B70".into() }
+fn default_ansi_red() -> String { "#F38BA8".into() }
+fn default_ansi_bright_red() -> String { "#F38BA8".into() }
+fn default_ansi_green() -> String { "#A6E3A1".into() }
+fn default_ansi_bright_green() -> String { "#A6E3A1".into() }
+fn default_ansi_yellow() -> String { "#F9E2AF".into() }
+fn default_ansi_bright_yellow() -> String { "#F9E2AF".into() }
+fn default_ansi_blue() -> String { "#89B4FA".into() }
+fn default_ansi_bright_blue() -> String { "#89B4FA".into() }
+fn default_ansi_magenta() -> String { "#F5C2E7".into() }
+fn default_ansi_bright_magenta() -> String { "#F5C2E7".into() }
+fn default_ansi_cyan() -> String { "#94E2D5".into() }
+fn default_ansi_bright_cyan() -> String { "#94E2D5".into() }
+fn default_ansi_white() -> String { "#BAC2DE".into() }
+fn default_ansi_bright_white() -> String { "#A6ADC8".into() }
 
 impl Default for ThemeSection {
     fn default() -> Self {
@@ -122,6 +196,25 @@ impl Default for ThemeSection {
             search_highlight_fg: default_search_highlight_fg(),
             bold_brightness: default_bold_brightness(),
             dim_opacity: default_dim_opacity(),
+            black: default_ansi_black(),
+            bright_black: default_ansi_bright_black(),
+            red: default_ansi_red(),
+            bright_red: default_ansi_bright_red(),
+            green: default_ansi_green(),
+            bright_green: default_ansi_bright_green(),
+            yellow: default_ansi_yellow(),
+            bright_yellow: default_ansi_bright_yellow(),
+            blue: default_ansi_blue(),
+            bright_blue: default_ansi_bright_blue(),
+            magenta: default_ansi_magenta(),
+            bright_magenta: default_ansi_bright_magenta(),
+            cyan: default_ansi_cyan(),
+            bright_cyan: default_ansi_bright_cyan(),
+            white: default_ansi_white(),
+            bright_white: default_ansi_bright_white(),
+            auto_switch: false,
+            dark: String::new(),
+            light: String::new(),
         }
     }
 }
@@ -240,6 +333,12 @@ pub struct SidebarConfig {
     pub entry_gap: f32,
     #[serde(default = "default_sidebar_info_line_gap")]
     pub info_line_gap: f32,
+    /// Accent color for the left stripe on workspaces with pending Allow Flow requests.
+    #[serde(default = "default_sidebar_allow_accent_color")]
+    pub allow_accent_color: String,
+    /// Foreground color for Allow Flow hint text in the sidebar.
+    #[serde(default = "default_sidebar_allow_hint_fg")]
+    pub allow_hint_fg: String,
 }
 
 fn default_sidebar_width() -> f32 { 240.0 }
@@ -258,6 +357,8 @@ fn default_sidebar_top_pad() -> f32 { 6.0 }
 fn default_sidebar_side_pad() -> f32 { 6.0 }
 fn default_sidebar_entry_gap() -> f32 { 4.0 }
 fn default_sidebar_info_line_gap() -> f32 { 1.0 }
+fn default_sidebar_allow_accent_color() -> String { "#4FC1FF".into() }
+fn default_sidebar_allow_hint_fg() -> String { "#7DC8FF".into() }
 
 impl Default for SidebarConfig {
     fn default() -> Self {
@@ -278,6 +379,8 @@ impl Default for SidebarConfig {
             side_padding: default_sidebar_side_pad(),
             entry_gap: default_sidebar_entry_gap(),
             info_line_gap: default_sidebar_info_line_gap(),
+            allow_accent_color: default_sidebar_allow_accent_color(),
+            allow_hint_fg: default_sidebar_allow_hint_fg(),
         }
     }
 }
@@ -630,6 +733,76 @@ pub fn load_config() -> JtermConfig {
         Err(e) => {
             log::warn!("config file not found ({e}), using defaults");
             JtermConfig::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Theme file loading
+// ---------------------------------------------------------------------------
+
+/// Load a theme file from `~/.config/jterm/themes/{name}.toml`.
+///
+/// Returns `None` if the file does not exist or cannot be parsed.
+/// The theme file has the same structure as the `[theme]` section in config.toml.
+pub fn load_theme_file(name: &str) -> Option<ThemeSection> {
+    if name.is_empty() {
+        return None;
+    }
+    let path = dirs::home_dir()?
+        .join(".config")
+        .join("jterm")
+        .join("themes")
+        .join(format!("{name}.toml"));
+    log::info!("loading theme file from {}", path.display());
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match toml::from_str::<ThemeSection>(&content) {
+            Ok(theme) => {
+                log::info!("theme '{}' loaded successfully", name);
+                Some(theme)
+            }
+            Err(e) => {
+                log::error!("theme '{}' parse error: {e}", name);
+                None
+            }
+        },
+        Err(e) => {
+            log::warn!("theme file '{}' not found ({e})", name);
+            None
+        }
+    }
+}
+
+/// System appearance (Dark or Light).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appearance {
+    Dark,
+    Light,
+}
+
+/// Resolve the effective theme, applying auto-switch logic if enabled.
+///
+/// If `theme.auto_switch` is true and the appropriate theme file is set,
+/// loads the theme file for the given appearance. Otherwise returns the
+/// inline theme from config.
+pub fn resolve_theme(config: &JtermConfig, appearance: Appearance) -> ThemeSection {
+    let theme = &config.theme;
+    if !theme.auto_switch {
+        return theme.clone();
+    }
+    let name = match appearance {
+        Appearance::Dark => &theme.dark,
+        Appearance::Light => &theme.light,
+    };
+    if name.is_empty() {
+        log::info!("auto_switch enabled but no {:?} theme file set, using inline theme", appearance);
+        return theme.clone();
+    }
+    match load_theme_file(name) {
+        Some(loaded) => loaded,
+        None => {
+            log::warn!("failed to load {:?} theme '{}', using inline theme", appearance, name);
+            theme.clone()
         }
     }
 }

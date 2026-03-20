@@ -1,0 +1,16 @@
+[package]
+name = "jterm-claude"
+version = "0.1.0"
+edition.workspace = true
+description = "Allow Flow engine for AI agent coordination in jterm"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+log = "0.4"
+dirs = "6"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

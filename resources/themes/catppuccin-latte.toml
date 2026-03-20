@@ -1,0 +1,36 @@
+# Catppuccin Latte — a warm light theme
+# Install to ~/.config/jterm/themes/catppuccin-latte.toml
+#
+# Usage in config.toml:
+#   [theme]
+#   auto_switch = true
+#   dark = "catppuccin-mocha"
+#   light = "catppuccin-latte"
+
+background = "#EFF1F5"
+foreground = "#4C4F69"
+cursor = "#DC8A78"
+selection_bg = "#ACB0BE"
+preedit_bg = "#CCD0DA"
+search_highlight_bg = "#DF8E1D"
+search_highlight_fg = "#EFF1F5"
+
+# ANSI Normal
+black = "#5C5F77"
+red = "#D20F39"
+green = "#40A02B"
+yellow = "#DF8E1D"
+blue = "#1E66F5"
+magenta = "#EA76CB"
+cyan = "#179299"
+white = "#ACB0BE"
+
+# ANSI Bright
+bright_black = "#6C6F85"
+bright_red = "#D20F39"
+bright_green = "#40A02B"
+bright_yellow = "#DF8E1D"
+bright_blue = "#1E66F5"
+bright_magenta = "#EA76CB"
+bright_cyan = "#179299"
+bright_white = "#BCC0CC"

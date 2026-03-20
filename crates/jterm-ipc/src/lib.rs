@@ -5,8 +5,14 @@
 //! - A server that dispatches requests to [`jterm_session::SessionManager`] ([`server`])
 //! - A client for sending requests from the `jt` CLI or other tools ([`client`])
 //! - A 3-layer keybinding system with TOML configuration ([`keybinding`])
+//! - A stdio JSON protocol for external command plugins ([`command_protocol`])
+//! - Command discovery and metadata loading ([`command_loader`])
+//! - A non-blocking command execution engine ([`command_runner`])
 
 pub mod client;
+pub mod command_loader;
+pub mod command_protocol;
+pub mod command_runner;
 pub mod keybinding;
 pub mod protocol;
 pub mod server;
