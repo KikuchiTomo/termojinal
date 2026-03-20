@@ -619,8 +619,30 @@ fn parse_extended_color<'a>(iter: &mut impl Iterator<Item = &'a [u16]>) -> Color
     }
 }
 
+/// Returns true for zero-width combining codepoints that should not occupy a cell.
+fn is_zero_width_combining(c: char) -> bool {
+    let cp = c as u32;
+    matches!(cp,
+        0xFE00..=0xFE0F        // Variation selectors
+        | 0x200D               // ZWJ (Zero Width Joiner)
+        | 0x200B..=0x200F      // Zero-width space, ZWNJ, ZWJ, LRM, RLM
+        | 0x1F3FB..=0x1F3FF    // Skin tone modifiers
+        | 0xE0020..=0xE007F    // Tag characters (flag subdivisions)
+        | 0xE0001              // Language tag
+        | 0x20E3               // Combining enclosing keycap
+        | 0x2060..=0x2064      // Word joiner, invisible separators
+        | 0xFEFF               // BOM / zero-width no-break space
+    )
+}
+
 impl vte::Perform for Terminal {
     fn print(&mut self, c: char) {
+        // Skip zero-width combining characters that should not occupy a cell.
+        // These include variation selectors, ZWJ, skin tone modifiers, and tags.
+        if is_zero_width_combining(c) {
+            return;
+        }
+
         let char_width = UnicodeWidthChar::width(c).unwrap_or(1);
 
         if self.wrap_pending {

@@ -380,6 +380,9 @@ impl Atlas {
             | '\u{3000}'..='\u{9FFF}'  // CJK Unified Ideographs + Hiragana/Katakana
             | '\u{F900}'..='\u{FAFF}'  // CJK Compatibility Ideographs
             | '\u{AC00}'..='\u{D7AF}'  // Hangul
+            | '\u{FF00}'..='\u{FFEF}'  // Halfwidth and Fullwidth Forms (！？ etc.)
+            | '\u{FE30}'..='\u{FE4F}'  // CJK Compatibility Forms
+            | '\u{FE50}'..='\u{FE6F}'  // Small Form Variants
         )
     }
 
@@ -389,6 +392,9 @@ impl Atlas {
             '\u{3000}'..='\u{9FFF}'  // CJK Unified Ideographs + Hiragana/Katakana
             | '\u{F900}'..='\u{FAFF}'  // CJK Compatibility Ideographs
             | '\u{AC00}'..='\u{D7AF}'  // Hangul
+            | '\u{FF00}'..='\u{FFEF}'  // Halfwidth and Fullwidth Forms (！？ etc.)
+            | '\u{FE30}'..='\u{FE4F}'  // CJK Compatibility Forms
+            | '\u{FE50}'..='\u{FE6F}'  // Small Form Variants
         )
     }
 
@@ -418,21 +424,14 @@ impl Atlas {
         let primary_missing = (glyph_w == 0 || glyph_h == 0)
             || self.font.lookup_glyph_index(c) == 0;
 
-        let (metrics, bitmap) = if primary_missing && Self::needs_fallback_check(c) {
-            // For CJK characters, try the CJK font first, then Nerd Font fallback.
-            if Self::is_cjk(c) {
-                if let Some(ref cjk) = self.cjk_font {
-                    if cjk.lookup_glyph_index(c) != 0 {
-                        cjk.rasterize(c, self.font_size)
-                    } else if let Some(ref fb) = self.fallback_font {
-                        if fb.lookup_glyph_index(c) != 0 {
-                            fb.rasterize(c, self.font_size)
-                        } else {
-                            (metrics, bitmap)
-                        }
-                    } else {
-                        (metrics, bitmap)
-                    }
+        let (metrics, bitmap) = if Self::is_cjk(c) {
+            // For CJK characters, ALWAYS prefer CJK font (Hiragino) for correct
+            // wide-glyph rendering, even when the primary font has a glyph.
+            if let Some(ref cjk) = self.cjk_font {
+                if cjk.lookup_glyph_index(c) != 0 {
+                    cjk.rasterize(c, self.font_size)
+                } else if !primary_missing {
+                    (metrics, bitmap) // primary has it, CJK doesn't
                 } else if let Some(ref fb) = self.fallback_font {
                     if fb.lookup_glyph_index(c) != 0 {
                         fb.rasterize(c, self.font_size)
@@ -442,7 +441,20 @@ impl Atlas {
                 } else {
                     (metrics, bitmap)
                 }
+            } else if !primary_missing {
+                (metrics, bitmap)
             } else if let Some(ref fb) = self.fallback_font {
+                if fb.lookup_glyph_index(c) != 0 {
+                    fb.rasterize(c, self.font_size)
+                } else {
+                    (metrics, bitmap)
+                }
+            } else {
+                (metrics, bitmap)
+            }
+        } else if primary_missing && Self::needs_fallback_check(c) {
+            // Non-CJK fallback (Nerd Font icons, box-drawing, etc.).
+            if let Some(ref fb) = self.fallback_font {
                 if fb.lookup_glyph_index(c) != 0 {
                     fb.rasterize(c, self.font_size)
                 } else {

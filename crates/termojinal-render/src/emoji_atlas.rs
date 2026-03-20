@@ -9,19 +9,13 @@ use std::collections::HashMap;
 use crate::atlas::GlyphInfo;
 
 /// Returns `true` if the character should be rendered as a color emoji.
+///
+/// Uses the Unicode `Emoji_Presentation` property from the `unic-emoji-char`
+/// crate, which identifies characters that default to emoji presentation
+/// (e.g., 😀 🎉 ⚡). Characters with `Emoji_Presentation=No` (like ©️ ®️)
+/// are only rendered as emoji when explicitly followed by U+FE0F (VS16).
 pub fn is_emoji(c: char) -> bool {
-    matches!(c as u32,
-        0x1F300..=0x1F9FF   // Miscellaneous Symbols and Pictographs, Emoticons, etc.
-        | 0x2600..=0x27BF    // Miscellaneous Symbols, Dingbats
-        | 0x1FA00..=0x1FA6F  // Chess Symbols
-        | 0x1FA70..=0x1FAFF  // Symbols and Pictographs Extended-A
-        | 0x231A..=0x231B    // Watch, Hourglass
-        | 0x23E9..=0x23F3    // Various symbols
-        | 0x23F8..=0x23FA
-        | 0x25AA..=0x25AB
-        | 0x25B6 | 0x25C0
-        | 0x25FB..=0x25FE
-    )
+    unic_emoji_char::is_emoji_presentation(c)
 }
 
 /// RGBA color emoji atlas.

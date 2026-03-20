@@ -1,0 +1,147 @@
+# =============================================================================
+# jterm configuration — ~/.config/jterm/config.toml
+# =============================================================================
+
+# --- Font -------------------------------------------------------------------
+[font]
+family = "monospace"           # Font family
+size = 11.0                    # Font size (px)
+line_height = 1.2              # Line height multiplier
+max_size = 72.0                # Maximum font size (Cmd+= limit)
+size_step = 1.0                # Font size increment per zoom step
+
+# --- Window ------------------------------------------------------------------
+[window]
+width = 1200                   # Initial window width
+height = 740                   # Initial window height
+opacity = 0.85                 # Background opacity (0.0 = transparent, 1.0 = opaque)
+padding_x = 1.0                # Horizontal padding (cell-width units)
+padding_y = 0.5                # Vertical padding (cell-height units)
+
+# --- Theme / Colors ----------------------------------------------------------
+[theme]
+background = "#11111A"         # Default background
+foreground = "#D9D9D9"         # Default foreground
+cursor = "#D9D9D9"             # Cursor color
+selection_bg = "#3A3A50"       # Selection background
+preedit_bg = "#262633"         # IME preedit background
+search_highlight_bg = "#998019" # Search match highlight background
+search_highlight_fg = "#000000" # Search match highlight foreground
+bold_brightness = 1.2          # Bold text brightness multiplier
+dim_opacity = 0.6              # Dim text opacity factor
+
+# --- Sidebar -----------------------------------------------------------------
+[sidebar]
+width = 240.0                  # Default sidebar width (px)
+min_width = 120.0              # Minimum sidebar width when dragging
+max_width = 400.0              # Maximum sidebar width when dragging
+bg = "#0A0A10"                 # Sidebar background
+active_entry_bg = "#1A1A28"    # Active workspace highlight
+active_fg = "#E8E8F0"          # Active workspace name color
+inactive_fg = "#707080"        # Inactive workspace name color
+dim_fg = "#505060"             # Very dim text (info lines)
+git_branch_fg = "#7AA2F7"      # Git branch label color
+separator_color = "#252530"    # Separator line color
+notification_dot = "#FF6E40"   # Unread notification indicator
+git_dirty_color = "#E0AF68"    # Git dirty status indicator
+top_padding = 12.0             # Top padding (px)
+side_padding = 14.0            # Side padding (px)
+entry_gap = 16.0               # Vertical gap between entries (px)
+info_line_gap = 3.0            # Gap between name and info lines (px)
+
+# --- Tab Bar -----------------------------------------------------------------
+[tab_bar]
+format = "{title|cwd_base|Tab {index}}"
+always_show = false            # Show tab bar even with a single tab
+position = "top"               # Tab bar position ("top" or "bottom")
+max_width = 220.0              # Maximum tab width (px)
+height = 38.0                  # Tab bar height (px)
+min_tab_width = 80.0           # Minimum tab width (px)
+new_tab_button_width = 36.0    # Width of "+" new-tab button (px)
+padding_x = 10.0               # Horizontal padding inside tabs (px)
+padding_y = 6.0                # Vertical padding inside tab bar (px)
+accent_height = 2              # Active tab underline thickness (px)
+bottom_border = true           # Show bottom border below tab bar
+bottom_border_color = "#1A1A28" # Bottom border color
+bg = "#0A0A10"                 # Tab bar background
+active_tab_bg = "#181824"      # Active tab background
+active_tab_fg = "#E8E8F0"      # Active tab foreground
+inactive_tab_fg = "#606070"    # Inactive tab foreground
+accent_color = "#7AA2F7"       # Active tab underline accent
+separator_color = "#1A1A24"    # Tab separator color
+close_button_fg = "#505060"    # Close button color
+new_button_fg = "#505060"      # New tab button color
+
+# --- Pane --------------------------------------------------------------------
+[pane]
+separator_color = "#2A2A38"    # Pane separator line color
+focus_border_color = "#7AA2F7CC" # Focused pane border (with alpha)
+separator_width = 1            # Pane separator width (px)
+focus_border_width = 2         # Focused pane border width (px)
+separator_tolerance = 4.0      # Hit tolerance for separator drag (px)
+scrollbar_thumb_opacity = 0.4  # Scrollbar thumb opacity
+scrollbar_track_opacity = 0.08 # Scrollbar track opacity
+
+# --- Search ------------------------------------------------------------------
+[search]
+bar_bg = "#1A1A28F0"           # Search bar background (with alpha)
+input_fg = "#E8E8F0"           # Search input text color
+border_color = "#3A3A50"       # Search bar border color
+
+# --- Command Palette ---------------------------------------------------------
+[palette]
+bg = "#14141EF0"               # Palette background (with alpha)
+border_color = "#3A3A50"       # Palette border color
+input_fg = "#E8E8F0"           # Input text color
+separator_color = "#2A2A38"    # Separator line color
+command_fg = "#C0C0CC"         # Command text color
+selected_bg = "#2A2A40"        # Selected command background
+description_fg = "#606070"     # Command description color
+overlay_color = "#00000060"    # Dark overlay behind palette
+max_height = 400.0             # Maximum palette height (px)
+max_visible_items = 10         # Max visible commands before scrolling
+width_ratio = 0.6              # Palette width as fraction of window
+
+# --- Status Bar --------------------------------------------------------------
+[status_bar]
+enabled = true
+height = 30.0                  # Status bar height (px)
+background = "#0A0A10"         # Status bar background
+padding_x = 0.0                # Horizontal padding (px)
+top_border = true              # Show top border above status bar
+top_border_color = "#1A1A28"   # Top border color
+
+[[status_bar.left]]
+content = "{user}@{host}"
+fg = "#1A1A28"
+bg = "#7AA2F7"
+
+[[status_bar.left]]
+content = "{cwd_short}"
+fg = "#C0C0CC"
+bg = "#1A1A28"
+
+[[status_bar.left]]
+content = "{git_branch} +{git_ahead} -{git_behind} *{git_dirty}"
+fg = "#A6E3A1"
+bg = "#0F0F18"
+
+[[status_bar.right]]
+content = "{ports}"
+fg = "#94E2D5"
+bg = "#0F0F18"
+
+[[status_bar.right]]
+content = "{shell}"
+fg = "#606070"
+bg = "#1A1A28"
+
+[[status_bar.right]]
+content = "{pane_size}"
+fg = "#606070"
+bg = "#0F0F18"
+
+[[status_bar.right]]
+content = "{time}"
+fg = "#1A1A28"
+bg = "#7AA2F7"
