@@ -1,4 +1,4 @@
-.PHONY: all install build run-dev clean test fmt lint check
+.PHONY: all install build build-dev run-dev run-dev-debug run-daemon run-mcp clean test fmt lint check
 
 # Default: build in release mode
 all: build
@@ -18,9 +18,18 @@ install:
 	cargo fetch
 	@echo "==> Done."
 
-# Build in release mode
+# Build release binaries (termojinal, termojinald, tm, termojinal-mcp, termojinal-sign)
 build:
-	cargo build --release
+	cargo build --release --bin termojinal
+	cargo build --release -p termojinal-session --bin termojinald
+	cargo build --release -p termojinal-ipc --bin tm
+	cargo build --release -p termojinal-mcp --bin termojinal-mcp
+	cargo build --release -p termojinal-ipc --bin termojinal-sign
+	@echo "==> Release binaries in target/release/"
+
+# Build dev binary only (faster, unoptimized)
+build-dev:
+	cargo build --bin termojinal-dev
 
 # Run in development mode (debug build, direct PTY)
 run-dev:

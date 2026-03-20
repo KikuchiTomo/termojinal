@@ -8,14 +8,20 @@ class Termojinal < Formula
   depends_on "rust" => :build
 
   def install
-    system "cargo", "build", "--release", "--bin", "termojinal-dev", "--bin", "tm"
+    system "cargo", "build", "--release", "--bin", "termojinal"
     system "cargo", "build", "--release", "-p", "termojinal-session", "--bin", "termojinald"
+    system "cargo", "build", "--release", "-p", "termojinal-ipc", "--bin", "tm"
+    system "cargo", "build", "--release", "-p", "termojinal-mcp", "--bin", "termojinal-mcp"
     system "cargo", "build", "--release", "-p", "termojinal-ipc", "--bin", "termojinal-sign"
 
-    bin.install "target/release/termojinal-dev" => "termojinal"
+    bin.install "target/release/termojinal"
     bin.install "target/release/termojinald"
     bin.install "target/release/tm"
+    bin.install "target/release/termojinal-mcp"
     bin.install "target/release/termojinal-sign"
+
+    # Install app icon for desktop notifications
+    (pkgshare/"icon").install "resources/Assets.xcassets/AppIcon.appiconset/256.png" => "icon.png"
 
     # Install default config if not present
     (etc/"termojinal").mkpath

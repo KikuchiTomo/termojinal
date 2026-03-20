@@ -94,6 +94,16 @@ pub enum AppIpcRequest {
     /// Approve all pending requests in a workspace.
     ApproveAll { workspace: usize },
 
+    // --- Notification ---
+    /// Send a notification to the app.
+    Notify {
+        title: Option<String>,
+        body: Option<String>,
+        subtitle: Option<String>,
+        #[serde(default)]
+        notification_type: Option<String>,
+    },
+
     // --- Legacy ---
     /// Toggle the quick terminal overlay.
     ToggleQuickTerminal,
@@ -408,6 +418,37 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_notify() {
+        let req = AppIpcRequest::Notify {
+            title: Some("Claude Code".to_string()),
+            body: Some("Task complete".to_string()),
+            subtitle: None,
+            notification_type: Some("permission_prompt".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "notify");
+        assert_eq!(parsed["title"], "Claude Code");
+        assert_eq!(parsed["body"], "Task complete");
+        assert_eq!(parsed["notification_type"], "permission_prompt");
+    }
+
+    #[test]
+    fn test_deserialize_notify_minimal() {
+        let req: AppIpcRequest =
+            serde_json::from_str(r#"{"type":"notify"}"#).unwrap();
+        assert_eq!(
+            req,
+            AppIpcRequest::Notify {
+                title: None,
+                body: None,
+                subtitle: None,
+                notification_type: None,
+            }
+        );
+    }
+
+    #[test]
     fn test_serialize_toggle_quick_terminal() {
         let req = AppIpcRequest::ToggleQuickTerminal;
         let json = serde_json::to_string(&req).unwrap();
@@ -567,6 +608,19 @@ mod tests {
             AppIpcRequest::ApproveRequest { request_id: 1 },
             AppIpcRequest::DenyRequest { request_id: 2 },
             AppIpcRequest::ApproveAll { workspace: 0 },
+            // Notification
+            AppIpcRequest::Notify {
+                title: Some("Claude Code".to_string()),
+                body: Some("Task complete".to_string()),
+                subtitle: Some("sub".to_string()),
+                notification_type: Some("permission_prompt".to_string()),
+            },
+            AppIpcRequest::Notify {
+                title: None,
+                body: None,
+                subtitle: None,
+                notification_type: None,
+            },
             // Legacy
             AppIpcRequest::ToggleQuickTerminal,
             AppIpcRequest::ShowPalette,
@@ -680,6 +734,15 @@ mod tests {
             (AppIpcRequest::ApproveRequest { request_id: 0 }, "approve_request"),
             (AppIpcRequest::DenyRequest { request_id: 0 }, "deny_request"),
             (AppIpcRequest::ApproveAll { workspace: 0 }, "approve_all"),
+            (
+                AppIpcRequest::Notify {
+                    title: None,
+                    body: None,
+                    subtitle: None,
+                    notification_type: None,
+                },
+                "notify",
+            ),
             (AppIpcRequest::ToggleQuickTerminal, "toggle_quick_terminal"),
             (AppIpcRequest::ShowPalette, "show_palette"),
         ];

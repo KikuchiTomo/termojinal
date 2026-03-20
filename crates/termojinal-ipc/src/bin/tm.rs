@@ -4,6 +4,7 @@
 //! the JSON IPC protocol defined in `termojinal_ipc::protocol`.
 
 use clap::{Parser, Subcommand};
+use termojinal_ipc::app_protocol::AppIpcRequest;
 use termojinal_ipc::client::IpcClient;
 use termojinal_ipc::protocol::IpcRequest;
 
@@ -50,6 +51,25 @@ enum Commands {
 
     /// Check if the termojinald daemon is running
     Ping,
+
+    /// Send a notification to termojinal
+    Notify {
+        /// Notification title
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Notification body text
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Notification subtitle
+        #[arg(long)]
+        subtitle: Option<String>,
+
+        /// Notification type (e.g. "permission_prompt", "idle_prompt")
+        #[arg(long)]
+        notification_type: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -57,6 +77,24 @@ async fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
+
+    // The `notify` subcommand connects directly to the app socket, not the daemon.
+    if let Commands::Notify {
+        title,
+        body,
+        subtitle,
+        notification_type,
+    } = &cli.command
+    {
+        send_notify(
+            title.clone(),
+            body.clone(),
+            subtitle.clone(),
+            notification_type.clone(),
+        );
+        return;
+    }
+
     let client = IpcClient::default_path();
 
     let request = match &cli.command {
@@ -72,6 +110,7 @@ async fn main() {
             cols: *cols,
             rows: *rows,
         },
+        Commands::Notify { .. } => unreachable!("handled above"),
     };
 
     match client.send(&request).await {
@@ -117,6 +156,7 @@ async fn main() {
                     Commands::Resize { id, cols, rows } => {
                         println!("Resized session {id} to {cols}x{rows}");
                     }
+                    Commands::Notify { .. } => unreachable!("handled above"),
                 }
             } else {
                 let msg = response.error.as_deref().unwrap_or("unknown error");
@@ -127,6 +167,84 @@ async fn main() {
         Err(e) => {
             eprintln!("Error: {e}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Send a notification to the termojinal app via its IPC socket.
+///
+/// Connects directly to the app socket (`termojinal-app.sock`) using
+/// synchronous I/O for minimal latency; fire-and-forget.
+fn send_notify(
+    title: Option<String>,
+    body: Option<String>,
+    subtitle: Option<String>,
+    notification_type: Option<String>,
+) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let sock_path = data_dir
+        .join("termojinal")
+        .join("termojinal-app.sock");
+
+    let request = AppIpcRequest::Notify {
+        title,
+        body,
+        subtitle,
+        notification_type,
+    };
+
+    let mut json = match serde_json::to_string(&request) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("Error serializing request: {e}");
+            std::process::exit(1);
+        }
+    };
+    json.push('\n');
+
+    let mut stream = match UnixStream::connect(&sock_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "Error connecting to termojinal app socket at {}: {e}",
+                sock_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = stream.write_all(json.as_bytes()) {
+        eprintln!("Error writing to app socket: {e}");
+        std::process::exit(1);
+    }
+
+    // Try to read the response (best-effort, with short timeout).
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let reader = BufReader::new(&stream);
+    for line in reader.lines() {
+        match line {
+            Ok(resp) => {
+                let resp = resp.trim().to_string();
+                if !resp.is_empty() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&resp) {
+                        if parsed.get("success").and_then(|v| v.as_bool()) == Some(true) {
+                            println!("Notification sent.");
+                        } else {
+                            let msg = parsed
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown error");
+                            eprintln!("Error: {msg}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                break;
+            }
+            Err(_) => break,
         }
     }
 }

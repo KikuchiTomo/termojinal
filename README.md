@@ -59,7 +59,34 @@ claude config set --global preferredNotifChannel iterm2
 
 This tells Claude Code to send terminal notifications using the OSC 9 protocol, which termojinal natively supports. Without this setting, Claude Code's Allow Flow notifications will not appear.
 
-### 3. Start the daemon (optional, for global hotkeys)
+### 3. Claude Code Hooks (recommended)
+
+For reliable desktop notifications from Claude Code (task complete, permission needed, etc.), install the notification hook:
+
+```bash
+mkdir -p ~/.claude/hooks
+cp hooks/claude-code-notify.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/claude-code-notify.sh
+```
+
+Add the following to your `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "type": "command",
+        "command": "~/.claude/hooks/claude-code-notify.sh"
+      }
+    ]
+  }
+}
+```
+
+This uses the `tm notify` CLI to forward Claude Code events as macOS desktop notifications and sidebar unread indicators.
+
+### 4. Start the daemon (optional, for global hotkeys)
 
 The daemon enables global hotkeys like `Ctrl+`` for Quick Terminal, even when termojinal is not focused.
 
@@ -75,7 +102,7 @@ launchctl load ~/Library/LaunchAgents/com.termojinal.daemon.plist
 Note: The daemon requires **Accessibility permission** for global hotkeys.
 Go to System Settings > Privacy & Security > Accessibility and add `termojinald`.
 
-### 4. MCP server (optional, for Claude Code workspace control)
+### 5. MCP server (optional, for Claude Code workspace control)
 
 termojinal includes an MCP server that lets Claude Code create workspaces, tabs, read terminal content, and manage Allow Flow requests.
 

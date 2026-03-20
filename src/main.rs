@@ -5855,6 +5855,35 @@ fn handle_app_ipc_request(
             AppIpcResponse::ok_empty()
         }
 
+        AppIpcRequest::Notify {
+            title,
+            body,
+            subtitle: _,
+            notification_type,
+        } => {
+            // 1. Send macOS desktop notification.
+            let notif_title = title.as_deref().unwrap_or("termojinal");
+            let notif_body = body.as_deref().unwrap_or("");
+            notification::send_notification(
+                notif_title,
+                notif_body,
+                state.config.notifications.sound,
+            );
+
+            // 2. Mark the active workspace as having unread activity.
+            if let Some(info) = state.workspace_infos.get_mut(state.active_workspace) {
+                info.has_unread = true;
+            }
+
+            // 3. If it's a permission_prompt, show Allow Flow pane hint.
+            if notification_type.as_deref() == Some("permission_prompt") {
+                state.allow_flow.pane_hint_visible = true;
+            }
+
+            state.window.request_redraw();
+            AppIpcResponse::ok_empty()
+        }
+
         AppIpcRequest::ToggleQuickTerminal => {
             toggle_quick_terminal(state);
             AppIpcResponse::ok_empty()

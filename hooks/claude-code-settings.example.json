@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "type": "command",
+        "command": "~/.claude/hooks/claude-code-notify.sh"
+      }
+    ]
+  }
+}

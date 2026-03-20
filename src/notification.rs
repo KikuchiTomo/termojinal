@@ -9,7 +9,30 @@
 /// `title` — notification title (e.g. "termojinal").
 /// `body`  — notification body text.
 /// `sound` — if `true`, plays the default notification sound.
+///
+/// Prefers `terminal-notifier` (shows custom app icon) if available,
+/// falls back to `osascript` (shows Script Editor icon).
 pub fn send_notification(title: &str, body: &str, sound: bool) {
+    // Try terminal-notifier first (supports custom icon).
+    if send_via_terminal_notifier(title, body, sound) {
+        return;
+    }
+    // Fallback to osascript.
+    send_via_osascript(title, body, sound);
+}
+
+fn send_via_terminal_notifier(title: &str, body: &str, sound: bool) -> bool {
+    let mut cmd = std::process::Command::new("terminal-notifier");
+    cmd.args(["-title", title, "-message", body, "-appIcon", icon_path()]);
+    if sound {
+        cmd.args(["-sound", "default"]);
+    }
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.spawn().is_ok()
+}
+
+fn send_via_osascript(title: &str, body: &str, sound: bool) {
     let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
 
@@ -31,6 +54,33 @@ pub fn send_notification(title: &str, body: &str, sound: bool) {
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok();
+}
+
+/// Path to the app icon for notifications.
+fn icon_path() -> &'static str {
+    // At runtime, check common install locations.
+    static ICON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        // Check Homebrew location
+        let candidates = [
+            "/usr/local/share/termojinal/icon.png",
+            "/opt/homebrew/share/termojinal/icon.png",
+        ];
+        for p in &candidates {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+        // Fallback: relative to executable
+        if let Ok(exe) = std::env::current_exe() {
+            let icon = exe.parent().unwrap_or(exe.as_ref())
+                .join("../resources/Assets.xcassets/AppIcon.appiconset/256.png");
+            if icon.exists() {
+                return icon.to_string_lossy().into_owned();
+            }
+        }
+        String::new()
+    })
 }
 
 #[cfg(test)]

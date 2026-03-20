@@ -25,6 +25,10 @@ edition.workspace = true
 name = "termojinal-dev"
 path = "src/main.rs"
 
+[[bin]]
+name = "termojinal"
+path = "src/main.rs"
+
 [dependencies]
 termojinal-pty = { path = "crates/termojinal-pty" }
 termojinal-vt = { path = "crates/termojinal-vt" }
