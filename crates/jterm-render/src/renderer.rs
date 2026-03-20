@@ -116,6 +116,10 @@ pub struct Renderer {
     atlas: Atlas,
     atlas_texture: wgpu::Texture,
     atlas_texture_version: usize,
+    /// Retained font config (logical sizes) for rebuilding atlas on font size / DPI change.
+    font_config: FontConfig,
+    /// Display scale factor (e.g. 2.0 for Retina, 1.0 for FHD).
+    pub scale_factor: f32,
     /// Color emoji atlas (RGBA).
     emoji_atlas: EmojiAtlas,
     emoji_texture: wgpu::Texture,
@@ -124,6 +128,8 @@ pub struct Renderer {
     pub cursor_blink_on: bool,
     /// Background opacity (0.0 = fully transparent, 1.0 = opaque).
     pub bg_opacity: f32,
+    /// Terminal default background color (from theme config, replaces DEFAULT_BG).
+    pub default_bg: [f32; 4],
     /// IME preedit background color.
     pub preedit_bg: [f32; 4],
     /// Scrollbar thumb opacity.
@@ -207,8 +213,14 @@ impl Renderer {
         };
         surface.configure(&device, &surface_config);
 
-        // Build font atlas.
-        let atlas = Atlas::new(font_config)?;
+        // Build font atlas. Config font size is in logical points.
+        // fontdue rasterizes in physical pixels, so scale by DPI factor.
+        let scale = window.scale_factor() as f32;
+        let scaled_config = FontConfig {
+            size: font_config.size * scale,
+            ..font_config.clone()
+        };
+        let atlas = Atlas::new(&scaled_config)?;
 
         // Create atlas texture.
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -517,11 +529,14 @@ impl Renderer {
             atlas,
             atlas_texture,
             atlas_texture_version: atlas_glyph_count,
+            font_config: font_config.clone(),
+            scale_factor: scale,
             emoji_atlas,
             emoji_texture,
             emoji_texture_version: 0,
             cursor_blink_on: true,
             bg_opacity: 1.0,
+            default_bg: color_convert::DEFAULT_BG,
             preedit_bg: [0.15, 0.15, 0.20, 1.0],
             scrollbar_thumb_opacity: 0.5,
             scrollbar_track_opacity: 0.1,
@@ -647,6 +662,8 @@ impl Renderer {
             // — respect the app's background color.
             let mut bg_final = bg;
             if !terminal.modes.alternate_screen && bg == color_convert::DEFAULT_BG {
+                // Use the configured default_bg (from theme) instead of hardcoded DEFAULT_BG.
+                bg_final = self.default_bg;
                 bg_final[3] = self.bg_opacity;
             }
 
@@ -1555,6 +1572,7 @@ impl Renderer {
     ///
     /// Each character is rendered as one cell instance. The text is positioned
     /// at `(px_x, px_y)` in physical pixel coordinates (top-left origin).
+    /// `clip_rect` optionally overrides the scissor rect as `(x, y, w, h)`.
     pub fn render_text(
         &mut self,
         view: &wgpu::TextureView,
@@ -1563,6 +1581,20 @@ impl Renderer {
         px_y: f32,
         fg: [f32; 4],
         bg: [f32; 4],
+    ) {
+        self.render_text_clipped(view, text, px_x, px_y, fg, bg, None);
+    }
+
+    /// Like `render_text` but with an optional explicit scissor clip rect.
+    pub fn render_text_clipped(
+        &mut self,
+        view: &wgpu::TextureView,
+        text: &str,
+        px_x: f32,
+        px_y: f32,
+        fg: [f32; 4],
+        bg: [f32; 4],
+        clip_rect: Option<(u32, u32, u32, u32)>,
     ) {
         if text.is_empty() {
             return;
@@ -1670,14 +1702,19 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Clip to the text region.
-            let text_width = (col as f32 * cell_w).ceil() as u32;
-            let text_height = cell_h.ceil() as u32;
+            // Clip to the text region (or custom clip rect).
+            let (clip_x, clip_y, clip_w, clip_h) = if let Some((cx, cy, cw, ch)) = clip_rect {
+                (cx, cy, cw, ch)
+            } else {
+                let text_width = (col as f32 * cell_w).ceil() as u32;
+                let text_height = cell_h.ceil() as u32;
+                (px_x as u32, px_y as u32, text_width, text_height)
+            };
             render_pass.set_scissor_rect(
-                px_x as u32,
-                px_y as u32,
-                text_width.min(surface_w as u32 - px_x as u32),
-                text_height.min(surface_h as u32 - px_y as u32),
+                clip_x.min(surface_w as u32),
+                clip_y.min(surface_h as u32),
+                clip_w.min(surface_w as u32 - clip_x.min(surface_w as u32)),
+                clip_h.min(surface_h as u32 - clip_y.min(surface_h as u32)),
             );
 
             render_pass.set_pipeline(&self.render_pipeline);
@@ -1695,9 +1732,14 @@ impl Renderer {
     /// Change the font size by recreating the atlas and emoji atlas with the new size.
     ///
     /// After calling this, all panes must be resized (since cell dimensions change).
+    /// Change the logical font size (in points). Rebuilds the atlas at `size * scale_factor`.
     pub fn set_font_size(&mut self, size: f32) -> Result<(), RenderError> {
-        let font_config = FontConfig { size, ..FontConfig::default() };
-        self.atlas = Atlas::new(&font_config)?;
+        self.font_config = FontConfig { size, ..self.font_config.clone() };
+        let scaled_config = FontConfig {
+            size: size * self.scale_factor,
+            ..self.font_config.clone()
+        };
+        self.atlas = Atlas::new(&scaled_config)?;
 
         // Recreate atlas texture with the new atlas dimensions.
         self.atlas_texture = self.device.create_texture(&wgpu::TextureDescriptor {

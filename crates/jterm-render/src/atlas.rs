@@ -30,6 +30,10 @@ impl Default for FontConfig {
 pub struct CellSize {
     pub width: f32,
     pub height: f32,
+    /// Font ascent (distance from baseline to top of tallest glyph).
+    pub ascent: f32,
+    /// Font descent (negative, distance from baseline to bottom of lowest glyph).
+    pub descent: f32,
 }
 
 /// UV region within the atlas for a single glyph (in texel coordinates).
@@ -88,6 +92,8 @@ impl Atlas {
         let cell_size = CellSize {
             width: cell_width,
             height: cell_height,
+            ascent,
+            descent,
         };
 
         let cell_w = cell_width as u32;

@@ -146,7 +146,7 @@ pub struct FontSection {
 }
 
 fn default_font_family() -> String { "monospace".into() }
-fn default_font_size() -> f32 { 16.0 }
+fn default_font_size() -> f32 { 14.0 }
 fn default_line_height() -> f32 { 1.2 }
 fn default_max_font_size() -> f32 { 72.0 }
 fn default_font_size_step() -> f32 { 1.0 }
@@ -254,10 +254,10 @@ fn default_sidebar_git_branch_fg() -> String { "#5AB3D9".into() }
 fn default_sidebar_separator_color() -> String { "#333338".into() }
 fn default_sidebar_notification_dot() -> String { "#FF941A".into() }
 fn default_sidebar_git_dirty_color() -> String { "#CCB34D".into() }
-fn default_sidebar_top_pad() -> f32 { 8.0 }
-fn default_sidebar_side_pad() -> f32 { 10.0 }
-fn default_sidebar_entry_gap() -> f32 { 12.0 }
-fn default_sidebar_info_line_gap() -> f32 { 4.0 }
+fn default_sidebar_top_pad() -> f32 { 6.0 }
+fn default_sidebar_side_pad() -> f32 { 6.0 }
+fn default_sidebar_entry_gap() -> f32 { 4.0 }
+fn default_sidebar_info_line_gap() -> f32 { 1.0 }
 
 impl Default for SidebarConfig {
     fn default() -> Self {
@@ -347,8 +347,8 @@ fn default_tab_accent_color() -> String { "#4D8CFF".into() }
 fn default_tab_separator_color() -> String { "#383840".into() }
 fn default_tab_close_button_fg() -> String { "#808088".into() }
 fn default_tab_new_button_fg() -> String { "#808088".into() }
-fn default_tab_padding_x() -> f32 { 8.0 }
-fn default_tab_padding_y() -> f32 { 4.0 }
+fn default_tab_padding_x() -> f32 { 6.0 }
+fn default_tab_padding_y() -> f32 { 6.0 }
 fn default_tab_accent_height() -> u32 { 2 }
 fn default_tab_bottom_border() -> bool { true }
 fn default_tab_bottom_border_color() -> String { "#2A2A34".into() }
@@ -541,6 +541,7 @@ pub struct StatusBarConfig {
     pub height: f32,
     #[serde(default = "default_status_bg")]
     pub background: String,
+    #[allow(dead_code)]
     #[serde(default = "default_status_padding_x")]
     pub padding_x: f32,
     #[serde(default = "default_status_top_border")]
@@ -562,19 +563,19 @@ fn default_status_top_border_color() -> String { "#2A2A34".into() }
 
 fn default_left_segments() -> Vec<StatusSegment> {
     vec![
-        StatusSegment { content: " {user}@{host} ".into(), fg: "#FFFFFF".into(), bg: "#3A3AFF".into() },
-        StatusSegment { content: " {cwd_short} ".into(), fg: "#CCCCCC".into(), bg: "#2A2A34".into() },
-        StatusSegment { content: " {git_branch} {git_status} ".into(), fg: "#A6E3A1".into(), bg: "#1A1A24".into() },
+        StatusSegment { content: "{user}@{host}".into(), fg: "#FFFFFF".into(), bg: "#3A3AFF".into() },
+        StatusSegment { content: "{cwd_short}".into(), fg: "#CCCCCC".into(), bg: "#2A2A34".into() },
+        StatusSegment { content: "{git_branch} {git_status}".into(), fg: "#A6E3A1".into(), bg: "#1A1A24".into() },
     ]
 }
 
 fn default_right_segments() -> Vec<StatusSegment> {
     vec![
-        StatusSegment { content: " {ports} ".into(), fg: "#94E2D5".into(), bg: "#1A1A24".into() },
-        StatusSegment { content: " {shell} ".into(), fg: "#888888".into(), bg: "#2A2A34".into() },
-        StatusSegment { content: " {pane_size} ".into(), fg: "#888888".into(), bg: "#1A1A24".into() },
-        StatusSegment { content: " {font_size}px ".into(), fg: "#888888".into(), bg: "#2A2A34".into() },
-        StatusSegment { content: " {time} ".into(), fg: "#FFFFFF".into(), bg: "#3A3AFF".into() },
+        StatusSegment { content: "{ports}".into(), fg: "#94E2D5".into(), bg: "#1A1A24".into() },
+        StatusSegment { content: "{shell}".into(), fg: "#888888".into(), bg: "#2A2A34".into() },
+        StatusSegment { content: "{pane_size}".into(), fg: "#888888".into(), bg: "#1A1A24".into() },
+        StatusSegment { content: "{font_size}px".into(), fg: "#888888".into(), bg: "#2A2A34".into() },
+        StatusSegment { content: "{time}".into(), fg: "#FFFFFF".into(), bg: "#3A3AFF".into() },
     ]
 }
 

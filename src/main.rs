@@ -688,6 +688,8 @@ struct AppState {
     tab_drag: Option<TabDrag>,
     config: JtermConfig,
     status_cache: StatusCache,
+    /// Current display scale factor (e.g. 2.0 for Retina, 1.0 for FHD).
+    scale_factor: f64,
 }
 
 /// Helper to access the active workspace immutably.
@@ -733,15 +735,21 @@ fn update_tab_title(tab: &mut Tab, format: &str, tab_index: usize) {
 }
 
 /// Compute the content area that excludes the tab bar, sidebar, and status bar.
+/// Effective status bar height (accounts for cell height minimum).
+fn effective_status_bar_height(state: &AppState) -> f32 {
+    if !state.config.status_bar.enabled {
+        return 0.0;
+    }
+    let cell_h = state.renderer.cell_size().height;
+    let bar_pad = 4.0_f32;
+    state.config.status_bar.height.max(cell_h + bar_pad * 2.0)
+}
+
 /// Returns (content_x, content_y, content_w, content_h) in physical pixels.
 fn content_area(state: &AppState, phys_w: f32, phys_h: f32) -> (f32, f32, f32, f32) {
     let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
     let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
-    let status_bar_h = if state.config.status_bar.enabled {
-        state.config.status_bar.height
-    } else {
-        0.0
-    };
+    let status_bar_h = effective_status_bar_height(state);
     let content_x = sidebar_w;
     let content_y = tab_bar_h;
     let content_w = (phys_w - sidebar_w).max(1.0);
@@ -1050,6 +1058,7 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         let cfg = self.config.as_ref().map(|c| c.clone()).unwrap_or_default();
+        let initial_scale_factor = window.scale_factor();
         let font_config = FontConfig {
             family: cfg.font.family.clone(),
             size: cfg.font.size,
@@ -1065,6 +1074,7 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         // Set renderer fields from config.
+        renderer.default_bg = color_or(&cfg.theme.background, [0.067, 0.067, 0.09, 1.0]);
         renderer.bg_opacity = opacity;
         renderer.preedit_bg = color_or(&cfg.theme.preedit_bg, [0.15, 0.15, 0.20, 1.0]);
         renderer.scrollbar_thumb_opacity = cfg.pane.scrollbar_thumb_opacity;
@@ -1128,6 +1138,7 @@ impl ApplicationHandler<UserEvent> for App {
             tab_drag: None,
             config: cfg.clone(),
             status_cache: StatusCache::new(),
+            scale_factor: initial_scale_factor,
         });
 
         // Detect ProMotion display and try low-latency present mode.
@@ -1192,6 +1203,21 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 state.renderer.resize(size.width, size.height);
+                resize_all_panes(state);
+                state.window.request_redraw();
+            }
+
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let old_scale = state.scale_factor;
+                state.scale_factor = scale_factor;
+                state.renderer.scale_factor = scale_factor as f32;
+                log::info!("scale factor changed: {old_scale} -> {scale_factor}");
+
+                // Rebuild font atlas at new DPI. Logical font size unchanged,
+                // but physical rasterization pixels = logical * scale_factor.
+                if let Err(e) = state.renderer.set_font_size(state.font_size) {
+                    log::error!("failed to rebuild font atlas on scale change: {e}");
+                }
                 resize_all_panes(state);
                 state.window.request_redraw();
             }
@@ -2707,8 +2733,10 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
     let bar_x = sidebar_w as u32;
     let bar_w = (phys_w - sidebar_w).max(0.0) as u32;
-    let bar_h = state.config.tab_bar.height as u32;
+    let bar_h_f = state.config.tab_bar.height;
+    let bar_h = bar_h_f as u32;
     let accent_h = state.config.tab_bar.accent_height;
+    let tab_pad_x = state.config.tab_bar.padding_x;
     let tab_pad_y = state.config.tab_bar.padding_y;
 
     // Draw tab bar background.
@@ -2726,7 +2754,7 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let active_tab_idx = ws.active_tab;
     let num_tabs = ws.tabs.len();
     let mut tab_x: f32 = sidebar_w;
-    let text_y = tab_pad_y + (state.config.tab_bar.height - 2.0 * tab_pad_y - cell_h) / 2.0;
+    let text_y = (bar_h_f - cell_h) / 2.0;
 
     for (i, tab) in ws.tabs.iter().enumerate() {
         let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
@@ -2764,7 +2792,7 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
             state.renderer.render_text(
                 view,
                 dot_str,
-                tab_x + cell_w * 0.5,
+                tab_x + tab_pad_x,
                 text_y.max(0.0),
                 accent_color,
                 bg,
@@ -2775,7 +2803,7 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
         };
 
         // Title text.
-        let text_x = tab_x + cell_w + dot_offset;
+        let text_x = tab_x + tab_pad_x + dot_offset;
         // Truncate title if it won't fit (leave room for close button).
         let avail_chars =
             ((tab_w - 3.5 * cell_w - dot_offset) / cell_w).max(1.0) as usize;
@@ -2790,7 +2818,7 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
 
         // Close button: show `\u{00d7}` (always for active tab, area is always clickable).
         if is_active || num_tabs > 1 {
-            let close_x = tab_x + tab_w - 1.5 * cell_w;
+            let close_x = tab_x + tab_w - tab_pad_x - cell_w;
             let close_char = "\u{00D7}"; // ×
             state.renderer.render_text(
                 view,
@@ -2806,12 +2834,13 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
 
         // Draw vertical separator between tabs (1px).
         if i < num_tabs - 1 {
+            let sep_margin = tab_pad_y as u32;
             state.renderer.submit_separator(
                 view,
                 tab_x as u32,
-                4,          // 4px top margin
-                1,          // 1px wide
-                (bar_h - 8).max(1), // 4px top + 4px bottom margin
+                sep_margin,
+                1,
+                bar_h.saturating_sub(sep_margin * 2).max(1),
                 separator_color,
             );
         }
@@ -2885,7 +2914,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     }
 
     // --- Draw workspace entries ---
-    let text_left = side_pad + cell_w * 2.0; // space for dot + gap
+    // Layout: [side_pad] [dot] [gap] [text ...] [side_pad]
+    let dot_area = cell_w * 1.5; // dot character + small gap
+    let text_left = side_pad + dot_area;
     let max_chars = ((sidebar_w - text_left - side_pad) / cell_w).max(1.0) as usize;
     let num_workspaces = state.workspaces.len();
     let mut entry_y = top_pad;
@@ -2927,16 +2958,16 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             content_h += info_line_gap + cell_h; // ports line
         }
 
-        // --- Active workspace: subtle highlight background ---
+        // --- Active workspace: highlight background (full sidebar width) ---
+        let entry_pad_y = entry_gap / 2.0; // vertical padding around highlight
         let bg = if is_active { active_entry_bg } else { sidebar_bg };
         if is_active {
-            let highlight_pad = 4.0;
             state.renderer.submit_separator(
                 view,
-                (side_pad - highlight_pad) as u32,
-                (entry_y - highlight_pad) as u32,
-                (sidebar_w - 2.0 * (side_pad - highlight_pad)) as u32,
-                (content_h + 2.0 * highlight_pad) as u32,
+                0,
+                (entry_y - entry_pad_y).max(0.0) as u32,
+                sidebar_w as u32,
+                (content_h + entry_pad_y * 2.0) as u32,
                 active_entry_bg,
             );
         }
@@ -3019,7 +3050,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 }
             };
             let cwd_trimmed: String = cwd_display.chars().take(max_chars).collect();
-            let indent = text_left + cell_w;
+            let indent = text_left;
             state.renderer.render_text(view, &cwd_trimmed, indent, line_y, dim_fg, bg);
             line_y += cell_h;
         }
@@ -3055,7 +3086,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 } else {
                     dim_fg
                 };
-                let indent = text_left + cell_w; // extra indent for sub-info
+                let indent = text_left; // extra indent for sub-info
                 state.renderer.render_text(view, &git_display, indent, line_y, git_fg, bg);
                 line_y += cell_h;
             }
@@ -3069,7 +3100,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         .collect::<Vec<_>>()
                         .join(" "));
                 let ports_display: String = ports_str.chars().take(max_chars).collect();
-                let indent = text_left + cell_w;
+                let indent = text_left;
                 state.renderer.render_text(view, &ports_display, indent, line_y, dim_fg, bg);
             }
         }
@@ -3216,6 +3247,12 @@ fn build_status_context(state: &mut AppState) -> StatusContext {
     }
 }
 
+/// Calculate the display width of a string in cell units (accounting for wide chars).
+fn str_display_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    s.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(1)).sum()
+}
+
 /// Render the bottom status bar.
 fn render_status_bar(
     state: &mut AppState,
@@ -3233,106 +3270,80 @@ fn render_status_bar(
     let cell_w = state.renderer.cell_size().width;
     let cell_h = state.renderer.cell_size().height;
     let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
-    let bar_h = cfg.height;
-    let bar_y = phys_h - bar_h;
-    let bar_x = sidebar_w;
-    let bar_w = (phys_w - sidebar_w).max(0.0);
+    // Bar height: at least cell_h + padding.
+    let bar_h = effective_status_bar_height(state);
+    let bar_x = sidebar_w.floor();
+    let bar_w = (phys_w - bar_x).floor();
+    let bar_y = (phys_h - bar_h).floor();
 
     // Draw full status bar background.
     let status_bg = parse_hex_color(&cfg.background).unwrap_or([0.1, 0.1, 0.14, 1.0]);
-    state.renderer.submit_separator(
-        view,
-        bar_x as u32,
-        bar_y as u32,
-        bar_w as u32,
-        bar_h as u32,
-        status_bg,
-    );
+    let bar_yi = bar_y as u32;
+    let bar_hi = bar_h as u32;
+    state.renderer.submit_separator(view, bar_x as u32, bar_yi, bar_w as u32, bar_hi, status_bg);
 
     // Draw top border if enabled.
     if cfg.top_border {
         let border_color = color_or(&cfg.top_border_color, [
-            status_bg[0] + 0.08,
-            status_bg[1] + 0.08,
-            status_bg[2] + 0.08,
-            1.0,
+            (status_bg[0] + 0.08).min(1.0), (status_bg[1] + 0.08).min(1.0),
+            (status_bg[2] + 0.08).min(1.0), 1.0,
         ]);
-        state.renderer.submit_separator(
-            view,
-            bar_x as u32,
-            bar_y as u32,
-            bar_w as u32,
-            1,
-            border_color,
-        );
+        state.renderer.submit_separator(view, bar_x as u32, bar_yi, bar_w as u32, 1, border_color);
     }
 
-    let text_y = bar_y + (bar_h - cell_h) / 2.0;
-    let pad_x = cfg.padding_x;
+    // Optically center text within the bar.
+    // The cell includes descent space below the baseline, so mathematical center
+    // looks too high. Shift down by ~half the descent to visually center the
+    // cap-height region (where most text lives).
+    let descent = state.renderer.cell_size().descent.abs();
+    let optical_offset = (descent * 0.4).round();
+    let text_y = (bar_y + (bar_h - cell_h) / 2.0 + optical_offset).floor();
 
-    // Render left-aligned segments.
-    let mut cursor_x = bar_x + pad_x;
-    for seg in &cfg.left {
-        let expanded = expand_status_variables(&seg.content, &ctx);
-        if segment_is_empty(&expanded) {
-            continue;
-        }
-        let fg = parse_hex_color(&seg.fg).unwrap_or([0.8, 0.8, 0.8, 1.0]);
-        let bg = parse_hex_color(&seg.bg).unwrap_or(status_bg);
-        let seg_w = expanded.len() as f32 * cell_w;
+    // Segment horizontal padding (each side).
+    let seg_pad = cell_w;
 
-        // Draw segment background.
-        state.renderer.submit_separator(
-            view,
-            cursor_x as u32,
-            bar_y as u32,
-            seg_w as u32,
-            bar_h as u32,
-            bg,
-        );
-
-        // Draw segment text.
-        state.renderer.render_text(view, &expanded, cursor_x, text_y, fg, bg);
-        cursor_x += seg_w;
-    }
-
-    // Render right-aligned segments (compute total width first, then draw right-to-left).
-    let right_segments: Vec<(String, [f32; 4], [f32; 4])> = cfg
-        .right
-        .iter()
-        .filter_map(|seg| {
-            let expanded = expand_status_variables(&seg.content, &ctx);
-            if segment_is_empty(&expanded) {
-                return None;
-            }
+    // --- Expand all segments and compute widths ---
+    // Segment width = text width + padding on each side.
+    let expand_segs = |segs: &[config::StatusSegment]| -> Vec<(String, [f32; 4], [f32; 4], f32, f32)> {
+        segs.iter().filter_map(|seg| {
+            let text = expand_status_variables(&seg.content, &ctx);
+            if segment_is_empty(&text) { return None; }
             let fg = parse_hex_color(&seg.fg).unwrap_or([0.8, 0.8, 0.8, 1.0]);
             let bg = parse_hex_color(&seg.bg).unwrap_or(status_bg);
-            Some((expanded, fg, bg))
-        })
-        .collect();
+            let text_w = (str_display_width(&text) as f32 * cell_w).ceil();
+            let seg_w = text_w + seg_pad * 2.0;
+            Some((text, fg, bg, seg_w, text_w))
+        }).collect()
+    };
 
-    let total_right_w: f32 = right_segments
-        .iter()
-        .map(|(text, _, _)| text.len() as f32 * cell_w)
-        .sum();
+    let left_segs = expand_segs(&cfg.left);
+    let right_segs = expand_segs(&cfg.right);
 
-    let mut right_x = bar_x + bar_w - total_right_w - pad_x;
-    for (text, fg, bg) in &right_segments {
-        let seg_w = text.len() as f32 * cell_w;
+    // --- Render segments ---
+    // Text is horizontally centered within each segment.
+    let text_yi = text_y as u32;
 
-        // Draw segment background.
-        state.renderer.submit_separator(
-            view,
-            right_x as u32,
-            bar_y as u32,
-            seg_w as u32,
-            bar_h as u32,
-            *bg,
+    let render_seg = |state: &mut AppState, xi: u32, text: &str, fg: [f32; 4], bg: [f32; 4], seg_w: f32, text_w: f32| {
+        let wi = seg_w as u32;
+        state.renderer.submit_separator(view, xi, bar_yi, wi, bar_hi, bg);
+        let text_x = xi as f32 + ((seg_w - text_w) / 2.0).floor();
+        state.renderer.render_text_clipped(
+            view, text, text_x, text_yi as f32, fg, bg,
+            Some((xi, bar_yi, wi, bar_hi)),
         );
+    };
 
-        // Draw segment text.
-        state.renderer.render_text(view, text, right_x, text_y, *fg, *bg);
-        right_x += seg_w;
+    let mut xi = bar_x as u32;
+    for (text, fg, bg, seg_w, text_w) in &left_segs {
+        render_seg(state, xi, text, *fg, *bg, *seg_w, *text_w);
+        xi += *seg_w as u32;
+    }
+
+    let total_right: u32 = right_segs.iter().map(|(_, _, _, sw, _)| *sw as u32).sum();
+    let mut xi = (bar_x as u32 + bar_w as u32).saturating_sub(total_right);
+    for (text, fg, bg, seg_w, text_w) in &right_segs {
+        render_seg(state, xi, text, *fg, *bg, *seg_w, *text_w);
+        xi += *seg_w as u32;
     }
 }
 
@@ -3361,7 +3372,7 @@ fn render_frame(state: &mut AppState) -> Result<(), jterm_render::RenderError> {
         term_bg[3] = state.config.window.opacity;
         let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
         let tab_h = if has_tab_bar { state.config.tab_bar.height } else { 0.0 };
-        let status_h = if state.config.status_bar.enabled { state.config.status_bar.height } else { 0.0 };
+        let status_h = effective_status_bar_height(state);
         let content_x = sidebar_w as u32;
         let content_y = tab_h as u32;
         let content_w = (phys_w - sidebar_w).max(0.0) as u32;
