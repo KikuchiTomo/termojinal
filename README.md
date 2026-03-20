@@ -10,6 +10,28 @@ I could have contributed to one of those existing, excellent projects. But if I 
 I have a deep appreciation for cmux's design aesthetic, and an equal love for iTerm's usability. Termojinal lives somewhere between the two — with the addition of a command palette, so you can reach anything, from anywhere, with joy.
 For now, this is a selfish project — of my vibe, by my vibe, for my vibe. Like bonsai, I intend to tend to it slowly, day by day, pruning and shaping it through daily use.
 
+## Features
+
+- GPU-accelerated rendering with wgpu + Metal
+- Workspace, tab, and split pane management with an immutable tree layout
+- Vertical sidebar showing workspaces, git branches, listening ports, and AI status
+- Command palette with fuzzy search and external plugin support via stdio JSON
+- Allow Flow — approve or deny AI agent permission requests inline from the sidebar
+- Batch approve/deny across multiple pending requests with a single keystroke
+- Quick Terminal — global hotkey summons the terminal instantly from anywhere
+- Dark/light theme auto-switching following macOS appearance
+- Full ANSI 16-color palette configurable per theme
+- SDF rounded rectangle and Gaussian blur shaders for overlay UI
+- CJK full-width character support and inline Japanese IME
+- Emoji rendering via Core Text with proper Unicode Emoji_Presentation handling
+- Scrollback with hot (memory) + warm (mmap) hybrid storage
+- Image protocols — Kitty Graphics, Sixel, iTerm2 inline images
+- Ed25519 command signing for verified plugins
+- MCP server so Claude Code can create workspaces, read terminal content, and manage Allow Flow
+- Desktop notifications via Notification Center with app icon
+- One-command setup (`tm setup`) configures Claude Code hooks and notification channel
+- Homebrew installable with launchd daemon auto-start
+
 ## Installation
 
 ### Prerequisites
@@ -42,71 +64,35 @@ curl -fsSL https://raw.githubusercontent.com/KikuchiTomo/termojinal/main/dist/in
 
 ## Setup
 
-### 1. Configuration
-
 ```bash
-mkdir -p ~/.config/termojinal
-cp resources/config.example.toml ~/.config/termojinal/config.toml
+tm setup
 ```
 
-### 2. Claude Code integration (required for AI features)
+This one command does everything:
+- Creates `~/.config/termojinal/` with default config
+- Links bundled commands (start-review, run-agent, etc.)
+- Configures Claude Code notification channel (OSC 9 via `preferredNotifChannel = iterm2`)
+- Installs Claude Code notification hook (`~/.claude/hooks/termojinal-notify.sh`)
+- Registers the hook in `~/.claude/settings.json`
 
-termojinal supports Claude Code's permission notifications via OSC 9 (iTerm2 protocol). Run:
+### Daemon (optional, for global hotkeys)
 
-```bash
-claude config set --global preferredNotifChannel iterm2
-```
-
-This tells Claude Code to send terminal notifications using the OSC 9 protocol, which termojinal natively supports. Without this setting, Claude Code's Allow Flow notifications will not appear.
-
-### 3. Claude Code Hooks (recommended)
-
-For reliable desktop notifications from Claude Code (task complete, permission needed, etc.), install the notification hook:
+Enables `` Ctrl+` `` Quick Terminal even when termojinal is not focused.
 
 ```bash
-mkdir -p ~/.claude/hooks
-cp hooks/claude-code-notify.sh ~/.claude/hooks/
-chmod +x ~/.claude/hooks/claude-code-notify.sh
-```
-
-Add the following to your `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      {
-        "type": "command",
-        "command": "~/.claude/hooks/claude-code-notify.sh"
-      }
-    ]
-  }
-}
-```
-
-This uses the `tm notify` CLI to forward Claude Code events as macOS desktop notifications and sidebar unread indicators.
-
-### 4. Start the daemon (optional, for global hotkeys)
-
-The daemon enables global hotkeys like `Ctrl+`` for Quick Terminal, even when termojinal is not focused.
-
-```bash
-# Manual start
+# Manual
 make run-daemon
 
-# Auto-start on login (launchd)
+# Auto-start on login
 cp dist/launchd/com.termojinal.daemon.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.termojinal.daemon.plist
 ```
 
-Note: The daemon requires **Accessibility permission** for global hotkeys.
-Go to System Settings > Privacy & Security > Accessibility and add `termojinald`.
+Requires **Accessibility permission**: System Settings > Privacy & Security > Accessibility > add `termojinald`.
 
-### 5. MCP server (optional, for Claude Code workspace control)
+### MCP server (optional, for Claude Code workspace control)
 
-termojinal includes an MCP server that lets Claude Code create workspaces, tabs, read terminal content, and manage Allow Flow requests.
-
-Add to your Claude Code MCP settings:
+Lets Claude Code create workspaces, tabs, read terminal content, and manage Allow Flow.
 
 ```json
 {
@@ -121,6 +107,7 @@ Add to your Claude Code MCP settings:
 ## Usage
 
 ```bash
+termojinal          # release
 make run-dev        # development mode
 make run-dev-debug  # with debug logging
 ```
@@ -165,18 +152,15 @@ Place command scripts in `~/.config/termojinal/commands/`:
 
 Bundled commands: `start-review`, `switch-worktree`, `kill-merged`, `clone-and-open`, `run-agent`, `hello-world`.
 
-Install bundled commands:
-```bash
-cp -r commands/* ~/.config/termojinal/commands/
-```
+Install bundled commands: `tm setup` (or manually: `cp -r commands/* ~/.config/termojinal/commands/`)
 
 ## Architecture
 
 ```
-termojinal-dev    GUI application (wgpu + Metal + winit)
+termojinal        GUI application (wgpu + Metal + winit)
 termojinald       Session daemon (PTY management + global hotkeys)
 termojinal-mcp    MCP server (Claude Code integration)
-tm                CLI tool (IPC client)
+tm                CLI tool (IPC client + setup)
 ```
 
 ### Crate structure
