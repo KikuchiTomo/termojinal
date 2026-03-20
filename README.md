@@ -1,6 +1,6 @@
 # termojinal
 
-Terminal of the vibe, by the vibe, for the vibe.
+Terminal of the vibe coding, by the vibe coding, for the vibe coding.
 
 ## What is this?
 
