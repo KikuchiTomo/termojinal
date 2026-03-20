@@ -227,7 +227,7 @@ impl AllowFlowUI {
     }
 
     /// Write a response string to the appropriate pane's PTY.
-    fn write_to_pty(
+    pub fn write_to_pty(
         pane_ptys: &mut std::collections::HashMap<u64, *mut Pty>,
         pane_id: u64,
         data: &str,

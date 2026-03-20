@@ -8,10 +8,13 @@ mod notification;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 
 use config::{color_or, format_tab_title, load_config, parse_hex_color, resolve_theme, TermojinalConfig};
 
+use serde_json::json;
+use termojinal_ipc::app_protocol::{AppIpcRequest, AppIpcResponse};
 use termojinal_ipc::command_loader::{self, LoadedCommand};
 use termojinal_ipc::keybinding::{Action, KeybindingConfig};
 
@@ -282,6 +285,10 @@ enum UserEvent {
     PtyExited(PaneId),
     StatusUpdate,
     ToggleQuickTerminal,
+    AppIpc {
+        request: AppIpcRequest,
+        response_tx: std_mpsc::Sender<AppIpcResponse>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -2951,6 +2958,21 @@ impl ApplicationHandler<UserEvent> for App {
                 let Some(state) = &mut self.state else { return };
                 toggle_quick_terminal(state);
             }
+            UserEvent::AppIpc {
+                request,
+                response_tx,
+            } => {
+                let Some(state) = &mut self.state else { return };
+                let response = handle_app_ipc_request(
+                    state,
+                    &request,
+                    &self.proxy,
+                    &self.pty_buffers,
+                    event_loop,
+                );
+                let _ = response_tx.send(response);
+                state.window.request_redraw();
+            }
         }
     }
 }
@@ -5463,6 +5485,422 @@ fn add_icon_padding(png_bytes: &[u8]) -> Option<Vec<u8>> {
 fn set_dock_icon() {}
 
 // ---------------------------------------------------------------------------
+// App IPC request handler (JSON protocol)
+// ---------------------------------------------------------------------------
+
+/// Handle a structured `AppIpcRequest` and return an `AppIpcResponse`.
+///
+/// This is called on the GUI thread from the `UserEvent::AppIpc` handler.
+fn handle_app_ipc_request(
+    state: &mut AppState,
+    request: &AppIpcRequest,
+    proxy: &EventLoopProxy<UserEvent>,
+    buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+    event_loop: &ActiveEventLoop,
+) -> AppIpcResponse {
+    match request {
+        AppIpcRequest::Ping => AppIpcResponse::ok(json!("pong")),
+
+        AppIpcRequest::GetStatus => {
+            let ws_idx = state.active_workspace;
+            let ws = &state.workspaces[ws_idx];
+            let tab = &ws.tabs[ws.active_tab];
+            let focused_id = tab.layout.focused();
+            AppIpcResponse::ok(json!({
+                "active_workspace": ws_idx,
+                "workspace_name": ws.name,
+                "active_tab": ws.active_tab,
+                "focused_pane": focused_id,
+                "workspace_count": state.workspaces.len(),
+            }))
+        }
+
+        AppIpcRequest::GetConfig => {
+            AppIpcResponse::ok(json!({
+                "font_size": state.config.font.size,
+                "opacity": state.config.window.opacity,
+                "theme_bg": state.config.theme.background,
+                "theme_fg": state.config.theme.foreground,
+            }))
+        }
+
+        AppIpcRequest::ListWorkspaces => {
+            let workspaces: Vec<_> = state
+                .workspaces
+                .iter()
+                .enumerate()
+                .map(|(i, ws)| {
+                    json!({
+                        "index": i,
+                        "name": ws.name,
+                        "tab_count": ws.tabs.len(),
+                        "active_tab": ws.active_tab,
+                        "is_active": i == state.active_workspace,
+                    })
+                })
+                .collect();
+            AppIpcResponse::ok(json!({ "workspaces": workspaces }))
+        }
+
+        AppIpcRequest::CreateWorkspace { name, .. } => {
+            dispatch_action(state, &Action::NewWorkspace, proxy, buffers, event_loop);
+            // Optionally set the workspace name.
+            if let Some(name) = name {
+                if let Some(ws) = state.workspaces.last_mut() {
+                    ws.name = name.clone();
+                }
+            }
+            AppIpcResponse::ok(json!({ "index": state.workspaces.len() - 1 }))
+        }
+
+        AppIpcRequest::SwitchWorkspace { index } => {
+            if *index < state.workspaces.len() {
+                state.active_workspace = *index;
+                state.window.request_redraw();
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err(format!("workspace index {} out of range", index))
+            }
+        }
+
+        AppIpcRequest::CloseWorkspace { index } => {
+            if *index < state.workspaces.len() && state.workspaces.len() > 1 {
+                state.workspaces.remove(*index);
+                if state.active_workspace >= state.workspaces.len() {
+                    state.active_workspace = state.workspaces.len() - 1;
+                }
+                state.window.request_redraw();
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err("cannot close workspace")
+            }
+        }
+
+        AppIpcRequest::ListTabs { workspace } => {
+            let ws_idx = workspace.unwrap_or(state.active_workspace);
+            if let Some(ws) = state.workspaces.get(ws_idx) {
+                let tabs: Vec<_> = ws
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tab)| {
+                        json!({
+                            "index": i,
+                            "name": tab.name,
+                            "pane_count": tab.panes.len(),
+                            "is_active": i == ws.active_tab,
+                        })
+                    })
+                    .collect();
+                AppIpcResponse::ok(json!({ "tabs": tabs }))
+            } else {
+                AppIpcResponse::err("invalid workspace index")
+            }
+        }
+
+        AppIpcRequest::CreateTab { .. } => {
+            dispatch_action(state, &Action::NewTab, proxy, buffers, event_loop);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::SwitchTab { workspace, index } => {
+            let ws_idx = workspace.unwrap_or(state.active_workspace);
+            if let Some(ws) = state.workspaces.get_mut(ws_idx) {
+                if *index < ws.tabs.len() {
+                    ws.active_tab = *index;
+                    state.window.request_redraw();
+                    AppIpcResponse::ok_empty()
+                } else {
+                    AppIpcResponse::err("tab index out of range")
+                }
+            } else {
+                AppIpcResponse::err("invalid workspace index")
+            }
+        }
+
+        AppIpcRequest::CloseTab { .. } => {
+            dispatch_action(state, &Action::CloseTab, proxy, buffers, event_loop);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::ListPanes { workspace, tab } => {
+            let ws_idx = workspace.unwrap_or(state.active_workspace);
+            if let Some(ws) = state.workspaces.get(ws_idx) {
+                let tab_idx = tab.unwrap_or(ws.active_tab);
+                if let Some(tab) = ws.tabs.get(tab_idx) {
+                    let focused = tab.layout.focused();
+                    let panes: Vec<_> = tab
+                        .panes
+                        .iter()
+                        .map(|(id, pane)| {
+                            json!({
+                                "pane_id": id,
+                                "cols": pane.terminal.cols(),
+                                "rows": pane.terminal.rows(),
+                                "is_focused": *id == focused,
+                                "cwd": pane.terminal.osc.cwd,
+                            })
+                        })
+                        .collect();
+                    AppIpcResponse::ok(json!({ "panes": panes }))
+                } else {
+                    AppIpcResponse::err("invalid tab index")
+                }
+            } else {
+                AppIpcResponse::err("invalid workspace index")
+            }
+        }
+
+        AppIpcRequest::SplitPane { direction, .. } => {
+            let action = match direction.as_str() {
+                "horizontal" | "right" => Action::SplitRight,
+                "vertical" | "down" => Action::SplitDown,
+                _ => return AppIpcResponse::err("direction must be 'horizontal' or 'vertical'"),
+            };
+            dispatch_action(state, &action, proxy, buffers, event_loop);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::ClosePane { .. } => {
+            dispatch_action(state, &Action::CloseTab, proxy, buffers, event_loop);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::FocusPane { pane_id } => {
+            let ws = &mut state.workspaces[state.active_workspace];
+            let tab = &mut ws.tabs[ws.active_tab];
+            let target = *pane_id;
+            if tab.panes.contains_key(&target) {
+                tab.layout = tab.layout.focus(target);
+                state.window.request_redraw();
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err(format!("pane {} not found", pane_id))
+            }
+        }
+
+        AppIpcRequest::ZoomPane { .. } => {
+            dispatch_action(state, &Action::ZoomPane, proxy, buffers, event_loop);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::SendKeys { pane_id, keys } => {
+            let ws = &state.workspaces[state.active_workspace];
+            let tab = &ws.tabs[ws.active_tab];
+            let target = pane_id.unwrap_or_else(|| tab.layout.focused());
+            if let Some(pane) = tab.panes.get(&target) {
+                let bytes = unescape_keys(keys);
+                let _ = pane.pty.write(&bytes);
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err("pane not found")
+            }
+        }
+
+        AppIpcRequest::RunCommand { pane_id, command } => {
+            let ws = &state.workspaces[state.active_workspace];
+            let tab = &ws.tabs[ws.active_tab];
+            let target = pane_id.unwrap_or_else(|| tab.layout.focused());
+            if let Some(pane) = tab.panes.get(&target) {
+                let mut cmd = command.clone();
+                if !cmd.ends_with('\n') {
+                    cmd.push('\n');
+                }
+                let _ = pane.pty.write(cmd.as_bytes());
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err("pane not found")
+            }
+        }
+
+        AppIpcRequest::GetTerminalContent { pane_id } => {
+            let ws = &state.workspaces[state.active_workspace];
+            let tab = &ws.tabs[ws.active_tab];
+            let target = pane_id.unwrap_or_else(|| tab.layout.focused());
+            if let Some(pane) = tab.panes.get(&target) {
+                let grid = pane.terminal.grid();
+                let cols = grid.cols();
+                let rows = grid.rows();
+                let mut lines = Vec::new();
+                for row in 0..rows {
+                    let mut line = String::new();
+                    for col in 0..cols {
+                        let cell = grid.cell(col, row);
+                        line.push(if cell.c == '\0' { ' ' } else { cell.c });
+                    }
+                    lines.push(line.trim_end().to_string());
+                }
+                AppIpcResponse::ok(json!({
+                    "lines": lines,
+                    "cols": cols,
+                    "rows": rows,
+                    "cursor_row": pane.terminal.cursor_row,
+                    "cursor_col": pane.terminal.cursor_col,
+                }))
+            } else {
+                AppIpcResponse::err("pane not found")
+            }
+        }
+
+        AppIpcRequest::GetScrollback { pane_id, lines } => {
+            let ws = &state.workspaces[state.active_workspace];
+            let tab = &ws.tabs[ws.active_tab];
+            let target = pane_id.unwrap_or_else(|| tab.layout.focused());
+            if let Some(pane) = tab.panes.get(&target) {
+                let max_lines = lines.unwrap_or(100).min(5000);
+                let scrollback_len = pane.terminal.scrollback_len();
+                let start = scrollback_len.saturating_sub(max_lines);
+                let mut result_lines = Vec::new();
+                for i in start..scrollback_len {
+                    if let Some(row) = pane.terminal.scrollback_row(i) {
+                        let line: String =
+                            row.iter()
+                                .map(|c| if c.c == '\0' { ' ' } else { c.c })
+                                .collect();
+                        result_lines.push(line.trim_end().to_string());
+                    }
+                }
+                AppIpcResponse::ok(json!({
+                    "lines": result_lines,
+                    "total": scrollback_len,
+                }))
+            } else {
+                AppIpcResponse::err("pane not found")
+            }
+        }
+
+        AppIpcRequest::ListPendingRequests { workspace } => {
+            let ws_idx = workspace.unwrap_or(state.active_workspace);
+            let pending = state.allow_flow.pending_for_workspace(ws_idx);
+            let requests: Vec<_> = pending
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "tool": r.tool_name,
+                        "action": r.action,
+                        "detail": r.detail,
+                        "pane_id": r.pane_id,
+                    })
+                })
+                .collect();
+            AppIpcResponse::ok(json!({ "requests": requests }))
+        }
+
+        AppIpcRequest::ApproveRequest { request_id } => {
+            // Build pane_ptys map for writing responses to the correct PTY.
+            let mut pane_ptys: HashMap<u64, *mut Pty> = HashMap::new();
+            for ws in &mut state.workspaces {
+                for tab in &mut ws.tabs {
+                    for (pid, pane) in &mut tab.panes {
+                        pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
+                    }
+                }
+            }
+            if let Some(response) =
+                state
+                    .allow_flow
+                    .engine
+                    .respond(*request_id, termojinal_claude::AllowDecision::Allow)
+            {
+                allow_flow::AllowFlowUI::write_to_pty(
+                    &mut pane_ptys,
+                    response.pane_id,
+                    &response.pty_write,
+                );
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err("request not found or already resolved")
+            }
+        }
+
+        AppIpcRequest::DenyRequest { request_id } => {
+            let mut pane_ptys: HashMap<u64, *mut Pty> = HashMap::new();
+            for ws in &mut state.workspaces {
+                for tab in &mut ws.tabs {
+                    for (pid, pane) in &mut tab.panes {
+                        pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
+                    }
+                }
+            }
+            if let Some(response) =
+                state
+                    .allow_flow
+                    .engine
+                    .respond(*request_id, termojinal_claude::AllowDecision::Deny)
+            {
+                allow_flow::AllowFlowUI::write_to_pty(
+                    &mut pane_ptys,
+                    response.pane_id,
+                    &response.pty_write,
+                );
+                AppIpcResponse::ok_empty()
+            } else {
+                AppIpcResponse::err("request not found or already resolved")
+            }
+        }
+
+        AppIpcRequest::ApproveAll { workspace } => {
+            let mut pane_ptys: HashMap<u64, *mut Pty> = HashMap::new();
+            for ws in &mut state.workspaces {
+                for tab in &mut ws.tabs {
+                    for (pid, pane) in &mut tab.panes {
+                        pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
+                    }
+                }
+            }
+            state
+                .allow_flow
+                .allow_all_for_workspace(*workspace, &mut pane_ptys);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::ToggleQuickTerminal => {
+            toggle_quick_terminal(state);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::ShowPalette => {
+            state.command_palette.toggle();
+            state.window.request_redraw();
+            AppIpcResponse::ok_empty()
+        }
+    }
+}
+
+/// Unescape common key sequences: `\n`, `\r`, `\t`, `\xNN`, `\\`.
+fn unescape_keys(s: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push(b'\n'),
+                Some('r') => result.push(b'\r'),
+                Some('t') => result.push(b'\t'),
+                Some('\\') => result.push(b'\\'),
+                Some('x') => {
+                    let hex: String = chars.by_ref().take(2).collect();
+                    if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                        result.push(byte);
+                    }
+                }
+                Some(other) => {
+                    result.push(b'\\');
+                    let mut buf = [0u8; 4];
+                    result.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+                }
+                None => result.push(b'\\'),
+            }
+        } else {
+            let mut buf = [0u8; 4];
+            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // App-side IPC listener (receives commands from the daemon)
 // ---------------------------------------------------------------------------
 
@@ -5479,7 +5917,7 @@ fn app_ipc_socket_path() -> std::path::PathBuf {
 /// dispatches incoming line-delimited commands as `UserEvent`s on the winit
 /// event loop.
 fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
 
     let sock_path = app_ipc_socket_path();
@@ -5503,28 +5941,61 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
-                let reader = BufReader::new(stream);
+            Ok(mut stream) => {
+                let reader = match stream.try_clone() {
+                    Ok(s) => BufReader::new(s),
+                    Err(_) => continue,
+                };
                 for line in reader.lines() {
-                    match line {
-                        Ok(cmd) => {
-                            let cmd = cmd.trim().to_string();
-                            match cmd.as_str() {
-                                "toggle_quick_terminal" => {
-                                    let _ = proxy.send_event(UserEvent::ToggleQuickTerminal);
-                                }
-                                "show_palette" => {
-                                    // Could handle command palette here in the future.
-                                    log::debug!("app IPC: show_palette (not yet wired)");
-                                }
-                                _ => {
-                                    log::debug!("unknown app IPC command: {cmd}");
-                                }
-                            }
-                        }
+                    let line = match line {
+                        Ok(l) => l,
                         Err(e) => {
                             log::debug!("app IPC read error: {e}");
                             break;
+                        }
+                    };
+                    let cmd = line.trim();
+                    if cmd.is_empty() {
+                        continue;
+                    }
+
+                    // Try JSON protocol first
+                    if let Ok(request) = serde_json::from_str::<AppIpcRequest>(cmd) {
+                        let (tx, rx) = std_mpsc::channel();
+                        if proxy
+                            .send_event(UserEvent::AppIpc {
+                                request,
+                                response_tx: tx,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        // Wait for response from GUI thread
+                        if let Ok(response) =
+                            rx.recv_timeout(std::time::Duration::from_secs(5))
+                        {
+                            let json_str =
+                                serde_json::to_string(&response).unwrap_or_default();
+                            let _ = stream.write_all(json_str.as_bytes());
+                            let _ = stream.write_all(b"\n");
+                            let _ = stream.flush();
+                        }
+                    } else {
+                        // Legacy text protocol
+                        match cmd {
+                            "toggle_quick_terminal" => {
+                                let _ =
+                                    proxy.send_event(UserEvent::ToggleQuickTerminal);
+                            }
+                            "show_palette" => {
+                                log::debug!(
+                                    "app IPC: show_palette (not yet wired)"
+                                );
+                            }
+                            _ => {
+                                log::debug!("unknown app IPC command: {cmd}");
+                            }
                         }
                     }
                 }

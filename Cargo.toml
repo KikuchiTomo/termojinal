@@ -7,6 +7,7 @@ members = [
     "crates/termojinal-layout",
     "crates/termojinal-ipc",
     "crates/termojinal-claude",
+    "crates/termojinal-mcp",
 ]
 resolver = "2"
 
@@ -43,6 +44,7 @@ pollster = "0.4"
 arboard = "3"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 dirs = "6"
 gethostname = "0.5"

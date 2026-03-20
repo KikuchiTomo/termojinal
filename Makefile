@@ -34,6 +34,10 @@ run-dev-debug:
 run-daemon:
 	RUST_LOG=info cargo run -p termojinal-session --bin termojinald
 
+# Run the MCP server (stdio transport)
+run-mcp:
+	RUST_LOG=info cargo run -p termojinal-mcp --bin termojinal-mcp
+
 # Run all tests
 test:
 	cargo test --workspace

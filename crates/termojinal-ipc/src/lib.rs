@@ -10,6 +10,7 @@
 //! - Command signing and verification ([`command_signer`])
 //! - A non-blocking command execution engine ([`command_runner`])
 
+pub mod app_protocol;
 pub mod client;
 pub mod command_loader;
 pub mod command_protocol;

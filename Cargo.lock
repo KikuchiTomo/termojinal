@@ -2556,6 +2556,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "serde",
+ "serde_json",
  "termojinal-claude",
  "termojinal-ipc",
  "termojinal-layout",
@@ -2609,6 +2610,19 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "termojinal-mcp"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "termojinal-ipc",
+ "tokio",
 ]
 
 [[package]]
