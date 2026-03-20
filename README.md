@@ -51,15 +51,13 @@ cp resources/config.example.toml ~/.config/termojinal/config.toml
 
 ### 2. Claude Code integration (required for AI features)
 
-termojinal supports Claude Code's permission notifications via OSC 777. Add the following to your `~/.claude.json`:
+termojinal supports Claude Code's permission notifications via OSC 9 (iTerm2 protocol). Run:
 
-```json
-{
-  "preferredNotifChannel": "ghostty"
-}
+```bash
+claude config set --global preferredNotifChannel iterm2
 ```
 
-This tells Claude Code to send terminal notifications using the OSC 777 protocol, which termojinal natively supports. Without this setting, Claude Code's Allow Flow notifications will not appear.
+This tells Claude Code to send terminal notifications using the OSC 9 protocol, which termojinal natively supports. Without this setting, Claude Code's Allow Flow notifications will not appear.
 
 ### 3. Start the daemon (optional, for global hotkeys)
 
