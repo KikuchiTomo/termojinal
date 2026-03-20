@@ -8,6 +8,10 @@ description = "Unix socket IPC and jt CLI for jterm"
 name = "jt"
 path = "src/bin/jt.rs"
 
+[[bin]]
+name = "jterm-sign"
+path = "src/bin/jterm-sign.rs"
+
 [dependencies]
 jterm-session = { path = "../jterm-session" }
 serde = { version = "1", features = ["derive"] }
@@ -19,6 +23,8 @@ thiserror = "2"
 dirs = "6"
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

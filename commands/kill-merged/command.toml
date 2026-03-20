@@ -1,0 +1,8 @@
+[command]
+name = "Kill Merged Branches"
+description = "マージ済みブランチとworktreeを削除"
+icon = "trash"
+version = "1.0.0"
+author = "jterm"
+run = "./run.sh"
+tags = ["git", "cleanup", "worktree"]

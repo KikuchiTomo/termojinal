@@ -274,6 +274,7 @@ mod tests {
             },
             dir,
             run_path,
+            verify_result: crate::command_signer::VerifyResult::Unsigned,
         }
     }
 

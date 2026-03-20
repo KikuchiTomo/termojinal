@@ -1,0 +1,8 @@
+[command]
+name = "Run AI Agent"
+description = "AIエージェントを新しいワークスペースで起動"
+icon = "brain"
+version = "1.0.0"
+author = "jterm"
+run = "./run.sh"
+tags = ["ai", "agent", "claude"]

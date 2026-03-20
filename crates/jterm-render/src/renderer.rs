@@ -9,9 +9,11 @@ use std::sync::Arc;
 use unicode_width::UnicodeWidthChar;
 
 use crate::atlas::{Atlas, CellSize, FontConfig};
+use crate::blur_renderer::BlurRenderer;
 use crate::color_convert::{self, ThemePalette};
 use crate::emoji_atlas::{self, EmojiAtlas};
 use crate::image_render::ImageRenderer;
+use crate::rounded_rect_renderer::{RoundedRect, RoundedRectRenderer};
 
 /// Per-pane dirty rendering cache. Keyed by an opaque pane identifier.
 type PaneKey = u64;
@@ -145,8 +147,11 @@ pub struct Renderer {
     current_pane_key: PaneKey,
     /// Image renderer for inline terminal images (Kitty/iTerm2/Sixel).
     image_renderer: ImageRenderer,
+    /// SDF-based rounded rectangle renderer for overlays (command palette, etc.).
+    pub rounded_rect_renderer: RoundedRectRenderer,
+    /// Two-pass Gaussian blur renderer for frosted-glass background effects.
+    pub blur_renderer: BlurRenderer,
     /// The surface texture format (retained for recreating pipelines on format change).
-    #[allow(dead_code)]
     surface_format: wgpu::TextureFormat,
 }
 
@@ -516,6 +521,12 @@ impl Renderer {
         // Create image renderer for inline terminal images.
         let image_renderer = ImageRenderer::new(&device, surface_format);
 
+        // Create rounded rectangle renderer for overlay UI.
+        let rounded_rect_renderer = RoundedRectRenderer::new(&device, surface_format);
+
+        // Create blur renderer for frosted-glass effects.
+        let blur_renderer = BlurRenderer::new(&device, surface_format);
+
         Ok(Self {
             adapter,
             device,
@@ -546,6 +557,8 @@ impl Renderer {
             pane_caches: HashMap::new(),
             current_pane_key: 0,
             image_renderer,
+            rounded_rect_renderer,
+            blur_renderer,
             surface_format,
         })
     }
@@ -2026,5 +2039,50 @@ impl Renderer {
                 },
             ],
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // Overlay rendering API (rounded rects + blur)
+    // -----------------------------------------------------------------------
+
+    /// Render rounded rectangle overlays (e.g., command palette background).
+    pub fn render_rounded_rects(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        rects: &[RoundedRect],
+    ) {
+        let screen_width = self.surface_config.width as f32;
+        let screen_height = self.surface_config.height as f32;
+        self.rounded_rect_renderer.render(
+            encoder, view, &self.device, &self.queue,
+            screen_width, screen_height, rects,
+        );
+    }
+
+    /// Apply a two-pass Gaussian blur to the framebuffer.
+    pub fn blur_region(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        radius: f32,
+    ) {
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+        self.blur_renderer.blur(
+            encoder, &self.device, &self.queue,
+            source, target, radius, width, height,
+        );
+    }
+
+    /// Get the surface format used by this renderer.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_format
+    }
+
+    /// Get the current surface dimensions in physical pixels.
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
     }
 }

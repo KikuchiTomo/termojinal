@@ -1,0 +1,8 @@
+[command]
+name = "Start PR Review"
+description = "Review待ちPRを選んでworktree + Claude Codeを起動"
+icon = "arrow.triangle.branch"
+version = "1.0.0"
+author = "jterm"
+run = "./run.sh"
+tags = ["github", "review", "claude"]

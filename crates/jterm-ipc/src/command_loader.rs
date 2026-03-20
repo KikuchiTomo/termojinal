@@ -11,6 +11,7 @@
 //! └── run.sh         ← executable script (any language)
 //! ```
 
+use crate::command_signer::{self, VerifyResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -64,6 +65,9 @@ pub struct LoadedCommand {
 
     /// Absolute path to the run script.
     pub run_path: PathBuf,
+
+    /// Result of signature verification.
+    pub verify_result: VerifyResult,
 }
 
 /// Scan `~/.config/jterm/commands/` and load all valid command definitions.
@@ -151,10 +155,14 @@ fn load_single_command(dir: &Path, toml_path: &Path) -> Result<LoadedCommand, Co
         ));
     }
 
+    let verify_result =
+        command_signer::verify_command(&contents, meta.signature.as_deref());
+
     Ok(LoadedCommand {
         meta,
         dir: dir.to_path_buf(),
         run_path,
+        verify_result,
     })
 }
 

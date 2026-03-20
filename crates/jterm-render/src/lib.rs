@@ -19,12 +19,16 @@
 //!   Graphics, iTerm2 Inline Images, Sixel) as textured quads over cells.
 
 pub mod atlas;
+pub mod blur_renderer;
 pub mod color_convert;
 pub mod emoji_atlas;
 pub mod image_render;
 pub mod renderer;
+pub mod rounded_rect_renderer;
 
 pub use atlas::{CellSize, FontConfig};
+pub use blur_renderer::BlurRenderer;
 pub use color_convert::ThemePalette;
 pub use image_render::ImageRenderer;
 pub use renderer::{RenderError, Renderer};
+pub use rounded_rect_renderer::{RoundedRect, RoundedRectRenderer};

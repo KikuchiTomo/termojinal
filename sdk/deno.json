@@ -1,0 +1,9 @@
+{
+  "name": "@jterm/sdk",
+  "version": "0.1.0",
+  "exports": "./mod.ts",
+  "tasks": {
+    "test": "deno test --allow-read --allow-write",
+    "check": "deno check mod.ts"
+  }
+}

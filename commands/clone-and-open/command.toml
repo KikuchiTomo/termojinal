@@ -1,0 +1,8 @@
+[command]
+name = "Clone & Open"
+description = "リポジトリをcloneして新しいセッションで開く"
+icon = "square.and.arrow.down"
+version = "1.0.0"
+author = "jterm"
+run = "./run.sh"
+tags = ["git", "clone"]
