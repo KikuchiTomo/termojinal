@@ -60,6 +60,8 @@ pub enum Action {
     ClearScreen,
     /// Clear scrollback + screen.
     ClearScrollback,
+    /// Select all visible text in the terminal.
+    SelectAll,
     /// Force the key through to the PTY (bypass termojinal).
     Passthrough,
     /// Quit the application.
@@ -126,6 +128,9 @@ impl Default for KeybindingConfig {
         // Copy / Paste
         normal.insert("cmd+c".to_string(), Action::Copy);
         normal.insert("cmd+v".to_string(), Action::Paste);
+
+        // Select All
+        normal.insert("cmd+a".to_string(), Action::SelectAll);
 
         // Search
         normal.insert("cmd+f".to_string(), Action::Search);
@@ -451,6 +456,7 @@ mod tests {
             Action::Paste,
             Action::Search,
             Action::OpenSettings,
+            Action::SelectAll,
             Action::Passthrough,
             Action::Quit,
             Action::ToggleSidebar,
