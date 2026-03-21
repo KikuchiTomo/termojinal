@@ -114,11 +114,50 @@ mod platform {
         flags.contains(CGEventFlags::CGEventFlagControl)
     }
 
+    /// Check Accessibility permission, prompting the user if not yet granted.
+    /// Returns `true` if the process is trusted.
+    fn check_accessibility_with_prompt() -> bool {
+        use core_foundation::base::TCFType;
+        use core_foundation::boolean::CFBoolean;
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::string::CFString;
+
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXIsProcessTrustedWithOptions(
+                options: core_foundation::base::CFTypeRef,
+            ) -> bool;
+        }
+
+        let key = CFString::new("AXTrustedCheckOptionPrompt");
+        let value = CFBoolean::true_value();
+        let options = CFDictionary::from_CFType_pairs(&[(key, value)]);
+
+        unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()) }
+    }
+
     pub(super) fn run_event_tap(
         callback: impl Fn(HotkeyEvent) + Send + 'static,
         running: Arc<AtomicBool>,
         tx: std::sync::mpsc::SyncSender<Result<(), HotkeyError>>,
     ) {
+        // Prompt for Accessibility permission if not yet granted.
+        if !check_accessibility_with_prompt() {
+            log::warn!("Accessibility permission not yet granted — waiting for user approval");
+            // Wait up to 30 seconds for the user to grant permission.
+            for _ in 0..60 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if check_accessibility_with_prompt() {
+                    log::info!("Accessibility permission granted!");
+                    break;
+                }
+                if !running.load(Ordering::SeqCst) {
+                    let _ = tx.send(Err(HotkeyError::AccessibilityDenied));
+                    return;
+                }
+            }
+        }
+
         // Create the CGEventTap using the crate's high-level API.
         let tap = CGEventTap::new(
             CGEventTapLocation::HID,

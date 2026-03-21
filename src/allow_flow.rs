@@ -72,12 +72,6 @@ impl AllowFlowUI {
             .any(|r| r.workspace_idx == ws_idx)
     }
 
-    /// Total number of pending requests across all workspaces.
-    #[allow(dead_code)]
-    pub fn total_pending(&self) -> usize {
-        self.engine.pending_requests().len()
-    }
-
     /// Find the index of the first workspace that has pending requests.
     pub fn first_workspace_with_pending(&self) -> Option<usize> {
         self.engine

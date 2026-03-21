@@ -30,8 +30,14 @@ RESOURCES="$CONTENTS/Resources"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES"
 
-# Copy binary (always named "termojinal" inside the bundle)
+# Copy binaries into the bundle
 cp "$BINARY" "$MACOS_DIR/termojinal"
+
+# Include termojinald so Accessibility permission covers the whole .app
+DAEMON="$REPO_ROOT/target/$PROFILE/termojinald"
+if [[ -f "$DAEMON" ]]; then
+    cp "$DAEMON" "$MACOS_DIR/termojinald"
+fi
 
 # Copy Info.plist and patch for debug builds
 cp "$REPO_ROOT/dist/macos/Info.plist" "$CONTENTS/Info.plist"

@@ -1,6 +1,5 @@
 //! termojinald daemon — manages sessions and listens for connections.
 
-use crate::hotkey::{GlobalHotkey, HotkeyEvent};
 use crate::{SessionError, SessionManager};
 use std::sync::Arc;
 use tokio::net::UnixListener;
@@ -86,9 +85,6 @@ impl Daemon {
             }
         }
 
-        // --- Start global hotkey monitor (CGEventTap) ---
-        let _hotkey = start_hotkey_monitor(&self.socket_path);
-
         // --- Periodically reap dead sessions ---
         let manager = self.manager.clone();
         tokio::spawn(async move {
@@ -145,81 +141,7 @@ fn is_pid_alive(pid: Option<i32>) -> bool {
     signal::kill(Pid::from_raw(pid), None).is_ok()
 }
 
-/// Start the global hotkey monitor. Returns the handle (kept alive by the
-/// caller) or `None` if the tap could not be created.
-fn start_hotkey_monitor(socket_path: &str) -> Option<GlobalHotkey> {
-    let socket_path = socket_path.to_string();
 
-    match GlobalHotkey::start(move |event| {
-        log::info!("global hotkey event: {:?}", event);
-
-        // Check if the termojinal App is reachable via the IPC socket.
-        let sock = socket_path.clone();
-        let app_reachable = std::os::unix::net::UnixStream::connect(&sock).is_ok();
-
-        match event {
-            HotkeyEvent::CommandPalette => {
-                if app_reachable {
-                    // Send a command to show the palette via IPC.
-                    if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock) {
-                        use std::io::Write;
-                        let _ = stream.write_all(b"show_palette");
-                        log::info!("sent show_palette command via IPC");
-                    }
-                } else {
-                    // App is not running — launch it with --palette flag.
-                    log::info!("termojinal App not running, launching with --palette");
-                    let _ = std::process::Command::new("termojinal")
-                        .arg("--palette")
-                        .spawn();
-                }
-            }
-            HotkeyEvent::AllowFlowPanel => {
-                if app_reachable {
-                    if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock) {
-                        use std::io::Write;
-                        let _ = stream.write_all(b"show_allow_flow");
-                        log::info!("sent show_allow_flow command via IPC");
-                    }
-                } else {
-                    log::info!("termojinal App not running, launching with --allow-flow");
-                    let _ = std::process::Command::new("termojinal")
-                        .arg("--allow-flow")
-                        .spawn();
-                }
-            }
-            HotkeyEvent::QuickTerminal => {
-                // Try to reach the app via its dedicated IPC socket.
-                let app_sock = app_socket_path();
-                if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&app_sock) {
-                    use std::io::Write;
-                    let _ = stream.write_all(b"toggle_quick_terminal\n");
-                    log::info!("sent toggle_quick_terminal to app IPC socket");
-                } else {
-                    // App is not running — launch it with the quick-terminal flag.
-                    log::info!("termojinal app not running, launching with --quick-terminal");
-                    let _ = std::process::Command::new("termojinal-dev")
-                        .arg("--quick-terminal")
-                        .spawn();
-                }
-            }
-        }
-    }) {
-        Ok(hotkey) => {
-            log::info!("global hotkey monitor started (CGEventTap active)");
-            Some(hotkey)
-        }
-        Err(e) => {
-            // Gracefully degrade — do NOT crash.
-            log::warn!("global hotkey monitor unavailable: {e}");
-            log::warn!(
-                "hint: grant Accessibility permission to termojinald in \
-                 System Settings > Privacy & Security > Accessibility"
-            );
-            None
-        }
-    }
-}
 
 /// Handle a single IPC connection.
 async fn handle_connection(

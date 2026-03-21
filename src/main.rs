@@ -1941,6 +1941,71 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
+                // Allow Flow: intercept physical keys even during IME composition.
+                // This lets y/n/a work for fast-allow regardless of IME state.
+                if state.allow_flow.first_workspace_with_pending().is_some() {
+                    use winit::keyboard::KeyCode;
+                    let physical = match event.physical_key {
+                        winit::keyboard::PhysicalKey::Code(code) => Some(code),
+                        _ => None,
+                    };
+                    let shift = state.modifiers.shift_key();
+                    let no_mods = !state.modifiers.control_key()
+                        && !state.modifiers.super_key()
+                        && !state.modifiers.alt_key();
+                    if no_mods {
+                        if let Some(code) = physical {
+                            let mapped = match (code, shift) {
+                                (KeyCode::KeyY, false) => Some(Key::Character("y".into())),
+                                (KeyCode::KeyY, true) => Some(Key::Character("Y".into())),
+                                (KeyCode::KeyN, false) => Some(Key::Character("n".into())),
+                                (KeyCode::KeyN, true) => Some(Key::Character("N".into())),
+                                (KeyCode::KeyA, _) => Some(Key::Character(if shift { "A" } else { "a" }.into())),
+                                (KeyCode::Escape, _) => Some(Key::Named(winit::keyboard::NamedKey::Escape)),
+                                _ => None,
+                            };
+                            if let Some(key) = mapped {
+                                let active_ws = state.active_workspace;
+                                let mut pane_ptys: std::collections::HashMap<u64, *mut Pty> = std::collections::HashMap::new();
+                                for ws in &mut state.workspaces {
+                                    for tab in &mut ws.tabs {
+                                        for (pid, pane) in &mut tab.panes {
+                                            pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
+                                        }
+                                    }
+                                }
+                                let key_result = state.allow_flow.process_key(
+                                    &key,
+                                    active_ws,
+                                    &mut pane_ptys,
+                                );
+                                match key_result {
+                                    crate::allow_flow::AllowFlowKeyResult::NotConsumed => {}
+                                    crate::allow_flow::AllowFlowKeyResult::Consumed => {
+                                        state.window.request_redraw();
+                                        return;
+                                    }
+                                    crate::allow_flow::AllowFlowKeyResult::Resolved(decisions) => {
+                                        for (req_id, decision) in &decisions {
+                                            if let Some(tx) = state.pending_ipc_responses.remove(req_id) {
+                                                let decision_str = match decision {
+                                                    termojinal_claude::AllowDecision::Allow => "allow",
+                                                    termojinal_claude::AllowDecision::Deny => "deny",
+                                                };
+                                                let _ = tx.send(AppIpcResponse::ok(
+                                                    serde_json::json!({"decision": decision_str}),
+                                                ));
+                                            }
+                                        }
+                                        state.window.request_redraw();
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Suppress raw key events during IME composition (but not when palette is open).
                 let focused_id = active_tab(state).layout.focused();
                 if !state.command_palette.visible {
@@ -2047,51 +2112,6 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         SearchKeyResult::Pass => {
                             // Escape was not pressed, fall through.
-                        }
-                    }
-                }
-
-                // Allow Flow: intercept Y/N/A/Esc when pending requests
-                // exist for the active workspace.
-                if state.allow_flow.has_pending_for_workspace(state.active_workspace) {
-                    let active_ws = state.active_workspace;
-                    // Build a map of pane_id -> Pty pointers for writing responses.
-                    let mut pane_ptys: std::collections::HashMap<u64, *mut Pty> = std::collections::HashMap::new();
-                    for ws in &mut state.workspaces {
-                        for tab in &mut ws.tabs {
-                            for (pid, pane) in &mut tab.panes {
-                                pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
-                            }
-                        }
-                    }
-
-                    let key_result = state.allow_flow.process_key(
-                        &event.logical_key,
-                        active_ws,
-                        &mut pane_ptys,
-                    );
-
-                    match key_result {
-                        crate::allow_flow::AllowFlowKeyResult::NotConsumed => {}
-                        crate::allow_flow::AllowFlowKeyResult::Consumed => {
-                            state.window.request_redraw();
-                            return;
-                        }
-                        crate::allow_flow::AllowFlowKeyResult::Resolved(decisions) => {
-                            // Send deferred IPC responses for hook-originated requests.
-                            for (req_id, decision) in &decisions {
-                                if let Some(tx) = state.pending_ipc_responses.remove(req_id) {
-                                    let decision_str = match decision {
-                                        termojinal_claude::AllowDecision::Allow => "allow",
-                                        termojinal_claude::AllowDecision::Deny => "deny",
-                                    };
-                                    let _ = tx.send(AppIpcResponse::ok(
-                                        serde_json::json!({"decision": decision_str}),
-                                    ));
-                                }
-                            }
-                            state.window.request_redraw();
-                            return;
                         }
                     }
                 }
@@ -2365,6 +2385,7 @@ impl ApplicationHandler<UserEvent> for App {
                     // --- Original mouse handling (motion reporting / selection) ---
                     let focused_id = active_tab(state).layout.focused();
                     let cell_size = state.renderer.cell_size();
+                    let sf_drag = state.scale_factor;
                     let tab = active_tab_mut(state);
                     if let Some(pane) = tab.panes.get_mut(&focused_id) {
                         // Handle mouse motion reporting for the terminal.
@@ -2394,8 +2415,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 if let Some((_, rect)) =
                                     pane_rects.iter().find(|(id, _)| *id == focused_id)
                                 {
-                                    let local_x = ((position.x - rect.x as f64) as f32).max(0.0);
-                                    let local_y = ((position.y - rect.y as f64) as f32).max(0.0);
+                                    let local_x = ((position.x * sf_drag - rect.x as f64) as f32).max(0.0);
+                                    let local_y = ((position.y * sf_drag - rect.y as f64) as f32).max(0.0);
                                     sel.end = GridPos {
                                         col: (local_x / cell_size.width).floor() as usize,
                                         row: (local_y / cell_size.height).floor() as usize,
@@ -2614,6 +2635,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let focused_id = active_tab(state).layout.focused();
                 let cell_size = state.renderer.cell_size();
                 let cursor_pos = state.cursor_pos;
+                let sf = state.scale_factor;
                 let pane_rects = active_pane_rects(state);
                 let tab = active_tab_mut(state);
 
@@ -2643,9 +2665,11 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some((_, rect)) =
                             pane_rects.iter().find(|(id, _)| *id == focused_id)
                         {
-                            // Subtract in f64 to avoid rounding before subtraction.
-                            let local_x = ((cursor_pos.0 - rect.x as f64) as f32).max(0.0);
-                            let local_y = ((cursor_pos.1 - rect.y as f64) as f32).max(0.0);
+                            // cursor_pos is in logical pixels, rect/cell_size are in physical pixels.
+                            let phys_x = cursor_pos.0 * sf;
+                            let phys_y = cursor_pos.1 * sf;
+                            let local_x = ((phys_x - rect.x as f64) as f32).max(0.0);
+                            let local_y = ((phys_y - rect.y as f64) as f32).max(0.0);
                             let pos = GridPos {
                                 col: (local_x / cell_size.width).floor() as usize,
                                 row: (local_y / cell_size.height).floor() as usize,
@@ -3383,7 +3407,7 @@ fn dispatch_action(
                         if let Ok(mut cb) = arboard::Clipboard::new() {
                             let _ = cb.set_text(&text);
                         }
-                        pane.selection = None;
+                        // Keep selection visible after copy.
                         state.window.request_redraw();
                         return true;
                     }
@@ -6346,6 +6370,34 @@ fn main() {
             })
             .expect("failed to spawn app IPC listener");
     }
+
+    // Start global hotkey monitor (Ctrl+`, Cmd+Shift+P, etc.) directly in the app.
+    // Running inside the .app bundle lets macOS show the Accessibility permission
+    // dialog and remember the grant by bundle ID.
+    let _hotkey_handle = {
+        use termojinal_session::hotkey::{GlobalHotkey, HotkeyEvent};
+        let proxy = proxy.clone();
+        match GlobalHotkey::start(move |event| {
+            let user_event = match event {
+                HotkeyEvent::QuickTerminal => UserEvent::ToggleQuickTerminal,
+                HotkeyEvent::CommandPalette | HotkeyEvent::AllowFlowPanel => {
+                    // These are handled via normal keybindings when the app is focused.
+                    // Global hotkey for these is only useful via daemon when app is hidden.
+                    return;
+                }
+            };
+            let _ = proxy.send_event(user_event);
+        }) {
+            Ok(handle) => {
+                log::info!("global hotkey monitor active (Ctrl+` for Quick Terminal)");
+                Some(handle)
+            }
+            Err(e) => {
+                log::warn!("global hotkey unavailable: {e}");
+                None
+            }
+        }
+    };
 
     let config = load_config();
     log::info!("config: font.size={}, window={}x{}", config.font.size, config.window.width, config.window.height);

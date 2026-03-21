@@ -44,26 +44,41 @@ build-dev:
 	cargo build -p termojinal-ipc --bin tm
 
 # Run in development mode (full stack: daemon + app, mirrors release)
+# The daemon runs from inside the .app bundle so Accessibility permission
+# covers both binaries under a single grant to Termojinal.app.
 run-dev: app-dev
-	@echo "==> Starting termojinald..."
-	@RUST_LOG=info target/debug/termojinald & echo $$! > /tmp/termojinald-dev.pid
-	@sleep 0.3
-	@echo "==> Opening Termojinal Dev.app..."
-	@open -W target/debug/Termojinal.app; \
-		kill $$(cat /tmp/termojinald-dev.pid) 2>/dev/null; \
-		rm -f /tmp/termojinald-dev.pid; \
-		echo "==> Stopped termojinald"
+	@mkdir -p /tmp/termojinal-dev-logs
+	@DAEMON=target/debug/Termojinal.app/Contents/MacOS/termojinald; \
+	echo "==> Starting termojinald (from .app bundle)..."; \
+	RUST_LOG=info "$$DAEMON" > /tmp/termojinal-dev-logs/daemon.log 2>&1 & echo $$! > /tmp/termojinald-dev.pid; \
+	sleep 0.5; \
+	if grep -q "Accessibility permission not yet granted" /tmp/termojinal-dev-logs/daemon.log 2>/dev/null; then \
+		echo ""; \
+		echo "  [!!] Accessibility permission required for global hotkeys (Ctrl+\`)"; \
+		echo "       System Settings > Privacy & Security > Accessibility"; \
+		echo "       Add: Termojinal Dev (or the .app)"; \
+		echo ""; \
+	fi; \
+	echo "==> Opening Termojinal Dev.app..."; \
+	echo "    daemon log: /tmp/termojinal-dev-logs/daemon.log"; \
+	open -W target/debug/Termojinal.app; \
+	kill $$(cat /tmp/termojinald-dev.pid) 2>/dev/null; \
+	rm -f /tmp/termojinald-dev.pid; \
+	echo "==> Stopped termojinald"
 
 # Run in development mode with debug logging (full stack)
 run-dev-debug: app-dev
-	@echo "==> Starting termojinald (debug)..."
-	@RUST_LOG=debug target/debug/termojinald & echo $$! > /tmp/termojinald-dev.pid
-	@sleep 0.3
-	@echo "==> Starting Termojinal Dev (debug)..."
-	@RUST_LOG=debug target/debug/Termojinal.app/Contents/MacOS/termojinal; \
-		kill $$(cat /tmp/termojinald-dev.pid) 2>/dev/null; \
-		rm -f /tmp/termojinald-dev.pid; \
-		echo "==> Stopped termojinald"
+	@mkdir -p /tmp/termojinal-dev-logs
+	@DAEMON=target/debug/Termojinal.app/Contents/MacOS/termojinald; \
+	echo "==> Starting termojinald (debug)..."; \
+	RUST_LOG=debug "$$DAEMON" > /tmp/termojinal-dev-logs/daemon-debug.log 2>&1 & echo $$! > /tmp/termojinald-dev.pid; \
+	sleep 0.5; \
+	echo "==> Starting Termojinal Dev (debug)..."; \
+	echo "    daemon log: /tmp/termojinal-dev-logs/daemon-debug.log"; \
+	RUST_LOG=debug target/debug/Termojinal.app/Contents/MacOS/termojinal; \
+	kill $$(cat /tmp/termojinald-dev.pid) 2>/dev/null; \
+	rm -f /tmp/termojinald-dev.pid; \
+	echo "==> Stopped termojinald"
 
 # Run the session daemon standalone
 run-daemon:

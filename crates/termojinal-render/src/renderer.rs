@@ -722,7 +722,8 @@ impl Renderer {
         let thumb_bottom =
             ((thumb_top_f + thumb_height_f).ceil() as usize).min(rows);
 
-        let scrollbar_x = cols as f32 + 0.8;
+        // Place scrollbar at the right edge of the last column (inside clip area).
+        let scrollbar_x = (cols as f32) - 0.2;
 
         let mut instances = Vec::with_capacity(rows);
         for r in 0..rows {
