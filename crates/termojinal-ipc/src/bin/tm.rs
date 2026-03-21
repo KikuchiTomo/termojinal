@@ -9,7 +9,7 @@ use termojinal_ipc::client::IpcClient;
 use termojinal_ipc::protocol::IpcRequest;
 
 #[derive(Parser)]
-#[command(name = "tm", about = "Control the termojinal terminal emulator")]
+#[command(name = "tm", about = "Control the termojinal terminal emulator", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

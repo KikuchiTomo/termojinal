@@ -1,37 +1,33 @@
 class Termojinal < Formula
   desc "GPU-accelerated terminal emulator with AI agent coordination"
   homepage "https://github.com/KikuchiTomo/termojinal"
-  url "https://github.com/KikuchiTomo/termojinal.git", branch: "main"
-  version "0.1.0"
+  version "0.3.0-beta"
   license "MIT"
 
-  depends_on "rust" => :build
+  # Pre-built universal binaries from GitHub Releases (built by CI)
+  url "https://github.com/KikuchiTomo/termojinal/releases/download/v#{version}/termojinal-#{version}-cli-macos-universal.tar.gz"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+  # The .app bundle is a separate download
+  resource "app" do
+    url "https://github.com/KikuchiTomo/termojinal/releases/download/v#{version}/termojinal-#{version}-macos-universal.tar.gz"
+    sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  end
 
   def install
-    system "cargo", "build", "--release", "--bin", "termojinal"
-    system "cargo", "build", "--release", "-p", "termojinal-session", "--bin", "termojinald"
-    system "cargo", "build", "--release", "-p", "termojinal-ipc", "--bin", "tm"
-    system "cargo", "build", "--release", "-p", "termojinal-mcp", "--bin", "termojinal-mcp"
-    system "cargo", "build", "--release", "-p", "termojinal-ipc", "--bin", "termojinal-sign"
+    # Install pre-built CLI binaries
+    bin.install "termojinal"
+    bin.install "termojinald"
+    bin.install "tm"
+    bin.install "termojinal-mcp"
+    bin.install "termojinal-sign"
 
-    # Build Termojinal.app BEFORE bin.install (which moves binaries)
-    system "./dist/macos/build-app.sh"
-    prefix.install "target/release/Termojinal.app"
+    # Extract and install the .app bundle
+    resource("app").stage do
+      prefix.install "Termojinal.app"
+    end
 
-    bin.install "target/release/termojinal"
-    bin.install "target/release/termojinald"
-    bin.install "target/release/tm"
-    bin.install "target/release/termojinal-mcp"
-    bin.install "target/release/termojinal-sign"
-
-    # Install default config if not present
-    (etc/"termojinal").mkpath
-    (etc/"termojinal/commands").mkpath
-
-    # Install bundled commands
-    (pkgshare/"commands").install Dir["commands/*"]
-
-    # Create default config symlink hint
+    # Install default config example
     (pkgshare/"config.example.toml").write default_config
   end
 
@@ -77,48 +73,29 @@ class Termojinal < Formula
       ohai "Linked Termojinal.app to /Applications"
     end
 
-    # Create ~/.config/termojinal/ if it doesn't exist
+    # Create config directory
     config_dir = Pathname.new(Dir.home)/".config/termojinal"
     unless config_dir.exist?
       config_dir.mkpath
       ohai "Created #{config_dir}"
     end
-
-    # Symlink bundled commands if user commands dir is empty
-    commands_dir = config_dir/"commands"
-    unless commands_dir.exist?
-      commands_dir.mkpath
-      Dir[pkgshare/"commands/*"].each do |cmd_dir|
-        target = commands_dir/File.basename(cmd_dir)
-        ln_s cmd_dir, target unless target.exist?
-      end
-      ohai "Linked bundled commands to #{commands_dir}"
-    end
   end
 
   def caveats
     <<~EOS
-      To start the termojinal daemon (enables global hotkeys like Ctrl+`):
+      Run `tm setup` to configure Claude Code hooks and bundled commands.
+
+      To start the daemon (enables Ctrl+` global hotkey):
         brew services start termojinal
 
-      To configure termojinal:
-        mkdir -p ~/.config/termojinal
+      To configure:
         cp #{opt_pkgshare}/config.example.toml ~/.config/termojinal/config.toml
 
-      Bundled commands are installed at:
-        #{opt_pkgshare}/commands/
-
       Termojinal.app has been linked to /Applications.
-      Open it once from /Applications or Spotlight so macOS registers
-      the app for desktop notifications.
-
-      Note: termojinald requires Accessibility permission for global hotkeys.
-      Go to System Settings > Privacy & Security > Accessibility
-      and add termojinald (or your terminal app).
     EOS
   end
 
   test do
-    assert_match "termojinal", shell_output("#{bin}/termojinal --version 2>&1", 1)
+    assert_match version.to_s, shell_output("#{bin}/tm --version 2>&1", 0)
   end
 end

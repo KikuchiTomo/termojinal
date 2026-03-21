@@ -16,15 +16,16 @@ jobs:
     name: Build macOS universal
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pin all actions to SHA for supply chain security
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@56f84321dbccf38be67e3a6d6e4c73d7c8fac9a5 # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -36,9 +37,8 @@ jobs:
         id: version
         run: |
           RAW_TAG="${GITHUB_REF#refs/tags/}"
-          # Strip leading v
           VERSION="${RAW_TAG#v}"
-          # Validate: must be semver (with optional -beta, -rc.N, etc.)
+          # Strict semver validation — reject anything unexpected
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "::error::Invalid version format: ${VERSION}"
             exit 1
@@ -51,10 +51,11 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # All subsequent steps use the validated VERSION env var — never re-extract from GITHUB_REF.
       - name: Set version in sources
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: ./dist/set-version.sh "$VERSION"
+        run: ./dist/set-version.sh "${VERSION}"
 
       - name: Generate third-party licenses
         run: ./dist/generate-licenses.sh
@@ -91,6 +92,7 @@ jobs:
         run: |
           mkdir -p target/release
           cp target/universal-release/termojinal target/release/termojinal
+          cp target/universal-release/termojinald target/release/termojinald
           ./dist/macos/build-app.sh
 
       - name: Create release archives
@@ -108,13 +110,15 @@ jobs:
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
           echo "CLI_ARCHIVE=${CLI_ARCHIVE}" >> "$GITHUB_ENV"
 
-      - name: Generate checksums
+      - name: Generate and verify checksums
         run: |
-          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
-          shasum -a 256 "$CLI_ARCHIVE" > "${CLI_ARCHIVE}.sha256"
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          shasum -a 256 "${CLI_ARCHIVE}" > "${CLI_ARCHIVE}.sha256"
+          shasum -a 256 -c "${ARCHIVE}.sha256"
+          shasum -a 256 -c "${CLI_ARCHIVE}.sha256"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Termojinal ${{ steps.version.outputs.version }}
@@ -129,30 +133,34 @@ jobs:
       - name: Update Homebrew tap
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
-          REPO: ${{ github.repository }}
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          # Update formula in this repo (for reference)
-          sed -i '' "s|^  url .*|  url \"https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz\"|" dist/homebrew/termojinal.rb
-          sed -i '' "s|^  version .*|  version \"${VERSION}\"|" dist/homebrew/termojinal.rb
+          CLI_SHA=$(shasum -a 256 "${CLI_ARCHIVE}" | awk '{print $1}')
+          APP_SHA=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
 
-          # Push to the Homebrew tap repo if token is available
-          if [[ -n "$TAP_TOKEN" ]]; then
-            TAP_REPO="KikuchiTomo/homebrew-termojinal"
-            git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" /tmp/homebrew-tap
-            mkdir -p /tmp/homebrew-tap/Formula
-            cp dist/homebrew/termojinal.rb /tmp/homebrew-tap/Formula/termojinal.rb
-            cd /tmp/homebrew-tap
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add Formula/termojinal.rb
-            git diff --cached --quiet || {
-              git commit -m "termojinal ${VERSION}"
-              git push
-              echo "Tap updated: ${VERSION}"
-            }
-          else
+          ./dist/update-formula.sh "${VERSION}" "${CLI_SHA}" "${APP_SHA}"
+
+          if [[ -z "${TAP_TOKEN}" ]]; then
             echo "HOMEBREW_TAP_TOKEN not set — skipping tap update"
-            echo "To enable: create a PAT and add it as HOMEBREW_TAP_TOKEN secret"
+            exit 0
           fi
+
+          TAP_DIR=$(mktemp -d)
+          trap 'rm -rf "${TAP_DIR}"' EXIT
+
+          # Use credential helper instead of embedding token in URL
+          git -C "${TAP_DIR}" init
+          git -C "${TAP_DIR}" remote add origin "https://github.com/KikuchiTomo/homebrew-termojinal.git"
+          git -C "${TAP_DIR}" -c "http.https://github.com/.extraheader=Authorization: Bearer ${TAP_TOKEN}" fetch origin main
+          git -C "${TAP_DIR}" checkout -b main origin/main
+
+          mkdir -p "${TAP_DIR}/Formula"
+          cp dist/homebrew/termojinal.rb "${TAP_DIR}/Formula/termojinal.rb"
+          git -C "${TAP_DIR}" config user.name "github-actions[bot]"
+          git -C "${TAP_DIR}" config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C "${TAP_DIR}" add Formula/termojinal.rb
+          git -C "${TAP_DIR}" diff --cached --quiet || {
+            git -C "${TAP_DIR}" commit -m "termojinal ${VERSION}"
+            git -C "${TAP_DIR}" -c "http.https://github.com/.extraheader=Authorization: Bearer ${TAP_TOKEN}" push origin main
+            echo "Tap updated: ${VERSION}"
+          }
