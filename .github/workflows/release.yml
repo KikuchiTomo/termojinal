@@ -145,22 +145,19 @@ jobs:
             exit 0
           fi
 
+          # Clone tap repo (token is auto-masked in Actions logs)
           TAP_DIR=$(mktemp -d)
           trap 'rm -rf "${TAP_DIR}"' EXIT
-
-          # Use credential helper instead of embedding token in URL
-          git -C "${TAP_DIR}" init
-          git -C "${TAP_DIR}" remote add origin "https://github.com/KikuchiTomo/homebrew-termojinal.git"
-          git -C "${TAP_DIR}" -c "http.https://github.com/.extraheader=Authorization: Bearer ${TAP_TOKEN}" fetch origin main
-          git -C "${TAP_DIR}" checkout -b main origin/main
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/KikuchiTomo/homebrew-termojinal.git" "${TAP_DIR}"
 
           mkdir -p "${TAP_DIR}/Formula"
           cp dist/homebrew/termojinal.rb "${TAP_DIR}/Formula/termojinal.rb"
-          git -C "${TAP_DIR}" config user.name "github-actions[bot]"
-          git -C "${TAP_DIR}" config user.email "github-actions[bot]@users.noreply.github.com"
-          git -C "${TAP_DIR}" add Formula/termojinal.rb
-          git -C "${TAP_DIR}" diff --cached --quiet || {
-            git -C "${TAP_DIR}" commit -m "termojinal ${VERSION}"
-            git -C "${TAP_DIR}" -c "http.https://github.com/.extraheader=Authorization: Bearer ${TAP_TOKEN}" push origin main
+          cd "${TAP_DIR}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/termojinal.rb
+          git diff --cached --quiet || {
+            git commit -m "termojinal ${VERSION}"
+            git push
             echo "Tap updated: ${VERSION}"
           }
