@@ -36,8 +36,12 @@ fi
 # Strategy: replace version line, then replace sha256 lines by position.
 # First sha256 (after cli url) = CLI hash, second sha256 (after app url) = APP hash.
 awk -v version="$VERSION" -v cli_sha="$CLI_SHA" -v app_sha="$APP_SHA" '
+    /TERMOJINAL_VERSION = / {
+        print "  TERMOJINAL_VERSION = \"" version "\""
+        next
+    }
     /^  version / {
-        print "  version \"" version "\""
+        print "  version TERMOJINAL_VERSION"
         next
     }
     /cli-macos-universal\.tar\.gz/ {
