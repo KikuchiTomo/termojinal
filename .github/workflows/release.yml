@@ -101,8 +101,14 @@ jobs:
         run: |
           ARCHIVE="termojinal-${VERSION}-macos-universal.tar.gz"
           CLI_ARCHIVE="termojinal-${VERSION}-cli-macos-universal.tar.gz"
-          cd target/release
-          tar czf "../../${ARCHIVE}" Termojinal.app
+          # Wrap .app in a directory so Homebrew doesn't strip it during resource staging.
+          # Homebrew strips the single top-level directory from tarballs, so we add
+          # a dummy second file to prevent stripping.
+          mkdir -p target/app-pkg
+          cp -r target/release/Termojinal.app target/app-pkg/
+          echo "${VERSION}" > target/app-pkg/VERSION
+          cd target/app-pkg
+          tar czf "../../${ARCHIVE}" Termojinal.app VERSION
           cd ../universal-release
           tar czf "../../${CLI_ARCHIVE}" \
             termojinal termojinald tm termojinal-mcp termojinal-sign
