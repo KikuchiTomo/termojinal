@@ -88,12 +88,111 @@ jobs:
             fi
           done
 
+      # ---------------------------------------------------------------
+      # Code signing — imports Developer ID certificate into a
+      # temporary keychain that is destroyed at the end of the job.
+      # Secrets required:
+      #   CODESIGN_CERT_BASE64  — .p12 exported from Keychain Access, base64-encoded
+      #   CODESIGN_CERT_PASSWORD — password for the .p12
+      #   CODESIGN_IDENTITY     — e.g. "Developer ID Application: Name (TEAMID)"
+      # ---------------------------------------------------------------
+      - name: Import code-signing certificate
+        if: ${{ env.CODESIGN_CERT_BASE64 != '' }}
+        env:
+          CODESIGN_CERT_BASE64: ${{ secrets.CODESIGN_CERT_BASE64 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+        run: |
+          # Decode certificate
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$CODESIGN_CERT_BASE64" | base64 --decode > "$CERT_PATH"
+
+          # Create a temporary keychain (avoids polluting the default keychain)
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          security import "$CERT_PATH" \
+            -P "$CODESIGN_CERT_PASSWORD" \
+            -A \
+            -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Allow codesign to access the keychain without GUI password prompt
+          security set-key-partition-list \
+            -S "apple-tool:,apple:,codesign:" \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          # Add the temporary keychain to the search list (prepend so it's found first)
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          # Clean up the .p12 file immediately
+          rm -f "$CERT_PATH"
+
+          echo "CODESIGN_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       - name: Build Termojinal.app
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
         run: |
           mkdir -p target/release
           cp target/universal-release/termojinal target/release/termojinal
           cp target/universal-release/termojinald target/release/termojinald
           ./dist/macos/build-app.sh
+
+      # ---------------------------------------------------------------
+      # Notarization — submits the signed .app to Apple for review.
+      # Secrets required:
+      #   APPLE_ID        — Apple ID email
+      #   APPLE_TEAM_ID   — Developer Team ID
+      #   NOTARY_PASSWORD — App-specific password (NOT your Apple ID password)
+      # ---------------------------------------------------------------
+      - name: Notarize Termojinal.app
+        if: ${{ env.CODESIGN_CERT_BASE64 != '' && env.APPLE_ID != '' }}
+        env:
+          CODESIGN_CERT_BASE64: ${{ secrets.CODESIGN_CERT_BASE64 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          APP_PATH="target/release/Termojinal.app"
+
+          # Create a zip for submission (notarytool requires zip, dmg, or pkg)
+          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/notarize.zip"
+
+          # Submit and wait for Apple's response
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --wait
+
+          # Staple the notarization ticket to the .app
+          xcrun stapler staple "$APP_PATH"
+
+          echo "Notarization and stapling complete"
+
+      # ---------------------------------------------------------------
+      # CLI binaries — sign each standalone binary individually
+      # ---------------------------------------------------------------
+      - name: Sign CLI binaries
+        if: ${{ env.CODESIGN_CERT_BASE64 != '' }}
+        env:
+          CODESIGN_CERT_BASE64: ${{ secrets.CODESIGN_CERT_BASE64 }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+        run: |
+          IDENTITY="${CODESIGN_IDENTITY:--}"
+          ENTITLEMENTS="dist/macos/entitlements.plist"
+          for bin in termojinal termojinald tm termojinal-mcp termojinal-sign; do
+            codesign --force --options runtime \
+              --entitlements "$ENTITLEMENTS" \
+              --sign "$IDENTITY" \
+              "target/universal-release/$bin"
+          done
+          echo "CLI binaries signed"
 
       - name: Create release archives
         env:
@@ -135,6 +234,14 @@ jobs:
             ${{ env.ARCHIVE }}.sha256
             ${{ env.CLI_ARCHIVE }}
             ${{ env.CLI_ARCHIVE }}.sha256
+
+      # Clean up the temporary keychain
+      - name: Clean up keychain
+        if: always()
+        run: |
+          if [[ -n "${CODESIGN_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$CODESIGN_KEYCHAIN" 2>/dev/null || true
+          fi
 
       - name: Update Homebrew tap
         env:
