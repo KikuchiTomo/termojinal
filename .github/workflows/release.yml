@@ -126,13 +126,33 @@ jobs:
             ${{ env.CLI_ARCHIVE }}
             ${{ env.CLI_ARCHIVE }}.sha256
 
-      - name: Update Homebrew formula
+      - name: Update Homebrew tap
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
           REPO: ${{ github.repository }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          # Update formula in this repo (for reference)
           sed -i '' "s|^  url .*|  url \"https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz\"|" dist/homebrew/termojinal.rb
           sed -i '' "s|^  version .*|  version \"${VERSION}\"|" dist/homebrew/termojinal.rb
-          echo "Formula updated for ${VERSION}"
-          echo "To publish: copy dist/homebrew/termojinal.rb to your Homebrew tap"
+
+          # Push to the Homebrew tap repo if token is available
+          if [[ -n "$TAP_TOKEN" ]]; then
+            TAP_REPO="KikuchiTomo/homebrew-termojinal"
+            git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" /tmp/homebrew-tap
+            mkdir -p /tmp/homebrew-tap/Formula
+            cp dist/homebrew/termojinal.rb /tmp/homebrew-tap/Formula/termojinal.rb
+            cd /tmp/homebrew-tap
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add Formula/termojinal.rb
+            git diff --cached --quiet || {
+              git commit -m "termojinal ${VERSION}"
+              git push
+              echo "Tap updated: ${VERSION}"
+            }
+          else
+            echo "HOMEBREW_TAP_TOKEN not set — skipping tap update"
+            echo "To enable: create a PAT and add it as HOMEBREW_TAP_TOKEN secret"
+          fi
