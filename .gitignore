@@ -20,6 +20,11 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Signing keys — NEVER commit private keys
+*.key
+*.pem
+signing_key*
+
 # macOS
 .DS_Store
 

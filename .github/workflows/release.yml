@@ -60,10 +60,20 @@ jobs:
         run: ./dist/generate-licenses.sh
 
       - name: Build aarch64
-        run: cargo build --release --target aarch64-apple-darwin
+        run: |
+          cargo build --release --target aarch64-apple-darwin --bin termojinal
+          cargo build --release --target aarch64-apple-darwin -p termojinal-session --bin termojinald
+          cargo build --release --target aarch64-apple-darwin -p termojinal-ipc --bin tm
+          cargo build --release --target aarch64-apple-darwin -p termojinal-mcp --bin termojinal-mcp
+          cargo build --release --target aarch64-apple-darwin -p termojinal-ipc --bin termojinal-sign
 
       - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin
+        run: |
+          cargo build --release --target x86_64-apple-darwin --bin termojinal
+          cargo build --release --target x86_64-apple-darwin -p termojinal-session --bin termojinald
+          cargo build --release --target x86_64-apple-darwin -p termojinal-ipc --bin tm
+          cargo build --release --target x86_64-apple-darwin -p termojinal-mcp --bin termojinal-mcp
+          cargo build --release --target x86_64-apple-darwin -p termojinal-ipc --bin termojinal-sign
 
       - name: Create universal binaries
         run: |
