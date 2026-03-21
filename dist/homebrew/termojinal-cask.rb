@@ -1,4 +1,4 @@
-cask "termojinal" do
+cask "termojinal-app" do
   version "0.2.5-beta"
   sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 

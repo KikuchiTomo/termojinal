@@ -265,11 +265,13 @@ jobs:
 
           mkdir -p "${TAP_DIR}/Formula" "${TAP_DIR}/Casks"
           cp dist/homebrew/termojinal.rb "${TAP_DIR}/Formula/termojinal.rb"
-          cp dist/homebrew/termojinal-cask.rb "${TAP_DIR}/Casks/termojinal.rb"
+          cp dist/homebrew/termojinal-cask.rb "${TAP_DIR}/Casks/termojinal-app.rb"
           cd "${TAP_DIR}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/termojinal.rb Casks/termojinal.rb
+          # Remove old cask name if it exists (renamed from termojinal to termojinal-app)
+          git rm -f Casks/termojinal.rb 2>/dev/null || true
+          git add Formula/termojinal.rb Casks/termojinal-app.rb
           git diff --cached --quiet || {
             git commit -m "termojinal ${VERSION}"
             git push

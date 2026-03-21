@@ -40,7 +40,7 @@ For now, this is a selfish project — of my vibe, by my vibe, for my vibe. Like
 ```bash
 brew tap KikuchiTomo/termojinal
 brew install termojinal              # CLI tools + daemon
-brew install --cask termojinal       # GUI app (Termojinal.app → /Applications)
+brew install --cask termojinal-app   # GUI app (Termojinal.app → /Applications)
 brew services start termojinal       # start daemon (Ctrl+` hotkey)
 ```
 

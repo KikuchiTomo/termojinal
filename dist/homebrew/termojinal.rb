@@ -69,7 +69,7 @@ class Termojinal < Formula
       CLI tools installed: termojinal, termojinald, tm, termojinal-mcp, termojinal-sign
 
       To install the GUI app (Termojinal.app):
-        brew install --cask termojinal
+        brew install --cask termojinal-app
 
       To start the daemon (enables Ctrl+` global hotkey):
         brew services start termojinal
