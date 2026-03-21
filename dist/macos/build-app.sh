@@ -62,4 +62,10 @@ cp "$ASSETS/1024.png" "$ICONSET/icon_512x512@2x.png"
 iconutil -c icns -o "$RESOURCES/AppIcon.icns" "$ICONSET"
 rm -rf "$ICONSET"
 
+# Copy license files for the About screen
+cp "$REPO_ROOT/LICENSE" "$RESOURCES/LICENSE"
+if [[ -f "$REPO_ROOT/THIRD_PARTY_LICENSES.md" ]]; then
+    cp "$REPO_ROOT/THIRD_PARTY_LICENSES.md" "$RESOURCES/THIRD_PARTY_LICENSES.md"
+fi
+
 echo "==> Built $APP_DIR"

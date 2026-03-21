@@ -163,6 +163,12 @@ impl CommandPalette {
                 action: Action::AllowFlowPanel,
                 kind: CommandKind::Builtin,
             },
+            PaletteCommand {
+                name: "About Termojinal".to_string(),
+                description: "License, credits, and version info".to_string(),
+                action: Action::About,
+                kind: CommandKind::Builtin,
+            },
         ];
         let filtered: Vec<usize> = (0..commands.len()).collect();
         Self {
@@ -1240,6 +1246,10 @@ struct AppState {
     external_commands: Vec<LoadedCommand>,
     /// Quick Terminal runtime state.
     quick_terminal: QuickTerminalState,
+    /// Whether the "About Termojinal" overlay is visible.
+    about_visible: bool,
+    /// Scroll offset for the about overlay content.
+    about_scroll: usize,
 }
 
 /// Helper to access the active workspace immutably.
@@ -1773,6 +1783,8 @@ impl ApplicationHandler<UserEvent> for App {
             command_execution: None,
             external_commands,
             quick_terminal: QuickTerminalState::new(),
+            about_visible: false,
+            about_scroll: 0,
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -1906,6 +1918,26 @@ impl ApplicationHandler<UserEvent> for App {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
+                    return;
+                }
+
+                // About overlay intercepts all keyboard input when visible.
+                if state.about_visible {
+                    let scroll_down = matches!(&event.logical_key, Key::Named(NamedKey::ArrowDown))
+                        || matches!(&event.logical_key, Key::Character(c) if c.as_str() == "j");
+                    let scroll_up = matches!(&event.logical_key, Key::Named(NamedKey::ArrowUp))
+                        || matches!(&event.logical_key, Key::Character(c) if c.as_str() == "k");
+                    if scroll_down {
+                        state.about_scroll = state.about_scroll.saturating_add(3);
+                        state.window.request_redraw();
+                    } else if scroll_up {
+                        state.about_scroll = state.about_scroll.saturating_sub(3);
+                        state.window.request_redraw();
+                    } else {
+                        // Any other key dismisses the about screen.
+                        state.about_visible = false;
+                        state.window.request_redraw();
+                    }
                     return;
                 }
 
@@ -3490,6 +3522,12 @@ fn dispatch_action(
             toggle_quick_terminal(state);
             true
         }
+        Action::About => {
+            state.about_visible = !state.about_visible;
+            state.about_scroll = 0;
+            state.window.request_redraw();
+            true
+        }
         Action::UnreadJump
         | Action::OpenSettings => {
             log::debug!("unhandled action: {:?}", action);
@@ -4772,6 +4810,11 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
         render_command_palette(state, &view, phys_w, phys_h);
     }
 
+    // Render About overlay if visible.
+    if state.about_visible {
+        render_about_overlay(state, &view, phys_w, phys_h);
+    }
+
     output.present();
     Ok(())
 }
@@ -5282,6 +5325,130 @@ fn render_command_execution(
             state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
         }
     }
+}
+
+/// Load the "About Termojinal" text including version, copyright, and third-party licenses.
+fn load_about_text() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut text = format!("Termojinal v{version}\n");
+    text.push_str("GPU-accelerated terminal emulator\n");
+    text.push_str("Copyright (c) 2026 Tomoo Kikuchi\n");
+    text.push_str("MIT License\n\n");
+
+    // Try to load THIRD_PARTY_LICENSES.md from the executable's directory
+    // or from known locations.
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let search_paths = [
+        exe_dir.as_ref().map(|d| d.join("../Resources/THIRD_PARTY_LICENSES.md")),
+        exe_dir.as_ref().map(|d| d.join("../../THIRD_PARTY_LICENSES.md")),
+        Some(std::path::PathBuf::from("THIRD_PARTY_LICENSES.md")),
+    ];
+
+    for path in search_paths.iter().flatten() {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            text.push_str(&content);
+            break;
+        }
+    }
+
+    text
+}
+
+/// Render the "About Termojinal" overlay on top of the terminal.
+fn render_about_overlay(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    phys_w: f32,
+    phys_h: f32,
+) {
+    let cell_size = state.renderer.cell_size();
+    let cell_w = cell_size.width;
+    let cell_h = cell_size.height;
+
+    let pc = &state.config.palette;
+
+    // 1. Semi-transparent dark overlay covering the entire window.
+    let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
+    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+
+    // 2. Centered floating box (use most of the window).
+    let box_w = (phys_w * 0.7).min(phys_w - 40.0).max(200.0);
+    let box_h = (phys_h * 0.7).min(phys_h - 40.0).max(100.0);
+    let box_x = (phys_w - box_w) / 2.0;
+    let box_y = (phys_h - box_h) / 2.0;
+
+    // Draw box background and border.
+    let box_bg = color_or(&pc.bg, [0.12, 0.12, 0.16, 0.95]);
+    let border_color = color_or(&pc.border_color, [0.3, 0.3, 0.4, 1.0]);
+    let corner_radius = pc.corner_radius;
+    let border_width = pc.border_width;
+    let shadow_radius = pc.shadow_radius;
+    let shadow_opacity = pc.shadow_opacity;
+
+    let about_rect = RoundedRect {
+        rect: [box_x, box_y, box_w, box_h],
+        color: box_bg,
+        border_color,
+        params: [corner_radius, border_width, shadow_radius, shadow_opacity],
+    };
+    state.renderer.submit_rounded_rects(view, &[about_rect]);
+
+    // 3. Load and render the about text.
+    let about_text = load_about_text();
+    let lines: Vec<&str> = about_text.lines().collect();
+    let max_chars = ((box_w - 2.0 * cell_w) / cell_w) as usize;
+    let content_x = box_x + cell_w;
+
+    // Reserve space for the footer hint line.
+    let footer_h = cell_h * 1.5;
+    let content_area_h = box_h - cell_h * 0.5 - footer_h;
+    let max_visible_lines = (content_area_h / cell_h) as usize;
+
+    // Clamp scroll offset.
+    let max_scroll = lines.len().saturating_sub(max_visible_lines);
+    if state.about_scroll > max_scroll {
+        state.about_scroll = max_scroll;
+    }
+    let scroll = state.about_scroll;
+
+    // Title/header styling.
+    let title_fg = [0.95, 0.95, 0.95, 1.0];
+    let text_fg = [0.75, 0.75, 0.78, 1.0];
+    let hint_fg = [0.5, 0.5, 0.55, 1.0];
+
+    for (i, line) in lines.iter().enumerate().skip(scroll).take(max_visible_lines) {
+        let row = i - scroll;
+        let y = box_y + cell_h * 0.25 + (row as f32) * cell_h;
+        let display: String = line.chars().take(max_chars).collect();
+
+        // Use brighter color for the first few header lines.
+        let fg = if i < 4 { title_fg } else { text_fg };
+        state.renderer.render_text(view, &display, content_x, y, fg, box_bg);
+    }
+
+    // 4. Footer: "Press any key to close" hint.
+    let footer_y = box_y + box_h - cell_h * 1.25;
+
+    // Separator above footer.
+    let sep_color = color_or(&pc.separator_color, [0.25, 0.25, 0.3, 1.0]);
+    state.renderer.submit_separator(
+        view,
+        box_x as u32 + 1,
+        (footer_y - cell_h * 0.25) as u32,
+        box_w as u32 - 2,
+        1,
+        sep_color,
+    );
+
+    let scroll_hint = if max_scroll > 0 {
+        "Arrow keys to scroll, any other key to close"
+    } else {
+        "Press any key to close"
+    };
+    state.renderer.render_text(view, scroll_hint, content_x, footer_y, hint_fg, box_bg);
 }
 
 fn sel_bounds_for(pane: &Pane) -> Option<((usize, usize), (usize, usize))> {

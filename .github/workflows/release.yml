@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Extract and validate version from tag
+        id: version
+        run: |
+          RAW_TAG="${GITHUB_REF#refs/tags/}"
+          # Strip leading v
+          VERSION="${RAW_TAG#v}"
+          # Validate: must be semver (with optional -beta, -rc.N, etc.)
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Invalid version format: ${VERSION}"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${RAW_TAG}" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set version in sources
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./dist/set-version.sh "$VERSION"
+
+      - name: Generate third-party licenses
+        run: ./dist/generate-licenses.sh
+
+      - name: Build aarch64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Create universal binaries
+        run: |
+          mkdir -p target/universal-release
+          for bin in termojinal termojinald tm termojinal-mcp termojinal-sign; do
+            ARM="target/aarch64-apple-darwin/release/$bin"
+            X86="target/x86_64-apple-darwin/release/$bin"
+            if [[ -f "$ARM" && -f "$X86" ]]; then
+              lipo -create -output "target/universal-release/$bin" "$ARM" "$X86"
+              echo "  $bin -> universal"
+            fi
+          done
+
+      - name: Build Termojinal.app
+        run: |
+          mkdir -p target/release
+          cp target/universal-release/termojinal target/release/termojinal
+          ./dist/macos/build-app.sh
+
+      - name: Create release archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ARCHIVE="termojinal-${VERSION}-macos-universal.tar.gz"
+          CLI_ARCHIVE="termojinal-${VERSION}-cli-macos-universal.tar.gz"
+          cd target/release
+          tar czf "../../${ARCHIVE}" Termojinal.app
+          cd ../universal-release
+          tar czf "../../${CLI_ARCHIVE}" \
+            termojinal termojinald tm termojinal-mcp termojinal-sign
+          cd ../..
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+          echo "CLI_ARCHIVE=${CLI_ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Generate checksums
+        run: |
+          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+          shasum -a 256 "$CLI_ARCHIVE" > "${CLI_ARCHIVE}.sha256"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Termojinal ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+            ${{ env.CLI_ARCHIVE }}
+            ${{ env.CLI_ARCHIVE }}.sha256
+
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          sed -i '' "s|^  url .*|  url \"https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz\"|" dist/homebrew/termojinal.rb
+          sed -i '' "s|^  version .*|  version \"${VERSION}\"|" dist/homebrew/termojinal.rb
+          echo "Formula updated for ${VERSION}"
+          echo "To publish: copy dist/homebrew/termojinal.rb to your Homebrew tap"

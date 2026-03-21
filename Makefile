@@ -37,19 +37,35 @@ app-dev: build-dev
 	./dist/macos/build-app.sh --debug
 	@echo "==> Termojinal.app (debug) ready at target/debug/Termojinal.app"
 
-# Build dev binary only (faster, unoptimized)
+# Build all dev binaries (termojinal-dev, termojinald, tm)
 build-dev:
 	cargo build --bin termojinal-dev
+	cargo build -p termojinal-session --bin termojinald
+	cargo build -p termojinal-ipc --bin tm
 
-# Run in development mode (debug build, direct PTY)
-run-dev:
-	RUST_LOG=info cargo run --bin termojinal-dev
+# Run in development mode (full stack: daemon + app, mirrors release)
+run-dev: app-dev
+	@echo "==> Starting termojinald..."
+	@RUST_LOG=info target/debug/termojinald & echo $$! > /tmp/termojinald-dev.pid
+	@sleep 0.3
+	@echo "==> Opening Termojinal Dev.app..."
+	@open -W target/debug/Termojinal.app; \
+		kill $$(cat /tmp/termojinald-dev.pid) 2>/dev/null; \
+		rm -f /tmp/termojinald-dev.pid; \
+		echo "==> Stopped termojinald"
 
-# Run in development mode with debug logging
-run-dev-debug:
-	RUST_LOG=debug cargo run --bin termojinal-dev
+# Run in development mode with debug logging (full stack)
+run-dev-debug: app-dev
+	@echo "==> Starting termojinald (debug)..."
+	@RUST_LOG=debug target/debug/termojinald & echo $$! > /tmp/termojinald-dev.pid
+	@sleep 0.3
+	@echo "==> Starting Termojinal Dev (debug)..."
+	@RUST_LOG=debug target/debug/Termojinal.app/Contents/MacOS/termojinal; \
+		kill $$(cat /tmp/termojinald-dev.pid) 2>/dev/null; \
+		rm -f /tmp/termojinald-dev.pid; \
+		echo "==> Stopped termojinald"
 
-# Run the session daemon
+# Run the session daemon standalone
 run-daemon:
 	RUST_LOG=info cargo run -p termojinal-session --bin termojinald
 

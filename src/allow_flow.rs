@@ -145,39 +145,41 @@ impl AllowFlowUI {
     //   Esc = dismiss hint bar
     // -----------------------------------------------------------------
 
-    /// Process a key event when there are pending requests for the active
-    /// workspace.  Returns an [`AllowFlowKeyResult`] indicating whether the
-    /// key was consumed and which requests (if any) were resolved.
+    /// Process a key event when there are pending requests.
+    ///
+    /// Keys are intercepted regardless of which workspace is focused — this
+    /// enables "fast allow" where the user can press y/a from anywhere.
+    /// The target workspace is the first one that has pending requests.
     pub fn process_key(
         &mut self,
         key: &Key,
-        active_ws: usize,
+        _active_ws: usize,
         pane_ptys: &mut std::collections::HashMap<u64, *mut Pty>,
     ) -> AllowFlowKeyResult {
-        // Only intercept keys when there are pending requests for the
-        // active workspace.
-        if !self.has_pending_for_workspace(active_ws) {
-            return AllowFlowKeyResult::NotConsumed;
-        }
+        // Find the first workspace with pending requests (any workspace).
+        let target_ws = match self.first_workspace_with_pending() {
+            Some(ws) => ws,
+            None => return AllowFlowKeyResult::NotConsumed,
+        };
 
         match key {
             Key::Character(c) => {
                 match c.as_str() {
                     // --- Batch: uppercase = ALL ---
                     "Y" => {
-                        let resolved = self.allow_all_for_workspace(active_ws, pane_ptys);
-                        log::info!("allow-all: approved {} requests for workspace {}", resolved.len(), active_ws);
+                        let resolved = self.allow_all_for_workspace(target_ws, pane_ptys);
+                        log::info!("allow-all: approved {} requests for workspace {}", resolved.len(), target_ws);
                         AllowFlowKeyResult::Resolved(resolved)
                     }
                     "N" => {
-                        let resolved = self.deny_all_for_workspace(active_ws, pane_ptys);
-                        log::info!("deny-all: denied {} requests for workspace {}", resolved.len(), active_ws);
+                        let resolved = self.deny_all_for_workspace(target_ws, pane_ptys);
+                        log::info!("deny-all: denied {} requests for workspace {}", resolved.len(), target_ws);
                         AllowFlowKeyResult::Resolved(resolved)
                     }
                     // --- Single: lowercase ---
                     "y" => {
                         let mut resolved = Vec::new();
-                        if let Some(req) = self.first_pending_for_workspace(active_ws) {
+                        if let Some(req) = self.first_pending_for_workspace(target_ws) {
                             let req_id = req.id;
                             let pane_id = req.pane_id;
                             if let Some(response) = self.engine.respond(req_id, AllowDecision::Allow) {
@@ -190,7 +192,7 @@ impl AllowFlowUI {
                     }
                     "n" => {
                         let mut resolved = Vec::new();
-                        if let Some(req) = self.first_pending_for_workspace(active_ws) {
+                        if let Some(req) = self.first_pending_for_workspace(target_ws) {
                             let req_id = req.id;
                             let pane_id = req.pane_id;
                             if let Some(response) = self.engine.respond(req_id, AllowDecision::Deny) {
@@ -204,7 +206,7 @@ impl AllowFlowUI {
                     "a" | "A" => {
                         // Allow and remember as persistent rule (works for first pending).
                         let mut resolved = Vec::new();
-                        if let Some(req) = self.first_pending_for_workspace(active_ws) {
+                        if let Some(req) = self.first_pending_for_workspace(target_ws) {
                             let req_id = req.id;
                             let pane_id = req.pane_id;
                             if let Some(response) = self.engine.respond(req_id, AllowDecision::Allow) {

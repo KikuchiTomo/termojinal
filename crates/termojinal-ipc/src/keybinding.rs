@@ -74,6 +74,8 @@ pub enum Action {
     ToggleQuickTerminal,
     /// Ignore the key entirely.
     None,
+    /// Show the About screen (license, credits, version).
+    About,
     /// Run a named command or plugin.
     Command(String),
 }

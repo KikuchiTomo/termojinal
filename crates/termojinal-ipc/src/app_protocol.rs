@@ -613,6 +613,16 @@ mod tests {
                 lines: None,
             },
             // Allow Flow
+            AppIpcRequest::PermissionRequest {
+                tool_name: "Bash".to_string(),
+                tool_input: json!({"command": "cargo test"}),
+                session_id: Some("abc123".to_string()),
+            },
+            AppIpcRequest::PermissionRequest {
+                tool_name: "Edit".to_string(),
+                tool_input: json!({}),
+                session_id: None,
+            },
             AppIpcRequest::ListPendingRequests {
                 workspace: Some(0),
             },
@@ -737,6 +747,14 @@ mod tests {
                     lines: None,
                 },
                 "get_scrollback",
+            ),
+            (
+                AppIpcRequest::PermissionRequest {
+                    tool_name: "Bash".into(),
+                    tool_input: json!({}),
+                    session_id: None,
+                },
+                "permission_request",
             ),
             (
                 AppIpcRequest::ListPendingRequests { workspace: None },

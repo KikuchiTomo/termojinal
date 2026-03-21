@@ -1,63 +1,51 @@
-# termojinal
+# Termojinal
 
-Terminal of the vibe coding, by the vibe coding, for the vibe coding.
+A GPU-accelerated terminal emulator for macOS, built for developers who work with AI coding agents.
 
 ## What is this?
 
 There are already many great terminals out there — cmux, iTerm, and others. Yet none of them felt quite right to me.
-As a Japanese speaker, my first requirement is simple: Japanese input that just works, inline, without friction.
-I could have contributed to one of those existing, excellent projects. But if I was going to fix this anyway, I thought — why not build the terminal I actually want?
+
+As a Japanese speaker, my first requirement is simple: Japanese input that just works, inline, without friction. I could have contributed to one of those existing, excellent projects. But if I was going to fix this anyway, I thought — why not build the terminal I actually want?
+
 I have a deep appreciation for cmux's design aesthetic, and an equal love for iTerm's usability. Termojinal lives somewhere between the two — with the addition of a command palette, so you can reach anything, from anywhere, with joy.
+
 For now, this is a selfish project — of my vibe, by my vibe, for my vibe. Like bonsai, I intend to tend to it slowly, day by day, pruning and shaping it through daily use.
 
 ## Features
 
-- GPU-accelerated rendering with wgpu + Metal
-- Workspace, tab, and split pane management with an immutable tree layout
-- Vertical sidebar showing workspaces, git branches, listening ports, and AI status
-- Command palette with fuzzy search and external plugin support via stdio JSON
-- Allow Flow — approve or deny AI agent permission requests inline from the sidebar
-- Batch approve/deny across multiple pending requests with a single keystroke
-- Quick Terminal — global hotkey summons the terminal instantly from anywhere
+- GPU-accelerated rendering (wgpu + Metal)
+- Workspaces, tabs, and split panes with immutable tree layout
+- Vertical sidebar with workspaces, git branches, ports, and AI status
+- Command palette with fuzzy search and extensible plugins via JSON stdio
+- Allow Flow — approve or deny AI agent permission requests from anywhere with a single key
+- Quick Terminal — global hotkey drops a terminal from the top of the screen
 - Dark/light theme auto-switching following macOS appearance
-- Full ANSI 16-color palette configurable per theme
-- CJK full-width character support and inline Japanese IME
-- Color emoji rendering
-- Inline image display (Kitty Graphics, Sixel, iTerm2)
+- CJK full-width characters and inline Japanese IME
+- Color emoji rendering via Core Text
+- Inline images (Kitty Graphics, Sixel, iTerm2)
+- MCP server for Claude Code workspace control
+- Desktop notifications via Notification Center
 - Ed25519 command signing for verified plugins
-- MCP server so Claude Code can create workspaces, read terminal content, and manage Allow Flow
-- Desktop notifications via Notification Center with app icon
-- One-command setup (`tm setup`) configures Claude Code hooks and notification channel
-- Homebrew installable with launchd daemon auto-start
+- One-command setup for Claude Code integration (`tm setup`)
 
-## Installation
+## Install
 
-### Prerequisites
-
-- macOS 13 Ventura or later (Apple Silicon + Intel)
-- Rust 1.78+
-
-### Build from source
-
-```bash
-git clone https://github.com/KikuchiTomo/termojinal.git
-cd termojinal
-make install   # install Rust toolchain + fetch dependencies
-make           # release build
-```
-
-### Homebrew (coming soon)
+### Homebrew
 
 ```bash
 brew tap KikuchiTomo/termojinal
 brew install termojinal
-brew services start termojinal  # start daemon for global hotkeys
+brew services start termojinal
 ```
 
-### One-liner install
+### From source
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/KikuchiTomo/termojinal/main/dist/install.sh | bash
+git clone https://github.com/KikuchiTomo/termojinal.git
+cd termojinal
+make install && make app
+open target/release/Termojinal.app
 ```
 
 ## Setup
@@ -66,31 +54,25 @@ curl -fsSL https://raw.githubusercontent.com/KikuchiTomo/termojinal/main/dist/in
 tm setup
 ```
 
-This one command does everything:
-- Creates `~/.config/termojinal/` with default config
-- Links bundled commands (start-review, run-agent, etc.)
-- Configures Claude Code notification channel (OSC 9 via `preferredNotifChannel = iterm2`)
-- Installs Claude Code notification hook (`~/.claude/hooks/termojinal-notify.sh`)
-- Registers the hook in `~/.claude/settings.json`
+Creates config directory, installs Claude Code hooks (Notification + PermissionRequest), and links bundled commands.
 
-### Daemon (optional, for global hotkeys)
+### Daemon
 
-Enables `` Ctrl+` `` Quick Terminal even when termojinal is not focused.
+The daemon enables global hotkeys (Ctrl+\` Quick Terminal) even when Termojinal is not focused.
 
 ```bash
-# Manual
-make run-daemon
-
-# Auto-start on login
-cp dist/launchd/com.termojinal.daemon.plist ~/Library/LaunchAgents/
+brew services start termojinal     # Homebrew
+# or
 launchctl load ~/Library/LaunchAgents/com.termojinal.daemon.plist
 ```
 
-Requires **Accessibility permission**: System Settings > Privacy & Security > Accessibility > add `termojinald`.
+Requires **Accessibility** permission in System Settings.
 
-### MCP server (optional, for Claude Code workspace control)
+### MCP server
 
-Lets Claude Code create workspaces, tabs, read terminal content, and manage Allow Flow.
+Gives Claude Code full workspace control — create tabs, read terminal content, approve permissions.
+
+Add to your Claude Code MCP config:
 
 ```json
 {
@@ -102,45 +84,45 @@ Lets Claude Code create workspaces, tabs, read terminal content, and manage Allo
 }
 ```
 
-## Usage
-
-```bash
-termojinal          # release
-make run-dev        # development mode
-make run-dev-debug  # with debug logging
-```
-
-### Key bindings
+## Key bindings
 
 | Action | Default |
-|---|---|
-| Command Palette | `Cmd+Shift+P` |
-| Quick Terminal | `Ctrl+`` |
-| Split Right | `Cmd+D` |
-| Split Down | `Cmd+Shift+D` |
-| New Tab | `Cmd+T` |
-| New Workspace | `Cmd+N` |
-| Close | `Cmd+W` |
-| Search | `Cmd+F` |
-| Allow Flow Panel | `Cmd+Shift+A` |
+|--------|---------|
+| Command Palette | Cmd+Shift+P |
+| Quick Terminal | Ctrl+\` |
+| Split right | Cmd+D |
+| Split down | Cmd+Shift+D |
+| Next / prev pane | Cmd+] / Cmd+[ |
+| Zoom pane | Cmd+Shift+Enter |
+| New tab | Cmd+T |
+| Close tab | Cmd+W |
+| Next / prev tab | Cmd+Shift+} / { |
+| New workspace | Cmd+N |
+| Switch workspace | Cmd+1 through Cmd+9 |
+| Toggle sidebar | Cmd+B |
+| Search | Cmd+F |
+| Font size | Cmd+= / Cmd+- |
 
-All keybindings are configurable in `~/.config/termojinal/keybindings.toml`.
+All keybindings are customizable. See [configuration docs](docs/configuration.md).
 
-### Allow Flow (AI permission management)
+## Allow Flow
 
-When Claude Code requests permission (e.g., to run a bash command), termojinal shows the request inline in the sidebar:
+When Claude Code needs permission, Termojinal intercepts the request via a `PermissionRequest` hook and shows it in the sidebar. You can approve or deny from anywhere — no need to switch focus.
 
 | Key | Action |
-|---|---|
-| `y` | Allow one request |
-| `n` | Deny one request |
-| `Y` (Shift) | Allow ALL requests |
-| `N` (Shift) | Deny ALL requests |
-| `a` | Allow + remember rule |
+|-----|--------|
+| y | Allow one |
+| n | Deny one |
+| Y | Allow all |
+| N | Deny all |
+| a | Allow and remember |
+| Esc | Dismiss |
 
-### Custom commands
+Decisions are sent back to Claude Code via structured IPC — no terminal output parsing.
 
-Place command scripts in `~/.config/termojinal/commands/`:
+## Custom commands
+
+Scripts that communicate with Termojinal via JSON over stdio. They appear in the command palette.
 
 ```
 ~/.config/termojinal/commands/my-command/
@@ -148,32 +130,61 @@ Place command scripts in `~/.config/termojinal/commands/`:
 └── run.sh
 ```
 
-Bundled commands: `start-review`, `switch-worktree`, `kill-merged`, `clone-and-open`, `run-agent`, `hello-world`.
+Bundled: `start-review`, `switch-worktree`, `kill-merged`, `clone-and-open`, `run-agent`, `hello-world`
 
-Install bundled commands: `tm setup` (or manually: `cp -r commands/* ~/.config/termojinal/commands/`)
+See [command docs](docs/command.md) for the full protocol reference.
+
+## Configuration
+
+`~/.config/termojinal/config.toml`
+
+Customize fonts, colors, sidebar, tab bar, status bar, pane separators, notifications, quick terminal, and Allow Flow.
+
+See [configuration docs](docs/configuration.md) for the complete reference.
+
+## Development
+
+```bash
+make run-dev        # build + start daemon + open .app (debug)
+make run-dev-debug  # same with RUST_LOG=debug
+make test           # run all tests
+make lint           # clippy
+make fmt            # format
+```
+
+`make run-dev` mirrors the release setup: builds all binaries, creates the `.app` bundle, starts `termojinald` in the background, and opens the app. When the app closes, the daemon is stopped automatically.
 
 ## Architecture
 
-```
-termojinal        GUI application (wgpu + Metal + winit)
-termojinald       Session daemon (PTY management + global hotkeys)
-termojinal-mcp    MCP server (Claude Code integration)
-tm                CLI tool (IPC client + setup)
-```
+| Binary | Purpose |
+|--------|---------|
+| Termojinal.app | GUI application (wgpu + Metal + winit) |
+| termojinald | Session daemon (PTY management, global hotkeys) |
+| tm | CLI tool (setup, IPC client, Allow Flow) |
+| termojinal-mcp | MCP server for Claude Code |
+| termojinal-sign | Ed25519 command signer |
 
-### Crate structure
+### Crates
 
 | Crate | Purpose |
-|---|---|
-| `termojinal-pty` | PTY fork/exec |
-| `termojinal-vt` | VT parser + cell grid + scrollback |
-| `termojinal-render` | wgpu GPU renderer + font atlas + SDF shaders |
-| `termojinal-layout` | Immutable split pane tree |
-| `termojinal-session` | Session daemon + global hotkeys |
-| `termojinal-ipc` | IPC protocol + keybindings + CLI |
-| `termojinal-claude` | Allow Flow engine |
-| `termojinal-mcp` | MCP server |
+|-------|---------|
+| termojinal-pty | PTY fork/exec |
+| termojinal-vt | VT parser, cell grid, scrollback, images |
+| termojinal-render | wgpu renderer, font/emoji atlas, SDF shaders |
+| termojinal-layout | Immutable split pane tree |
+| termojinal-session | Daemon, hotkeys, persistence |
+| termojinal-ipc | IPC protocol, keybindings, CLI, command system |
+| termojinal-claude | Allow Flow engine |
+| termojinal-mcp | MCP server |
+
+## Documentation
+
+- [Quick Start](docs/quick_start.md)
+- [Configuration Reference](docs/configuration.md)
+- [Custom Commands & JSON API](docs/command.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)
+
+Copyright (c) 2026 Tomoo Kikuchi

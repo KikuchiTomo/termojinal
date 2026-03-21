@@ -314,11 +314,13 @@ mod tests {
 
     #[test]
     fn test_is_emoji() {
-        // Common emoji
-        assert!(is_emoji('\u{1F600}')); // grinning face
-        assert!(is_emoji('\u{1F680}')); // rocket
-        assert!(is_emoji('\u{2764}'));  // heavy heart (in Dingbats range)
-        assert!(is_emoji('\u{1F4A9}')); // pile of poo
+        // Common emoji (Emoji_Presentation = true)
+        assert!(is_emoji('\u{1F600}')); // 😀 grinning face
+        assert!(is_emoji('\u{1F680}')); // 🚀 rocket
+        assert!(is_emoji('\u{1F4A9}')); // 💩 pile of poo
+
+        // U+2764 (❤) has text presentation by default — only emoji with VS16.
+        assert!(!is_emoji('\u{2764}'));
 
         // Not emoji
         assert!(!is_emoji('A'));
