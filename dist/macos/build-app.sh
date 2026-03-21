@@ -3,6 +3,11 @@ set -euo pipefail
 
 # Build Termojinal.app bundle from release binary + resources.
 # Usage: ./dist/macos/build-app.sh [--debug]
+#
+# Code signing:
+#   Set CODESIGN_IDENTITY to sign with a Developer ID certificate.
+#   Example: CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./dist/macos/build-app.sh
+#   If not set, the bundle is signed with an ad-hoc signature (--sign -).
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROFILE="release"
@@ -73,5 +78,20 @@ cp "$REPO_ROOT/LICENSE" "$RESOURCES/LICENSE"
 if [[ -f "$REPO_ROOT/THIRD_PARTY_LICENSES.md" ]]; then
     cp "$REPO_ROOT/THIRD_PARTY_LICENSES.md" "$RESOURCES/THIRD_PARTY_LICENSES.md"
 fi
+
+# --- Code sign the .app bundle ---
+ENTITLEMENTS="$REPO_ROOT/dist/macos/entitlements.plist"
+IDENTITY="${CODESIGN_IDENTITY:--}"
+
+if [[ "$IDENTITY" == "-" ]]; then
+    echo "==> Signing with ad-hoc identity (set CODESIGN_IDENTITY for Developer ID)"
+else
+    echo "==> Signing with: $IDENTITY"
+fi
+
+codesign --force --deep --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$IDENTITY" \
+    "$APP_DIR"
 
 echo "==> Built $APP_DIR"

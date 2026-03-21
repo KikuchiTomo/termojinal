@@ -1,7 +1,6 @@
 //! macOS desktop notifications via Notification Center API.
 //!
-//! Uses `mac-notification-sys` which wraps `NSUserNotificationCenter` /
-//! `UNUserNotificationCenter` natively.
+//! Uses `mac-notification-sys` which wraps `NSUserNotificationCenter` natively.
 
 /// Bundle identifier — matches Info.plist in the .app bundle.
 fn bundle_id() -> &'static str {
@@ -39,11 +38,10 @@ pub fn send_notification(title: &str, body: &str, sound: bool) {
 /// Request notification permission if not already granted.
 ///
 /// Uses `UNUserNotificationCenter` to check the current authorization status.
-/// If the status is "not determined" (user has never been asked), shows the
-/// system permission dialog requesting alert, sound, and badge permissions.
-///
-/// Uses raw Objective-C message dispatch via `objc2` to avoid crate version
-/// conflicts with the `objc2-user-notifications` wrapper crate.
+/// Only runs when the process is inside a `.app` bundle (has a valid bundle
+/// identifier). Bare CLI binaries (e.g. from Homebrew) are skipped because
+/// `UNUserNotificationCenter` does not work correctly without proper code
+/// signing and bundle identity.
 #[cfg(target_os = "macos")]
 pub fn request_notification_permission_if_needed() {
     use std::sync::mpsc;
@@ -51,6 +49,18 @@ pub fn request_notification_permission_if_needed() {
     use block2::RcBlock;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
     use objc2::{msg_send, msg_send_id};
+
+    // Only proceed if running inside a .app bundle.
+    // UNUserNotificationCenter requires a valid bundle identifier and code
+    // signature; without one, authorizationStatus always returns NotDetermined
+    // and the dialog reappears on every launch.
+    let is_bundled = std::env::current_exe()
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false);
+    if !is_bundled {
+        log::debug!("not running from .app bundle — skipping notification permission check");
+        return;
+    }
 
     let center_class = match AnyClass::get("UNUserNotificationCenter") {
         Some(cls) => cls,

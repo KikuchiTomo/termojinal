@@ -139,7 +139,22 @@ async fn main() {
         }
     };
 
-    match client.send(&request).await {
+    let response = client.send(&request).await;
+
+    // If ListSessionDetails failed (e.g. older daemon), fall back to ListSessions.
+    let response = match (&cli.command, &response) {
+        (Commands::List { .. }, Ok(r)) if !r.success => {
+            let r2 = r.error.as_deref().unwrap_or("");
+            if r2.contains("unknown request type") {
+                client.send(&IpcRequest::ListSessions).await
+            } else {
+                response
+            }
+        }
+        _ => response,
+    };
+
+    match response {
         Ok(response) => {
             if response.success {
                 match &cli.command {
@@ -154,6 +169,13 @@ async fn main() {
                                         println!("{}", serde_json::to_string_pretty(sessions).unwrap_or_default());
                                     } else if arr.is_empty() {
                                         println!("No active sessions.");
+                                    } else if arr.first().and_then(|v| v.as_str()).is_some() {
+                                        // Old format: array of ID strings
+                                        for s in arr {
+                                            if let Some(id) = s.as_str() {
+                                                println!("{id}");
+                                            }
+                                        }
                                     } else {
                                         print_session_table(arr);
                                     }

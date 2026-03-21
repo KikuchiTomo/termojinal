@@ -34,6 +34,10 @@ class Termojinal < Formula
       [window]
       opacity = 0.95
 
+      [startup]
+      mode = "fixed"
+      directory = "~"
+
       [quick_terminal]
       enabled = true
       hotkey = "ctrl+`"

@@ -2996,7 +2996,6 @@ impl ApplicationHandler<UserEvent> for App {
                 let focused_id = active_tab(state).layout.focused();
                 let cell_size = state.renderer.cell_size();
                 let cursor_pos = state.cursor_pos;
-                let sf = state.scale_factor;
                 let pane_rects = active_pane_rects(state);
                 let tab = active_tab_mut(state);
 
@@ -3026,11 +3025,10 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some((_, rect)) =
                             pane_rects.iter().find(|(id, _)| *id == focused_id)
                         {
-                            // cursor_pos is in logical pixels, rect/cell_size are in physical pixels.
-                            let phys_x = cursor_pos.0 * sf;
-                            let phys_y = cursor_pos.1 * sf;
-                            let local_x = ((phys_x - rect.x as f64) as f32).max(0.0);
-                            let local_y = ((phys_y - rect.y as f64) as f32).max(0.0);
+                            // cursor_pos is in physical pixels (from CursorMoved PhysicalPosition).
+                            // rect and cell_size are also in physical pixels.
+                            let local_x = ((cursor_pos.0 - rect.x as f64) as f32).max(0.0);
+                            let local_y = ((cursor_pos.1 - rect.y as f64) as f32).max(0.0);
                             let pos = GridPos {
                                 col: (local_x / cell_size.width).floor() as usize,
                                 row: (local_y / cell_size.height).floor() as usize,

@@ -133,54 +133,20 @@ mod platform {
         fn CGRequestListenEventAccess() -> bool;
     }
 
-    // ---- Accessibility helpers (secondary check) ----
-
-    /// Check Accessibility permission without prompting.
-    fn is_accessibility_granted() -> bool {
-        use core_foundation::base::TCFType;
-        use core_foundation::boolean::CFBoolean;
-        use core_foundation::dictionary::CFDictionary;
-        use core_foundation::string::CFString;
-
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXIsProcessTrustedWithOptions(
-                options: core_foundation::base::CFTypeRef,
-            ) -> bool;
-        }
-
-        let key = CFString::new("AXTrustedCheckOptionPrompt");
-        let value = CFBoolean::false_value();
-        let options = CFDictionary::from_CFType_pairs(&[(key, value)]);
-        unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()) }
-    }
-
-    /// Show the Accessibility permission dialog (call once).
-    fn prompt_accessibility() {
-        use core_foundation::base::TCFType;
-        use core_foundation::boolean::CFBoolean;
-        use core_foundation::dictionary::CFDictionary;
-        use core_foundation::string::CFString;
-
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXIsProcessTrustedWithOptions(
-                options: core_foundation::base::CFTypeRef,
-            ) -> bool;
-        }
-
-        let key = CFString::new("AXTrustedCheckOptionPrompt");
-        let value = CFBoolean::true_value();
-        let options = CFDictionary::from_CFType_pairs(&[(key, value)]);
-        unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()); }
-    }
-
     pub(super) fn run_event_tap(
         callback: impl Fn(HotkeyEvent) + Send + 'static,
         running: Arc<AtomicBool>,
         tx: std::sync::mpsc::SyncSender<Result<(), HotkeyError>>,
     ) {
-        // 1. Check Input Monitoring permission (required for ListenOnly CGEventTap).
+        // A ListenOnly CGEventTap requires only Input Monitoring permission
+        // (macOS 10.15+).  Accessibility permission is NOT needed for
+        // ListenOnly taps and AXIsProcessTrusted is unreliable on macOS 13+
+        // (Apple Developer Forums #727984), so we do not check it.
+        //
+        // Strategy:
+        //   1. Silent check via CGPreflightListenEventAccess()
+        //   2. Prompt only if not granted via CGRequestListenEventAccess()
+        //   3. Try creating the CGEventTap — NULL means permission denied
         let input_monitoring = unsafe { CGPreflightListenEventAccess() };
         if !input_monitoring {
             log::info!("Input Monitoring permission not granted — requesting");
@@ -188,17 +154,12 @@ mod platform {
             if !granted {
                 log::warn!("Input Monitoring permission was not granted by the user");
             }
+        } else {
+            log::info!("Input Monitoring permission already granted");
         }
 
-        // 2. Secondary: check Accessibility permission (some macOS versions
-        //    also require it).  Only prompt if not already granted.
-        if !is_accessibility_granted() {
-            log::info!("Accessibility permission not granted — showing dialog");
-            prompt_accessibility();
-        }
-
-        // 3. Try creating the CGEventTap regardless — it will return NULL if
-        //    the required permissions are still missing.
+        // Try creating the CGEventTap — returns NULL if permission is still
+        // missing.  This is the only reliable way to know if we can tap.
         let tap = CGEventTap::new(
             CGEventTapLocation::HID,
             CGEventTapPlacement::HeadInsertEventTap,
