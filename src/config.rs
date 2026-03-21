@@ -32,6 +32,8 @@ pub struct TermojinalConfig {
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub quick_terminal: QuickTerminalConfig,
+    #[serde(default)]
+    pub startup: StartupConfig,
 }
 
 impl Default for TermojinalConfig {
@@ -49,6 +51,7 @@ impl Default for TermojinalConfig {
             allow_flow: termojinal_claude::AllowFlowConfig::default(),
             notifications: NotificationConfig::default(),
             quick_terminal: QuickTerminalConfig::default(),
+            startup: StartupConfig::default(),
         }
     }
 }
@@ -76,6 +79,48 @@ impl Default for NotificationConfig {
         Self {
             enabled: default_notifications_enabled(),
             sound: default_notification_sound(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [startup]
+// ---------------------------------------------------------------------------
+
+/// Startup directory behavior.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupMode {
+    /// Use the default directory (typically $HOME).
+    Default,
+    /// Always open a fixed directory.
+    Fixed,
+    /// Restore the last working directory from the previous session.
+    Restore,
+}
+
+impl std::default::Default for StartupMode {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+/// Startup configuration section (`[startup]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct StartupConfig {
+    /// How to determine the initial working directory.
+    #[serde(default)]
+    pub mode: StartupMode,
+    /// Fixed directory path (used when `mode = "fixed"`).
+    #[serde(default)]
+    pub directory: String,
+}
+
+impl Default for StartupConfig {
+    fn default() -> Self {
+        Self {
+            mode: StartupMode::Default,
+            directory: String::new(),
         }
     }
 }
@@ -372,6 +417,21 @@ pub struct SidebarConfig {
     /// Foreground color for Allow Flow hint text in the sidebar.
     #[serde(default = "default_sidebar_allow_hint_fg")]
     pub allow_hint_fg: String,
+    /// Whether to show AI agent session status per workspace.
+    #[serde(default = "default_agent_status_enabled")]
+    pub agent_status_enabled: bool,
+    /// Agent indicator style: "pulse", "color", or "none".
+    #[serde(default = "default_agent_indicator_style")]
+    pub agent_indicator_style: String,
+    /// Speed of the pulse animation (cycles per second).
+    #[serde(default = "default_agent_pulse_speed")]
+    pub agent_pulse_speed: f32,
+    /// Color for the agent indicator when Claude Code is active.
+    #[serde(default = "default_agent_active_color")]
+    pub agent_active_color: String,
+    /// Color for the agent indicator when Claude Code is idle.
+    #[serde(default = "default_agent_idle_color")]
+    pub agent_idle_color: String,
 }
 
 fn default_sidebar_width() -> f32 { 240.0 }
@@ -392,6 +452,11 @@ fn default_sidebar_entry_gap() -> f32 { 4.0 }
 fn default_sidebar_info_line_gap() -> f32 { 1.0 }
 fn default_sidebar_allow_accent_color() -> String { "#4FC1FF".into() }
 fn default_sidebar_allow_hint_fg() -> String { "#7DC8FF".into() }
+fn default_agent_status_enabled() -> bool { true }
+fn default_agent_indicator_style() -> String { "pulse".into() }
+fn default_agent_pulse_speed() -> f32 { 2.0 }
+fn default_agent_active_color() -> String { "#A78BFA".into() }
+fn default_agent_idle_color() -> String { "#FBBF24".into() }
 
 impl Default for SidebarConfig {
     fn default() -> Self {
@@ -414,6 +479,11 @@ impl Default for SidebarConfig {
             info_line_gap: default_sidebar_info_line_gap(),
             allow_accent_color: default_sidebar_allow_accent_color(),
             allow_hint_fg: default_sidebar_allow_hint_fg(),
+            agent_status_enabled: default_agent_status_enabled(),
+            agent_indicator_style: default_agent_indicator_style(),
+            agent_pulse_speed: default_agent_pulse_speed(),
+            agent_active_color: default_agent_active_color(),
+            agent_idle_color: default_agent_idle_color(),
         }
     }
 }
@@ -520,6 +590,26 @@ impl Default for TabBarConfig {
 // [pane]
 // ---------------------------------------------------------------------------
 
+/// How to determine the working directory when creating new panes/tabs.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneWorkingDirectory {
+    /// Inherit the CWD of the focused pane.
+    Inherit,
+    /// Always use $HOME.
+    Home,
+    /// Use a fixed directory specified in `fixed_directory`.
+    Fixed,
+}
+
+impl std::default::Default for PaneWorkingDirectory {
+    fn default() -> Self {
+        Self::Inherit
+    }
+}
+
+fn default_pane_working_directory() -> PaneWorkingDirectory { PaneWorkingDirectory::Inherit }
+
 /// Pane configuration section (`[pane]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaneConfig {
@@ -537,6 +627,15 @@ pub struct PaneConfig {
     pub scrollbar_thumb_opacity: f32,
     #[serde(default = "default_scrollbar_track_opacity")]
     pub scrollbar_track_opacity: f32,
+    /// How to determine the working directory for new panes and tabs.
+    /// "inherit" = use the cwd of the current pane (default).
+    /// "home" = always use $HOME.
+    /// "fixed" = use `fixed_directory`.
+    #[serde(default = "default_pane_working_directory")]
+    pub working_directory: PaneWorkingDirectory,
+    /// Fixed directory for new panes (used when `working_directory = "fixed"`).
+    #[serde(default)]
+    pub fixed_directory: String,
 }
 
 fn default_pane_separator_color() -> String { "#4D4D4D".into() }
@@ -557,6 +656,8 @@ impl Default for PaneConfig {
             separator_tolerance: default_pane_separator_tolerance(),
             scrollbar_thumb_opacity: default_scrollbar_thumb_opacity(),
             scrollbar_track_opacity: default_scrollbar_track_opacity(),
+            working_directory: default_pane_working_directory(),
+            fixed_directory: String::new(),
         }
     }
 }

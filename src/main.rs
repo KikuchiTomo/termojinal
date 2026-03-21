@@ -312,41 +312,87 @@ struct Selection {
     start: GridPos,
     end: GridPos,
     active: bool, // mouse is still held
+    /// The terminal scroll_offset at the time each endpoint was recorded.
+    /// Stored so we can convert screen-relative rows to absolute positions
+    /// that survive scrolling. Absolute row = screen_row - scroll_offset
+    /// (invariant under scrolling). At render time we convert back with
+    /// screen_row = abs_row + current_scroll_offset.
+    scroll_offset_at_start: usize,
+    scroll_offset_at_end: usize,
 }
 
 impl Selection {
-    /// Normalize so start <= end in reading order.
-    fn ordered(&self) -> (GridPos, GridPos) {
-        if self.start.row < self.end.row
-            || (self.start.row == self.end.row && self.start.col <= self.end.col)
-        {
-            (self.start, self.end)
+    /// Absolute row for an endpoint: invariant under scrolling.
+    /// Computed as screen_row - scroll_offset (can be negative).
+    fn abs_row_start(&self) -> isize {
+        self.start.row as isize - self.scroll_offset_at_start as isize
+    }
+    fn abs_row_end(&self) -> isize {
+        self.end.row as isize - self.scroll_offset_at_end as isize
+    }
+
+    /// Normalize so start <= end in reading order, using absolute rows.
+    /// Returns ((col, abs_row), (col, abs_row)).
+    fn ordered_abs(&self) -> ((usize, isize), (usize, isize)) {
+        let abs_s = self.abs_row_start();
+        let abs_e = self.abs_row_end();
+        if abs_s < abs_e || (abs_s == abs_e && self.start.col <= self.end.col) {
+            ((self.start.col, abs_s), (self.end.col, abs_e))
         } else {
-            (self.end, self.start)
+            ((self.end.col, abs_e), (self.start.col, abs_s))
         }
     }
 
-    /// Extract selected text from the terminal grid.
-    fn text(&self, grid: &termojinal_vt::Grid) -> String {
-        let (s, e) = self.ordered();
+    /// Whether start and end refer to the same cell (using absolute coords).
+    fn is_empty(&self) -> bool {
+        self.abs_row_start() == self.abs_row_end() && self.start.col == self.end.col
+    }
+
+    /// Extract selected text from the terminal.
+    /// Uses absolute row coordinates to read the correct cells even when
+    /// the selection spans scrollback content.
+    fn text(&self, terminal: &termojinal_vt::Terminal) -> String {
+        let ((sc, abs_sr), (ec, abs_er)) = self.ordered_abs();
+        let grid = terminal.grid();
+        let cols = grid.cols();
+        let grid_rows = grid.rows() as isize;
         let mut result = String::new();
-        for row in s.row..=e.row {
-            if row >= grid.rows() {
+
+        for abs_row in abs_sr..=abs_er {
+            // Determine which cell source to read from.
+            // Absolute row 0 corresponds to grid row 0 at scroll_offset 0.
+            // Negative absolute rows are in scrollback.
+            // abs_row < 0 => scrollback. scrollback_row index = (-abs_row - 1).
+            // abs_row >= 0 => grid row.
+            let col_start = if abs_row == abs_sr { sc } else { 0 };
+            let col_end = if abs_row == abs_er { ec + 1 } else { cols };
+
+            if abs_row < 0 {
+                // Scrollback content.
+                let sb_idx = (-abs_row - 1) as usize;
+                if let Some(cells) = terminal.scrollback_row(sb_idx) {
+                    for col in col_start..col_end.min(cells.len()) {
+                        let cell = &cells[col];
+                        if cell.width > 0 && cell.c != '\0' {
+                            result.push(cell.c);
+                        }
+                    }
+                }
+            } else if abs_row < grid_rows {
+                // Grid content.
+                let grow = abs_row as usize;
+                for col in col_start..col_end.min(cols) {
+                    let cell = grid.cell(col, grow);
+                    if cell.width > 0 && cell.c != '\0' {
+                        result.push(cell.c);
+                    }
+                }
+            } else {
+                // Beyond the grid; nothing to read.
                 break;
             }
-            let col_start = if row == s.row { s.col } else { 0 };
-            let col_end = if row == e.row {
-                e.col + 1
-            } else {
-                grid.cols()
-            };
-            for col in col_start..col_end.min(grid.cols()) {
-                let cell = grid.cell(col, row);
-                if cell.width > 0 && cell.c != '\0' {
-                    result.push(cell.c);
-                }
-            }
-            if row != e.row {
+
+            if abs_row != abs_er {
                 let trimmed = result.trim_end().len();
                 result.truncate(trimmed);
                 result.push('\n');
@@ -464,6 +510,42 @@ impl WorkspaceInfo {
             ports: Vec::new(),
             last_updated: Instant::now(),
             has_unread: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent session info for sidebar AI status display
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum AgentState {
+    Running,
+    Idle,
+    WaitingForPermission,
+    Inactive,
+}
+
+#[derive(Debug, Clone)]
+struct AgentSessionInfo {
+    active: bool,
+    session_id: Option<String>,
+    subagent_count: usize,
+    summary: String,
+    state: AgentState,
+    last_updated: std::time::Instant,
+}
+
+impl Default for AgentSessionInfo {
+    fn default() -> Self {
+        Self {
+            active: false,
+            session_id: None,
+            subagent_count: 0,
+            summary: String::new(),
+            state: AgentState::Inactive,
+            last_updated: std::time::Instant::now(),
         }
     }
 }
@@ -1226,6 +1308,10 @@ struct AppState {
     font_size: f32,
     search: Option<SearchState>,
     workspace_infos: Vec<WorkspaceInfo>,
+    /// Per-workspace AI agent session info for sidebar display.
+    agent_infos: Vec<AgentSessionInfo>,
+    /// Application start time for animation calculations.
+    app_start_time: std::time::Instant,
     tab_drag: Option<TabDrag>,
     config: TermojinalConfig,
     status_cache: StatusCache,
@@ -1359,6 +1445,111 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
+// Directory resolution helpers
+// ---------------------------------------------------------------------------
+
+/// Get the working directory of the focused pane in the active tab.
+fn focused_pane_cwd(state: &AppState) -> Option<String> {
+    let tab = active_tab(state);
+    let focused_id = tab.layout.focused();
+    if let Some(pane) = tab.panes.get(&focused_id) {
+        let osc_cwd = &pane.terminal.osc.cwd;
+        if !osc_cwd.is_empty() {
+            return Some(osc_cwd.clone());
+        }
+    }
+    // Fallback to git cache cwd
+    let cwd = &state.pane_git_cache.cwd;
+    if !cwd.is_empty() {
+        Some(cwd.clone())
+    } else {
+        None
+    }
+}
+
+/// Expand `~` at the start of a path to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if path == "~" || path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return path.replacen('~', &home.to_string_lossy(), 1);
+        }
+    }
+    path.to_string()
+}
+
+/// Validate and expand a configured directory path.
+/// Returns `None` if the directory is empty or does not exist.
+fn validate_dir(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let expanded = expand_tilde(path);
+    if std::path::Path::new(&expanded).is_dir() {
+        Some(expanded)
+    } else {
+        log::warn!("configured directory does not exist: {expanded}");
+        None
+    }
+}
+
+/// Determine the working directory for a new pane/tab based on config.
+fn resolve_new_pane_cwd(state: &AppState) -> Option<String> {
+    match state.config.pane.working_directory {
+        config::PaneWorkingDirectory::Inherit => focused_pane_cwd(state),
+        config::PaneWorkingDirectory::Home => {
+            std::env::var("HOME").ok().or_else(|| {
+                dirs::home_dir().map(|p| p.to_string_lossy().to_string())
+            })
+        }
+        config::PaneWorkingDirectory::Fixed => {
+            validate_dir(&state.config.pane.fixed_directory)
+        }
+    }
+}
+
+/// Determine the working directory for the initial pane on startup.
+fn resolve_startup_cwd(config: &config::TermojinalConfig) -> Option<String> {
+    match config.startup.mode {
+        config::StartupMode::Default => None,
+        config::StartupMode::Fixed => {
+            validate_dir(&config.startup.directory)
+        }
+        config::StartupMode::Restore => {
+            load_last_cwd()
+        }
+    }
+}
+
+/// State file path for persisting last CWD.
+fn last_cwd_path() -> std::path::PathBuf {
+    let data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    data_dir.join("termojinal").join("last_cwd.txt")
+}
+
+/// Load the last saved CWD from disk.
+fn load_last_cwd() -> Option<String> {
+    let path = last_cwd_path();
+    std::fs::read_to_string(&path).ok().and_then(|s| {
+        let s = s.trim().to_string();
+        if s.is_empty() || !std::path::Path::new(&s).is_dir() {
+            None
+        } else {
+            Some(s)
+        }
+    })
+}
+
+/// Save the current CWD to disk for restore on next startup.
+fn save_last_cwd(cwd: &str) {
+    let path = last_cwd_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, cwd);
+}
+
+// ---------------------------------------------------------------------------
 // Pane spawning helper
 // ---------------------------------------------------------------------------
 
@@ -1368,9 +1559,11 @@ fn spawn_pane(
     rows: u16,
     proxy: &EventLoopProxy<UserEvent>,
     buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+    cwd: Option<String>,
 ) -> Result<Pane, termojinal_pty::PtyError> {
     let config = PtyConfig {
         size: PtySize { cols, rows },
+        working_dir: cwd,
         ..PtyConfig::default()
     };
     let pty = Pty::spawn(&config)?;
@@ -1414,6 +1607,16 @@ fn spawn_pane(
         })
         .expect("failed to spawn pty-reader thread");
 
+    // Register this pane with the session daemon (fire-and-forget).
+    register_pane_with_daemon(
+        id,
+        pty.pid().as_raw(),
+        &config.shell,
+        config.working_dir.as_deref().unwrap_or("."),
+        cols,
+        rows,
+    );
+
     Ok(Pane {
         id,
         terminal,
@@ -1423,6 +1626,88 @@ fn spawn_pane(
         selection: None,
         preedit: None,
     })
+}
+
+/// Fire-and-forget: register a UI-spawned pane with the session daemon so
+/// that `tm list` can report it.
+fn register_pane_with_daemon(pane_id: PaneId, pid: i32, shell: &str, cwd: &str, cols: u16, rows: u16) {
+    let shell = shell.to_string();
+    let cwd = cwd.to_string();
+    std::thread::Builder::new()
+        .name(format!("daemon-register-{pane_id}"))
+        .spawn(move || {
+            use std::io::{BufRead, Write};
+            use std::os::unix::net::UnixStream;
+
+            let sock_path = daemon_socket_path();
+            let Ok(mut stream) = UnixStream::connect(&sock_path) else {
+                log::debug!("daemon not running, skipping pane registration for {pane_id}");
+                return;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let req = json!({
+                "type": "register_session",
+                "pane_id": pane_id,
+                "pid": pid,
+                "shell": shell,
+                "cwd": cwd,
+                "cols": cols,
+                "rows": rows,
+            });
+            let msg = format!("{}\n", req);
+            if stream.write_all(msg.as_bytes()).is_err() {
+                return;
+            }
+            // Drain the response.
+            let mut line = String::new();
+            let _ = std::io::BufReader::new(&stream).read_line(&mut line);
+            log::debug!("daemon register response for pane {pane_id}: {}", line.trim());
+        })
+        .ok();
+}
+
+/// Fire-and-forget: unregister a pane from the session daemon.
+fn unregister_pane_from_daemon(pane_id: PaneId) {
+    std::thread::Builder::new()
+        .name(format!("daemon-unregister-{pane_id}"))
+        .spawn(move || {
+            use std::io::{BufRead, Write};
+            use std::os::unix::net::UnixStream;
+
+            let sock_path = daemon_socket_path();
+            let Ok(mut stream) = UnixStream::connect(&sock_path) else {
+                return;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let req = json!({
+                "type": "unregister_session",
+                "pane_id": pane_id,
+            });
+            let msg = format!("{}\n", req);
+            if stream.write_all(msg.as_bytes()).is_err() {
+                return;
+            }
+            let mut line = String::new();
+            let _ = std::io::BufReader::new(&stream).read_line(&mut line);
+        })
+        .ok();
+}
+
+/// Get the Unix socket path for the termojinald daemon.
+/// Mirrors `termojinal_session::daemon::socket_path()`.
+fn daemon_socket_path() -> String {
+    let runtime_dir = dirs::runtime_dir()
+        .or_else(|| dirs::data_local_dir())
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    runtime_dir
+        .join("termojinal")
+        .join("termojinald.sock")
+        .to_string_lossy()
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1707,7 +1992,8 @@ impl ApplicationHandler<UserEvent> for App {
         let initial_id: PaneId = 0;
         let layout = LayoutTree::new(initial_id);
 
-        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers) {
+        let startup_cwd = resolve_startup_cwd(&cfg);
+        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers, startup_cwd) {
             Ok(p) => p,
             Err(e) => {
                 log::error!("failed to spawn initial pane: {e}");
@@ -1772,6 +2058,8 @@ impl ApplicationHandler<UserEvent> for App {
             font_size: cfg.font.size,
             search: None,
             workspace_infos: vec![WorkspaceInfo::new()],
+            agent_infos: vec![AgentSessionInfo::default()],
+            app_start_time: std::time::Instant::now(),
             tab_drag: None,
             config: cfg.clone(),
             status_cache: StatusCache::new(),
@@ -1861,6 +2149,12 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                // Save last CWD for restore_last_directory feature
+                if state.config.startup.mode == config::StartupMode::Restore {
+                    if let Some(cwd) = focused_pane_cwd(state) {
+                        save_last_cwd(&cwd);
+                    }
+                }
                 event_loop.exit();
             }
 
@@ -1995,6 +2289,17 @@ impl ApplicationHandler<UserEvent> for App {
                                                 let _ = tx.send(AppIpcResponse::ok(
                                                     serde_json::json!({"decision": decision_str}),
                                                 ));
+                                            }
+                                        }
+                                        // Update agent state: if no more pending requests for
+                                        // a workspace, transition agent from WaitingForPermission to Running.
+                                        for wi in 0..state.agent_infos.len() {
+                                            if state.agent_infos[wi].active
+                                                && matches!(state.agent_infos[wi].state, AgentState::WaitingForPermission)
+                                                && !state.allow_flow.has_pending_for_workspace(wi)
+                                            {
+                                                state.agent_infos[wi].state = AgentState::Running;
+                                                state.agent_infos[wi].last_updated = std::time::Instant::now();
                                             }
                                         }
                                         state.window.request_redraw();
@@ -2385,7 +2690,6 @@ impl ApplicationHandler<UserEvent> for App {
                     // --- Original mouse handling (motion reporting / selection) ---
                     let focused_id = active_tab(state).layout.focused();
                     let cell_size = state.renderer.cell_size();
-                    let sf_drag = state.scale_factor;
                     let tab = active_tab_mut(state);
                     if let Some(pane) = tab.panes.get_mut(&focused_id) {
                         // Handle mouse motion reporting for the terminal.
@@ -2415,12 +2719,14 @@ impl ApplicationHandler<UserEvent> for App {
                                 if let Some((_, rect)) =
                                     pane_rects.iter().find(|(id, _)| *id == focused_id)
                                 {
-                                    let local_x = ((position.x * sf_drag - rect.x as f64) as f32).max(0.0);
-                                    let local_y = ((position.y * sf_drag - rect.y as f64) as f32).max(0.0);
+                                    let local_x = ((position.x - rect.x as f64) as f32).max(0.0);
+                                    let local_y = ((position.y - rect.y as f64) as f32).max(0.0);
+                                    let so = pane.terminal.scroll_offset();
                                     sel.end = GridPos {
                                         col: (local_x / cell_size.width).floor() as usize,
                                         row: (local_y / cell_size.height).floor() as usize,
                                     };
+                                    sel.scroll_offset_at_end = so;
                                 }
                             }
                         }
@@ -2678,17 +2984,22 @@ impl ApplicationHandler<UserEvent> for App {
                             if button == MouseButton::Left {
                                 match btn_state {
                                     ElementState::Pressed => {
+                                        let so = pane.terminal.scroll_offset();
                                         pane.selection = Some(Selection {
                                             start: pos,
                                             end: pos,
                                             active: true,
+                                            scroll_offset_at_start: so,
+                                            scroll_offset_at_end: so,
                                         });
                                     }
                                     ElementState::Released => {
                                         if let Some(ref mut sel) = pane.selection {
                                             sel.active = false;
+                                            let so = pane.terminal.scroll_offset();
                                             sel.end = pos;
-                                            if sel.start == sel.end {
+                                            sel.scroll_offset_at_end = so;
+                                            if sel.is_empty() {
                                                 pane.selection = None;
                                             }
                                         }
@@ -2810,6 +3121,16 @@ impl ApplicationHandler<UserEvent> for App {
                     state.window.request_redraw();
                 }
 
+                // Agent pulse animation: request continuous redraws when any
+                // workspace has an active agent with pulse indicator style.
+                if state.sidebar_visible
+                    && state.config.sidebar.agent_status_enabled
+                    && state.config.sidebar.agent_indicator_style == "pulse"
+                    && state.agent_infos.iter().any(|a| a.active)
+                {
+                    state.window.request_redraw();
+                }
+
                 if let Err(e) = render_frame(state) {
                     log::error!("render error: {e}");
                 }
@@ -2826,6 +3147,9 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 };
                 // Find the pane across all workspaces and tabs.
+                let cell_size = state.renderer.cell_size();
+                let cell_w = cell_size.width as u32;
+                let cell_h = cell_size.height as u32;
                 let mut lock = self.pty_buffers.lock().unwrap();
                 let mut total = 0usize;
                 let mut found_ws_idx: Option<usize> = None;
@@ -2833,6 +3157,9 @@ impl ApplicationHandler<UserEvent> for App {
                     'outer_feed: for (wi, ws) in state.workspaces.iter_mut().enumerate() {
                         for tab in &mut ws.tabs {
                             if let Some(pane) = tab.panes.get_mut(&pane_id) {
+                                // Sync cell size so image protocols compute
+                                // correct cell spans before processing data.
+                                pane.terminal.image_store.set_cell_size(cell_w, cell_h);
                                 while let Some(data) = q.pop_front() {
                                     total += data.len();
                                     pane.terminal.feed(&mut pane.vt_parser, &data);
@@ -2969,6 +3296,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::PtyExited(pane_id) => {
                 log::info!("pane {pane_id}: shell exited");
+                unregister_pane_from_daemon(pane_id);
                 let Some(state) = &mut self.state else {
                     return;
                 };
@@ -3012,6 +3340,9 @@ impl ApplicationHandler<UserEvent> for App {
                                 state.workspaces.remove(ws_idx);
                                 if ws_idx < state.workspace_infos.len() {
                                     state.workspace_infos.remove(ws_idx);
+                                }
+                                if ws_idx < state.agent_infos.len() {
+                                    state.agent_infos.remove(ws_idx);
                                 }
                                 if state.active_workspace >= state.workspaces.len() {
                                     state.active_workspace = state.workspaces.len() - 1;
@@ -3190,6 +3521,7 @@ fn dispatch_action(
     let focused_id = active_tab(state).layout.focused();
     match action {
         Action::SplitRight => {
+            let cwd = resolve_new_pane_cwd(state);
             let next_id = state.next_pane_id;
             let tab = active_tab_mut(state);
             tab.layout.set_next_id(next_id);
@@ -3205,7 +3537,7 @@ fn dispatch_action(
             if let Some(rect) = new_rect {
                 let (cols, rows) =
                     state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers) {
+                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -3219,6 +3551,7 @@ fn dispatch_action(
             true
         }
         Action::SplitDown => {
+            let cwd = resolve_new_pane_cwd(state);
             let next_id = state.next_pane_id;
             let tab = active_tab_mut(state);
             tab.layout.set_next_id(next_id);
@@ -3234,7 +3567,7 @@ fn dispatch_action(
             if let Some(rect) = new_rect {
                 let (cols, rows) =
                     state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers) {
+                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -3278,6 +3611,7 @@ fn dispatch_action(
         }
         Action::NewTab => {
             // Create a new tab in the current workspace.
+            let cwd = resolve_new_pane_cwd(state);
             let new_id = state.next_pane_id;
             state.next_pane_id += 1;
             let layout = LayoutTree::new(new_id);
@@ -3289,7 +3623,7 @@ fn dispatch_action(
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = (phys_h - state.config.tab_bar.height).max(1.0);
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers) {
+            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -3319,6 +3653,7 @@ fn dispatch_action(
         }
         Action::NewWorkspace => {
             // Create a new workspace with one tab and one pane.
+            let cwd = resolve_new_pane_cwd(state);
             let new_id = state.next_pane_id;
             state.next_pane_id += 1;
             let layout = LayoutTree::new(new_id);
@@ -3329,7 +3664,7 @@ fn dispatch_action(
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = phys_h.max(1.0); // Single tab, no tab bar
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers) {
+            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -3347,6 +3682,7 @@ fn dispatch_action(
                         name: format!("Workspace {ws_num}"),
                     };
                     state.workspaces.push(ws);
+                    state.agent_infos.push(AgentSessionInfo::default());
                     state.active_workspace = state.workspaces.len() - 1;
                     resize_all_panes(state);
                     state.window.request_redraw();
@@ -3402,7 +3738,7 @@ fn dispatch_action(
         Action::Copy => {
             if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
                 if let Some(ref sel) = pane.selection {
-                    let text = sel.text(pane.terminal.grid());
+                    let text = sel.text(&pane.terminal);
                     if !text.is_empty() {
                         if let Ok(mut cb) = arboard::Clipboard::new() {
                             let _ = cb.set_text(&text);
@@ -3562,6 +3898,9 @@ fn dispatch_action(
 
 /// Resize all panes' terminals and PTYs to match current layout rects.
 fn resize_all_panes(state: &mut AppState) {
+    let cell_size = state.renderer.cell_size();
+    let cell_w = cell_size.width as u32;
+    let cell_h = cell_size.height as u32;
     let pane_rects = active_pane_rects(state);
     for (pid, rect) in &pane_rects {
         let (cols, rows) =
@@ -3571,6 +3910,7 @@ fn resize_all_panes(state: &mut AppState) {
         let tab = active_tab_mut(state);
         if let Some(pane) = tab.panes.get_mut(pid) {
             pane.terminal.resize(cols as usize, rows as usize);
+            pane.terminal.image_store.set_cell_size(cell_w, cell_h);
             let _ = pane.pty.resize(PtySize { cols, rows });
         }
     }
@@ -3640,6 +3980,7 @@ fn close_focused_pane(
     // Drop the pane (this sends SIGHUP to the PTY child).
     tab.panes.remove(&focused_id);
     buffers.lock().unwrap().remove(&focused_id);
+    unregister_pane_from_daemon(focused_id);
 
     match active_tab(state).layout.close(focused_id) {
         Some(new_layout) => {
@@ -3660,6 +4001,9 @@ fn close_focused_pane(
                     state.workspaces.remove(removed_idx);
                     if removed_idx < state.workspace_infos.len() {
                         state.workspace_infos.remove(removed_idx);
+                    }
+                    if removed_idx < state.agent_infos.len() {
+                        state.agent_infos.remove(removed_idx);
                     }
                     if state.active_workspace >= state.workspaces.len() {
                         state.active_workspace = state.workspaces.len() - 1;
@@ -3843,6 +4187,19 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                 }
             } else {
                 entry_h += info_line_gap + cell_h;
+            }
+        }
+        // Agent status lines.
+        let has_agent = state.config.sidebar.agent_status_enabled
+            && i < state.agent_infos.len()
+            && state.agent_infos[i].active;
+        if has_agent {
+            entry_h += info_line_gap + cell_h; // agent status line
+            if !state.agent_infos[i].summary.is_empty() {
+                entry_h += info_line_gap + cell_h; // summary line
+            }
+            if state.agent_infos[i].subagent_count > 0 {
+                entry_h += info_line_gap + cell_h; // subagent line
             }
         }
         entry_h += entry_gap; // gap between entries
@@ -4033,6 +4390,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     // Allow Flow accent colors.
     let allow_accent_color = color_or(&sc.allow_accent_color, [0.31, 0.76, 1.0, 1.0]);
     let allow_hint_fg = color_or(&sc.allow_hint_fg, [0.49, 0.78, 1.0, 1.0]);
+    // Agent status colors.
+    let agent_status_enabled = sc.agent_status_enabled;
+    let agent_indicator_style = sc.agent_indicator_style.clone();
+    let agent_pulse_speed = sc.agent_pulse_speed;
+    let agent_active_color = color_or(&sc.agent_active_color, [0.655, 0.545, 0.98, 1.0]);
+    let agent_idle_color = color_or(&sc.agent_idle_color, [0.984, 0.749, 0.141, 1.0]);
 
     let cell_h = state.renderer.cell_size().height;
     let cell_w = state.renderer.cell_size().width;
@@ -4050,6 +4413,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     // --- Refresh workspace info ---
     while state.workspace_infos.len() < state.workspaces.len() {
         state.workspace_infos.push(WorkspaceInfo::new());
+    }
+    // Keep agent_infos in sync.
+    while state.agent_infos.len() < state.workspaces.len() {
+        state.agent_infos.push(AgentSessionInfo::default());
     }
 
     // Refresh all workspaces (active every 5s, inactive every 30s).
@@ -4082,6 +4449,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     let mut entry_y = top_pad;
 
     for i in 0..num_workspaces {
+        // Bail if not even the name line fits.
         if entry_y + cell_h > phys_h {
             break;
         }
@@ -4135,6 +4503,24 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 content_h += info_line_gap + cell_h;
             }
         }
+        // Agent status line (below Allow Flow / ports / git).
+        let has_agent = agent_status_enabled
+            && i < state.agent_infos.len()
+            && state.agent_infos[i].active;
+        if has_agent {
+            content_h += info_line_gap + cell_h; // agent status line
+            // Summary line if non-empty.
+            if !state.agent_infos[i].summary.is_empty() {
+                content_h += info_line_gap + cell_h;
+            }
+            // Subagent count line if > 0.
+            if state.agent_infos[i].subagent_count > 0 {
+                content_h += info_line_gap + cell_h;
+            }
+        }
+
+        // Clamp content height to remaining space so we don't render past the sidebar.
+        let content_h = content_h.min(phys_h - entry_y);
 
         // --- Allow Flow accent stripe (rendered BEFORE entry background) ---
         // A 3px colored stripe on the left edge when pending requests exist.
@@ -4167,14 +4553,29 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
 
         // --- Workspace indicator dot ---
         // Active: filled colored circle ●, Inactive: outline circle ○
-        let dot_char = if is_active { "\u{25CF}" } else { "\u{25CB}" }; // ● or ○
-        let dot_color = if is_active {
+        let dot_char = if has_agent { "\u{25CF}" } else if is_active { "\u{25CF}" } else { "\u{25CB}" }; // ● or ○
+        let mut dot_color = if is_active {
             ws_color
         } else if info.map_or(false, |inf| inf.has_unread) {
             notification_dot
         } else {
             inactive_dot_color
         };
+        // Agent pulse animation on dot.
+        if has_agent && agent_indicator_style == "pulse" {
+            let elapsed = state.app_start_time.elapsed().as_secs_f32();
+            let alpha = 0.5 + 0.5 * (2.0 * std::f32::consts::PI * elapsed / agent_pulse_speed.max(0.1)).sin();
+            let base = match state.agent_infos[i].state {
+                AgentState::WaitingForPermission => agent_idle_color,
+                _ => agent_active_color,
+            };
+            dot_color = [base[0], base[1], base[2], alpha];
+        } else if has_agent && agent_indicator_style == "color" {
+            dot_color = match state.agent_infos[i].state {
+                AgentState::WaitingForPermission => agent_idle_color,
+                _ => agent_active_color,
+            };
+        }
         state.renderer.render_text(view, dot_char, side_pad, entry_y, dot_color, bg);
 
         // --- Notification dot for unread activity (small bright dot next to circle) ---
@@ -4194,15 +4595,30 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             }
         }
 
-        // --- Workspace name ---
+        // --- Workspace name (project name from CWD basename, no "Workspace N" label) ---
         let display_name = if let Some(info) = info {
             if !info.name.is_empty() {
                 info.name.clone()
             } else {
-                state.workspaces[i].name.clone()
+                // Fallback: use CWD basename or a minimal dot label.
+                if !ws_cwd.is_empty() {
+                    std::path::Path::new(&ws_cwd)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("~")
+                        .to_string()
+                } else {
+                    "~".to_string()
+                }
             }
+        } else if !ws_cwd.is_empty() {
+            std::path::Path::new(&ws_cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("~")
+                .to_string()
         } else {
-            state.workspaces[i].name.clone()
+            "~".to_string()
         };
 
         // Tab/pane count badge.
@@ -4358,6 +4774,45 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     view, &badge, text_left, line_y, allow_accent_color, bg,
                 );
                 // line_y not used further; entry_y advances by content_h.
+            }
+        }
+
+        // --- Agent status lines (below Allow Flow / ports / git) ---
+        if has_agent {
+            let agent = &state.agent_infos[i];
+            line_y += info_line_gap;
+            // Agent icon + label line.
+            let state_label = match agent.state {
+                AgentState::Running => "running",
+                AgentState::Idle => "idle",
+                AgentState::WaitingForPermission => "waiting",
+                AgentState::Inactive => "inactive",
+            };
+            let agent_line = format!("\u{25C9} Claude Code ({})", state_label); // ◉
+            let agent_fg = match agent.state {
+                AgentState::Running => agent_active_color,
+                AgentState::Idle | AgentState::Inactive => agent_idle_color,
+                AgentState::WaitingForPermission => agent_idle_color,
+            };
+            let agent_display: String = agent_line.chars().take(max_chars).collect();
+            state.renderer.render_text(view, &agent_display, text_left, line_y, agent_fg, bg);
+            line_y += cell_h;
+
+            // Summary line (truncated).
+            if !agent.summary.is_empty() {
+                line_y += info_line_gap;
+                let summary_display: String = agent.summary.chars().take(max_chars).collect();
+                state.renderer.render_text(view, &summary_display, text_left, line_y, dim_fg, bg);
+                line_y += cell_h;
+            }
+
+            // Subagent count line.
+            if agent.subagent_count > 0 {
+                line_y += info_line_gap;
+                let sub_line = format!("  {} subagent(s)", agent.subagent_count);
+                let sub_display: String = sub_line.chars().take(max_chars).collect();
+                state.renderer.render_text(view, &sub_display, text_left, line_y, dim_fg, bg);
+                let _ = line_y; // suppress unused warning
             }
         }
 
@@ -5477,9 +5932,32 @@ fn render_about_overlay(
 
 fn sel_bounds_for(pane: &Pane) -> Option<((usize, usize), (usize, usize))> {
     match &pane.selection {
-        Some(s) if s.start != s.end => {
-            let (start, end) = s.ordered();
-            Some(((start.col, start.row), (end.col, end.row)))
+        Some(s) if !s.is_empty() => {
+            let ((sc, abs_sr), (ec, abs_er)) = s.ordered_abs();
+            let current_scroll = pane.terminal.scroll_offset() as isize;
+            let rows = pane.terminal.rows() as isize;
+
+            // Convert absolute row to screen-relative:
+            // screen_row = abs_row + current_scroll_offset
+            let vis_sr = abs_sr + current_scroll;
+            let vis_er = abs_er + current_scroll;
+
+            // If the selection is entirely outside the viewport, return None.
+            if vis_er < 0 || vis_sr >= rows {
+                return None;
+            }
+
+            // Clamp to viewport bounds.
+            let clamped_sr = vis_sr.max(0) as usize;
+            let clamped_er = (vis_er.min(rows - 1)) as usize;
+            let clamped_sc = if vis_sr >= 0 { sc } else { 0 };
+            let clamped_ec = if vis_er < rows {
+                ec
+            } else {
+                pane.terminal.cols().saturating_sub(1)
+            };
+
+            Some(((clamped_sc, clamped_sr), (clamped_ec, clamped_er)))
         }
         _ => None,
     }
@@ -5733,7 +6211,7 @@ fn handle_app_ipc_request(
     if let AppIpcRequest::PermissionRequest {
         tool_name,
         tool_input,
-        session_id: _,
+        session_id,
     } = request
     {
         use termojinal_claude::request::{AllowRequest, DetectionSource};
@@ -5746,6 +6224,17 @@ fn handle_app_ipc_request(
             .to_string();
         let detail = serde_json::to_string(&tool_input).unwrap_or_default();
         let ws_idx = state.active_workspace;
+
+        // Update agent session info for this workspace.
+        while state.agent_infos.len() <= ws_idx {
+            state.agent_infos.push(AgentSessionInfo::default());
+        }
+        let agent = &mut state.agent_infos[ws_idx];
+        agent.active = true;
+        agent.state = AgentState::WaitingForPermission;
+        agent.session_id = session_id.clone();
+        agent.summary = format!("{}: {}", tool_name, &action);
+        agent.last_updated = std::time::Instant::now();
 
         let notif_msg = format!("Permission: {} {}", tool_name, action);
         let request = AllowRequest::new(
@@ -5846,6 +6335,12 @@ fn handle_app_ipc_request(
         AppIpcRequest::CloseWorkspace { index } => {
             if *index < state.workspaces.len() && state.workspaces.len() > 1 {
                 state.workspaces.remove(*index);
+                if *index < state.workspace_infos.len() {
+                    state.workspace_infos.remove(*index);
+                }
+                if *index < state.agent_infos.len() {
+                    state.agent_infos.remove(*index);
+                }
                 if state.active_workspace >= state.workspaces.len() {
                     state.active_workspace = state.workspaces.len() - 1;
                 }

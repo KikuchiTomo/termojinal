@@ -186,5 +186,19 @@ async fn dispatch(
             log::info!("close pane (not yet implemented)");
             IpcResponse::ok_empty()
         }
+
+        IpcRequest::RegisterSession { pane_id, pid, shell, cwd, cols, rows } => {
+            let mut mgr = manager.lock().await;
+            let id = mgr.register_external_session(pane_id, pid, &shell, &cwd, cols, rows);
+            log::info!("registered external session: pane_id={pane_id}, pid={pid}, id={id}");
+            IpcResponse::ok(serde_json::json!({"id": id, "pane_id": pane_id}))
+        }
+
+        IpcRequest::UnregisterSession { pane_id } => {
+            let mut mgr = manager.lock().await;
+            let removed = mgr.unregister_external_session(pane_id);
+            log::info!("unregistered external session: pane_id={pane_id}, removed={removed}");
+            IpcResponse::ok(serde_json::json!({"removed": removed}))
+        }
     }
 }

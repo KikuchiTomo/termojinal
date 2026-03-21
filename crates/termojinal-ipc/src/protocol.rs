@@ -39,6 +39,20 @@ pub enum IpcRequest {
 
     /// Close the current pane.
     ClosePane,
+
+    /// Register an externally-spawned session (e.g. UI-spawned PTY) so the
+    /// daemon can track it for `tm list` without owning the PTY.
+    RegisterSession {
+        pane_id: u64,
+        pid: i32,
+        shell: String,
+        cwd: String,
+        cols: u16,
+        rows: u16,
+    },
+
+    /// Unregister a previously registered external session.
+    UnregisterSession { pane_id: u64 },
 }
 
 /// A response from the daemon to the client.
@@ -238,6 +252,15 @@ mod tests {
                 direction: "vertical".to_string(),
             },
             IpcRequest::ClosePane,
+            IpcRequest::RegisterSession {
+                pane_id: 1,
+                pid: 1234,
+                shell: "/bin/zsh".to_string(),
+                cwd: "/tmp".to_string(),
+                cols: 80,
+                rows: 24,
+            },
+            IpcRequest::UnregisterSession { pane_id: 1 },
         ];
 
         for req in requests {

@@ -107,6 +107,10 @@ impl Session {
 /// Manages multiple sessions.
 pub struct SessionManager {
     sessions: HashMap<String, Session>,
+    /// Externally-spawned sessions (e.g. UI-owned PTYs) tracked by pane ID.
+    /// The daemon does not own the PTY — it only records the state so that
+    /// `tm list` can report them.
+    tracked: HashMap<u64, SessionState>,
     persistence: persistence::SessionStore,
 }
 
@@ -115,6 +119,7 @@ impl SessionManager {
         let persistence = persistence::SessionStore::new()?;
         Ok(Self {
             sessions: HashMap::new(),
+            tracked: HashMap::new(),
             persistence,
         })
     }
@@ -152,9 +157,13 @@ impl SessionManager {
         Ok(())
     }
 
-    /// List all session IDs.
+    /// List all session IDs (daemon-owned + externally tracked).
     pub fn list(&self) -> Vec<&str> {
-        self.sessions.keys().map(|s| s.as_str()).collect()
+        self.sessions
+            .keys()
+            .map(|s| s.as_str())
+            .chain(self.tracked.values().map(|s| s.id.as_str()))
+            .collect()
     }
 
     /// Save all session states to disk.
@@ -185,8 +194,9 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Clean up dead sessions.
+    /// Clean up dead sessions (daemon-owned and externally tracked).
     pub fn reap_dead(&mut self) -> Vec<String> {
+        // Reap daemon-owned sessions.
         let dead: Vec<String> = self
             .sessions
             .iter()
@@ -197,6 +207,63 @@ impl SessionManager {
             self.sessions.remove(id);
             let _ = self.persistence.remove(id);
         }
-        dead
+
+        // Reap externally tracked sessions whose PIDs are no longer alive.
+        let dead_tracked: Vec<u64> = self
+            .tracked
+            .iter()
+            .filter(|(_, s)| {
+                let Some(pid) = s.pid else {
+                    return true;
+                };
+                use nix::sys::signal;
+                use nix::unistd::Pid;
+                signal::kill(Pid::from_raw(pid), None).is_err()
+            })
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
+        for pane_id in &dead_tracked {
+            if let Some(state) = self.tracked.remove(pane_id) {
+                let _ = self.persistence.remove(&state.id);
+            }
+        }
+
+        // Return all reaped IDs.
+        dead.into_iter()
+            .chain(dead_tracked.iter().map(|id| format!("tracked-pane-{id}")))
+            .collect()
+    }
+
+    /// Register an externally-spawned session (UI-owned PTY).
+    ///
+    /// The daemon does not own or manage the PTY — it only records the
+    /// session state so that `tm list` reports it.  The session is keyed
+    /// by `pane_id` so the UI can unregister it later.
+    pub fn register_external_session(
+        &mut self,
+        pane_id: u64,
+        pid: i32,
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> String {
+        let mut state = SessionState::new(shell, cwd, cols, rows);
+        state.pid = Some(pid);
+        state.name = format!("pane-{}", pane_id);
+        let id = state.id.clone();
+        self.persistence.save(&state).ok();
+        self.tracked.insert(pane_id, state);
+        id
+    }
+
+    /// Unregister an externally-spawned session by pane ID.
+    pub fn unregister_external_session(&mut self, pane_id: u64) -> bool {
+        if let Some(state) = self.tracked.remove(&pane_id) {
+            let _ = self.persistence.remove(&state.id);
+            true
+        } else {
+            false
+        }
     }
 }
