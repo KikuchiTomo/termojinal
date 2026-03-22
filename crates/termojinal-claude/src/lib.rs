@@ -154,6 +154,24 @@ impl AllowFlowEngine {
         })
     }
 
+    /// Dismiss a pending request without writing to the PTY.
+    ///
+    /// Used when an IPC client disconnects or times out, making it
+    /// impossible to deliver a response. The request is marked as Denied
+    /// so it no longer appears in the pending list.
+    pub fn dismiss_request(&mut self, request_id: u64) -> bool {
+        if let Some(req) = self
+            .requests
+            .iter_mut()
+            .find(|r| r.id == request_id && r.status == AllowStatus::Pending)
+        {
+            req.status = AllowStatus::Denied;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get all pending requests.
     pub fn pending_requests(&self) -> Vec<&AllowRequest> {
         self.requests

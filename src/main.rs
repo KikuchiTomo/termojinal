@@ -7,6 +7,7 @@ mod config;
 mod notification;
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
@@ -294,7 +295,13 @@ enum UserEvent {
     AppIpc {
         request: AppIpcRequest,
         response_tx: std_mpsc::Sender<AppIpcResponse>,
+        /// Connection alive flag — set to `false` when the IPC client disconnects.
+        /// `None` for non-PermissionRequest messages.
+        connection_alive: Option<Arc<AtomicBool>>,
     },
+    /// An IPC client disconnected — trigger cleanup of stale pending requests
+    /// and agent state.
+    IpcClientDisconnected,
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,7 +1332,10 @@ struct AppState {
     allow_flow: allow_flow::AllowFlowUI,
     /// Deferred IPC responses for PermissionRequest hooks.
     /// Maps AllowFlow request ID → sender to reply when user decides.
-    pending_ipc_responses: HashMap<u64, std_mpsc::Sender<AppIpcResponse>>,
+    pending_ipc_responses: HashMap<u64, (std_mpsc::Sender<AppIpcResponse>, Arc<AtomicBool>)>,
+    /// Maps Claude Code session IDs to workspace indices so that IPC requests
+    /// are routed to the correct workspace even when the user has switched away.
+    session_to_workspace: HashMap<String, usize>,
     /// Active command execution (None when showing the palette action list).
     command_execution: Option<CommandExecution>,
     /// Loaded external commands (cached at startup).
@@ -1336,6 +1346,17 @@ struct AppState {
     about_visible: bool,
     /// Scroll offset for the about overlay content.
     about_scroll: usize,
+}
+
+/// Update session_to_workspace mapping after a workspace at `removed_idx` is removed.
+/// Removes entries pointing to the removed workspace and decrements indices above it.
+fn cleanup_session_to_workspace(state: &mut AppState, removed_idx: usize) {
+    state.session_to_workspace.retain(|_, idx| *idx != removed_idx);
+    for idx in state.session_to_workspace.values_mut() {
+        if *idx > removed_idx {
+            *idx -= 1;
+        }
+    }
 }
 
 /// Helper to access the active workspace immutably.
@@ -2118,6 +2139,7 @@ impl ApplicationHandler<UserEvent> for App {
             scale_factor: initial_scale_factor,
             allow_flow: allow_flow::AllowFlowUI::new(cfg.allow_flow.clone()),
             pending_ipc_responses: HashMap::new(),
+            session_to_workspace: HashMap::new(),
             command_execution: None,
             external_commands,
             quick_terminal: QuickTerminalState::new(),
@@ -2335,7 +2357,7 @@ impl ApplicationHandler<UserEvent> for App {
                                     }
                                     crate::allow_flow::AllowFlowKeyResult::Resolved(decisions) => {
                                         for (req_id, decision) in &decisions {
-                                            if let Some(tx) = state.pending_ipc_responses.remove(req_id) {
+                                            if let Some((tx, _alive)) = state.pending_ipc_responses.remove(req_id) {
                                                 let decision_str = match decision {
                                                     termojinal_claude::AllowDecision::Allow => "allow",
                                                     termojinal_claude::AllowDecision::Deny => "deny",
@@ -3422,6 +3444,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 if ws_idx < state.agent_infos.len() {
                                     state.agent_infos.remove(ws_idx);
                                 }
+                                cleanup_session_to_workspace(state, ws_idx);
                                 if state.active_workspace >= state.workspaces.len() {
                                     state.active_workspace = state.workspaces.len() - 1;
                                 }
@@ -3461,6 +3484,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::AppIpc {
                 request,
                 response_tx,
+                connection_alive,
             } => {
                 let Some(state) = &mut self.state else { return };
                 if let Some(response) = handle_app_ipc_request(
@@ -3470,10 +3494,56 @@ impl ApplicationHandler<UserEvent> for App {
                     &self.pty_buffers,
                     event_loop,
                     &response_tx,
+                    connection_alive,
                 ) {
                     let _ = response_tx.send(response);
                 }
                 // If None, the response is deferred (PermissionRequest).
+                state.window.request_redraw();
+            }
+            UserEvent::IpcClientDisconnected => {
+                let Some(state) = &mut self.state else { return };
+                // Remove pending IPC responses whose connection is dead.
+                let stale_ids: Vec<u64> = state
+                    .pending_ipc_responses
+                    .iter()
+                    .filter(|(_, (_, alive))| !alive.load(Ordering::SeqCst))
+                    .map(|(id, _)| *id)
+                    .collect();
+
+                if stale_ids.is_empty() {
+                    return;
+                }
+
+                log::info!(
+                    "IPC client disconnected — cleaning up {} stale pending request(s)",
+                    stale_ids.len()
+                );
+
+                for req_id in &stale_ids {
+                    state.pending_ipc_responses.remove(req_id);
+                    state.allow_flow.engine.dismiss_request(*req_id);
+                }
+
+                // Update pane hint visibility.
+                if state.allow_flow.engine.pending_requests().is_empty() {
+                    state.allow_flow.pane_hint_visible = false;
+                }
+
+                // Reset agent state for workspaces that no longer have pending requests.
+                for wi in 0..state.agent_infos.len() {
+                    if state.agent_infos[wi].active
+                        && matches!(
+                            state.agent_infos[wi].state,
+                            AgentState::WaitingForPermission
+                        )
+                        && !state.allow_flow.has_pending_for_workspace(wi)
+                    {
+                        state.agent_infos[wi].state = AgentState::Idle;
+                        state.agent_infos[wi].last_updated = std::time::Instant::now();
+                    }
+                }
+
                 state.window.request_redraw();
             }
         }
@@ -4118,6 +4188,7 @@ fn close_focused_pane(
                     if removed_idx < state.agent_infos.len() {
                         state.agent_infos.remove(removed_idx);
                     }
+                    cleanup_session_to_workspace(state, removed_idx);
                     if state.active_workspace >= state.workspaces.len() {
                         state.active_workspace = state.workspaces.len() - 1;
                     }
@@ -4495,10 +4566,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     // --- Color palette from config ---
     let sc = &state.config.sidebar;
     let sidebar_bg = color_or(&sc.bg, [0.051, 0.051, 0.071, 1.0]);
-    let active_entry_bg = color_or(&sc.active_entry_bg, [0.102, 0.102, 0.141, 1.0]);
+    let active_entry_bg = color_or(&sc.active_entry_bg, [0.118, 0.118, 0.165, 1.0]);
     let active_fg = color_or(&sc.active_fg, [0.95, 0.95, 0.97, 1.0]);
-    let inactive_fg = color_or(&sc.inactive_fg, [0.55, 0.55, 0.60, 1.0]);
-    let dim_fg = color_or(&sc.dim_fg, [0.40, 0.40, 0.44, 1.0]);
+    let inactive_fg = color_or(&sc.inactive_fg, [0.627, 0.627, 0.675, 1.0]);
+    let dim_fg = color_or(&sc.dim_fg, [0.467, 0.467, 0.541, 1.0]);
     let inactive_dot_color = dim_fg;
     let git_branch_fg = color_or(&sc.git_branch_fg, [0.35, 0.70, 0.85, 1.0]);
     let separator_color = color_or(&sc.separator_color, [0.20, 0.20, 0.22, 1.0]);
@@ -4625,15 +4696,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             && i < state.agent_infos.len()
             && state.agent_infos[i].active;
         if has_agent {
-            content_h += info_line_gap + cell_h; // agent status line
+            content_h += info_line_gap + cell_h; // agent status line (compact)
             // Summary line if non-empty.
             if !state.agent_infos[i].summary.is_empty() {
                 content_h += info_line_gap + cell_h;
             }
-            // Subagent count line if > 0.
-            if state.agent_infos[i].subagent_count > 0 {
-                content_h += info_line_gap + cell_h;
-            }
+            // Subagent count is now merged into the status line, no extra line needed.
         }
 
         // Clamp content height to remaining space so we don't render past the sidebar.
@@ -4656,8 +4724,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // --- Active workspace: highlight background (full sidebar width) ---
         let bg = if is_active { active_entry_bg } else { sidebar_bg };
         if is_active {
-            // Start highlight after the accent stripe (3px) to keep it visible.
-            let bg_x = if has_allow_pending { 3 } else { 0 };
+            // Start highlight after the accent stripe area to keep it visible.
+            let accent_w: u32 = 3;
+            let bg_x = if has_allow_pending { accent_w } else { accent_w };
             state.renderer.submit_separator(
                 view,
                 bg_x,
@@ -4666,6 +4735,17 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 (content_h + entry_pad_y * 2.0) as u32,
                 active_entry_bg,
             );
+            // Workspace color accent bar on the left edge (3px) for active entry.
+            if !has_allow_pending {
+                state.renderer.submit_separator(
+                    view,
+                    0,
+                    (entry_y - entry_pad_y).max(0.0) as u32,
+                    accent_w,
+                    (content_h + entry_pad_y * 2.0) as u32,
+                    ws_color,
+                );
+            }
         }
 
         // --- Workspace indicator dot ---
@@ -4775,9 +4855,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     format!("\u{1F4C1} {cwd_short}")
                 }
             };
-            let cwd_trimmed: String = cwd_display.chars().take(max_chars).collect();
-            let indent = text_left;
-            state.renderer.render_text(view, &cwd_trimmed, indent, line_y, dim_fg, bg);
+            let info_indent = text_left + cell_w * 0.5;
+            let cwd_trimmed: String = cwd_display.chars().take(max_chars.saturating_sub(1)).collect();
+            state.renderer.render_text(view, &cwd_trimmed, info_indent, line_y, dim_fg, bg);
             line_y += cell_h;
         }
 
@@ -4801,7 +4881,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     git_parts.push_str(&format!(" ?{}", info.git_untracked));
                 }
 
-                let git_display: String = git_parts.chars().take(max_chars).collect();
+                let info_indent = text_left + cell_w * 0.5;
+                let git_display: String = git_parts.chars().take(max_chars.saturating_sub(1)).collect();
                 // Branch in cyan/blue, status indicators dimmed for inactive
                 let git_fg = if is_active {
                     if info.git_dirty > 0 || info.git_untracked > 0 {
@@ -4812,8 +4893,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 } else {
                     dim_fg
                 };
-                let indent = text_left; // extra indent for sub-info
-                state.renderer.render_text(view, &git_display, indent, line_y, git_fg, bg);
+                state.renderer.render_text(view, &git_display, info_indent, line_y, git_fg, bg);
                 line_y += cell_h;
             }
 
@@ -4825,9 +4905,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         .map(|p| format!(":{p}"))
                         .collect::<Vec<_>>()
                         .join(" "));
-                let ports_display: String = ports_str.chars().take(max_chars).collect();
-                let indent = text_left;
-                state.renderer.render_text(view, &ports_display, indent, line_y, dim_fg, bg);
+                let info_indent = text_left + cell_w * 0.5;
+                let ports_display: String = ports_str.chars().take(max_chars.saturating_sub(1)).collect();
+                state.renderer.render_text(view, &ports_display, info_indent, line_y, dim_fg, bg);
                 line_y += cell_h;
             }
         }
@@ -4898,42 +4978,55 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         if has_agent {
             let agent = &state.agent_infos[i];
             line_y += info_line_gap;
-            // Agent icon + label line.
-            let state_label = match agent.state {
-                AgentState::Running => "running",
-                AgentState::Idle => "idle",
-                AgentState::WaitingForPermission => "waiting",
-                AgentState::Inactive => "inactive",
+            // Compact agent status: icon + short state label.
+            let (agent_icon, state_label) = match agent.state {
+                AgentState::Running => ("\u{26A1}", "running"),    // ⚡ running
+                AgentState::WaitingForPermission => ("\u{23F3}", "waiting"), // ⏳ waiting
+                AgentState::Idle => ("\u{25CB}", "idle"),          // ○ idle
+                AgentState::Inactive => ("\u{25CB}", "idle"),      // ○ idle
             };
-            let agent_line = format!("\u{25C9} Claude Code ({})", state_label); // ◉
+            let agent_line = if agent.subagent_count > 0 {
+                format!("{} {} (+{})", agent_icon, state_label, agent.subagent_count)
+            } else {
+                format!("{} {}", agent_icon, state_label)
+            };
             let agent_fg = match agent.state {
                 AgentState::Running => agent_active_color,
-                AgentState::Idle | AgentState::Inactive => agent_idle_color,
+                AgentState::Idle | AgentState::Inactive => dim_fg,
                 AgentState::WaitingForPermission => agent_idle_color,
             };
+            let info_indent = text_left + cell_w * 0.5;
             let agent_display: String = agent_line.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &agent_display, text_left, line_y, agent_fg, bg);
+            state.renderer.render_text(view, &agent_display, info_indent, line_y, agent_fg, bg);
             line_y += cell_h;
 
             // Summary line (truncated).
             if !agent.summary.is_empty() {
                 line_y += info_line_gap;
-                let summary_display: String = agent.summary.chars().take(max_chars).collect();
-                state.renderer.render_text(view, &summary_display, text_left, line_y, dim_fg, bg);
+                let summary_display: String = agent.summary.chars().take(max_chars.saturating_sub(1)).collect();
+                state.renderer.render_text(view, &summary_display, info_indent, line_y, dim_fg, bg);
                 line_y += cell_h;
             }
-
-            // Subagent count line.
-            if agent.subagent_count > 0 {
-                line_y += info_line_gap;
-                let sub_line = format!("  {} subagent(s)", agent.subagent_count);
-                let sub_display: String = sub_line.chars().take(max_chars).collect();
-                state.renderer.render_text(view, &sub_display, text_left, line_y, dim_fg, bg);
-                let _ = line_y; // suppress unused warning
-            }
+            let _ = line_y; // suppress unused warning
         }
 
         entry_y += content_h + entry_gap;
+
+        // --- Subtle separator line between entries ---
+        if i < num_workspaces - 1 {
+            let sep_line_y = (entry_y - entry_gap / 2.0) as u32;
+            let sep_dim_color = [separator_color[0], separator_color[1], separator_color[2], 0.4];
+            if (sep_line_y as f32) + 1.0 < phys_h {
+                state.renderer.submit_separator(
+                    view,
+                    (side_pad + dot_area * 0.5) as u32,
+                    sep_line_y,
+                    (sidebar_w - side_pad * 2.0 - dot_area * 0.5) as u32,
+                    1,
+                    sep_dim_color,
+                );
+            }
+        }
     }
 
     // --- Separator line ---
@@ -5490,18 +5583,20 @@ fn render_allow_flow_pane_hint(
     let bar_y = ((rect.y + rect.h) - bar_h).max(rect.y) as u32;
     let bar_w = rect.w as u32;
 
-    // Semi-transparent dark background.
-    let bar_bg = [0.06, 0.06, 0.10, 0.88];
+    // Colors from config (with sensible fallbacks).
+    let ui = &state.config.allow_flow_ui;
+    let bar_bg = color_or(&ui.hint_bar_bg, [0.85, 0.47, 0.02, 0.88]);
+    let accent = color_or(&ui.hint_bar_accent, [0.96, 0.62, 0.04, 1.0]);
+    let hint_fg = color_or(&ui.hint_bar_fg, [0.10, 0.10, 0.14, 1.0]);
+
     state.renderer.submit_separator(view, bar_x, bar_y, bar_w, bar_h as u32, bar_bg);
 
-    // Top accent line (blue glow).
-    let accent = [0.31, 0.76, 1.0, 0.6]; // #4FC1FF at 60% alpha
+    // Top accent line.
     state.renderer.submit_separator(view, bar_x, bar_y, bar_w, 1, accent);
 
     // Text: lightning bolt + short message + key hints.
     let text_x = bar_x as f32 + cell_w;
     let text_y = bar_y as f32 + bar_pad;
-    let hint_fg = [0.49, 0.78, 1.0, 1.0]; // bright cyan-blue
     let max_chars = ((bar_w as f32 - 2.0 * cell_w) / cell_w).max(1.0) as usize;
     let msg = "\u{26A1} AI permission needed \u{2014} y/n one \u{00B7} Y/N all \u{00B7} A always";
     let display: String = msg.chars().take(max_chars).collect();
@@ -6509,6 +6604,7 @@ fn handle_app_ipc_request(
     buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
     event_loop: &ActiveEventLoop,
     response_tx: &std_mpsc::Sender<AppIpcResponse>,
+    connection_alive: Option<Arc<AtomicBool>>,
 ) -> Option<AppIpcResponse> {
     // PermissionRequest is deferred: store the response_tx and return None.
     if let AppIpcRequest::PermissionRequest {
@@ -6526,7 +6622,19 @@ fn handle_app_ipc_request(
             .unwrap_or("tool use")
             .to_string();
         let detail = serde_json::to_string(&tool_input).unwrap_or_default();
-        let ws_idx = state.active_workspace;
+
+        // Resolve workspace index from session mapping, falling back to active.
+        let ws_idx = session_id
+            .as_ref()
+            .and_then(|sid| state.session_to_workspace.get(sid).copied())
+            .unwrap_or(state.active_workspace);
+
+        // Record the mapping for future requests from this session.
+        if let Some(sid) = session_id.as_ref() {
+            if !state.session_to_workspace.contains_key(sid) {
+                state.session_to_workspace.insert(sid.clone(), ws_idx);
+            }
+        }
 
         // Update agent session info for this workspace.
         while state.agent_infos.len() <= ws_idx {
@@ -6553,9 +6661,10 @@ fn handle_app_ipc_request(
 
         if let Some(req) = state.allow_flow.engine.add_request(request) {
             let req_id = req.id;
+            let alive = connection_alive.unwrap_or_else(|| Arc::new(AtomicBool::new(true)));
             state
                 .pending_ipc_responses
-                .insert(req_id, response_tx.clone());
+                .insert(req_id, (response_tx.clone(), alive));
             state.allow_flow.pane_hint_visible = true;
             notification::send_notification(
                 "Claude Code",
@@ -6645,6 +6754,7 @@ fn handle_app_ipc_request(
                 if *index < state.agent_infos.len() {
                     state.agent_infos.remove(*index);
                 }
+                cleanup_session_to_workspace(state, *index);
                 if state.active_workspace >= state.workspaces.len() {
                     state.active_workspace = state.workspaces.len() - 1;
                 }
@@ -6889,7 +6999,7 @@ fn handle_app_ipc_request(
                     &response.pty_write,
                 );
                 // Also resolve deferred IPC response if this was hook-originated.
-                if let Some(tx) = state.pending_ipc_responses.remove(request_id) {
+                if let Some((tx, _alive)) = state.pending_ipc_responses.remove(request_id) {
                     let _ = tx.send(AppIpcResponse::ok(json!({"decision": "allow"})));
                 }
                 AppIpcResponse::ok_empty()
@@ -6918,7 +7028,7 @@ fn handle_app_ipc_request(
                     response.pane_id,
                     &response.pty_write,
                 );
-                if let Some(tx) = state.pending_ipc_responses.remove(request_id) {
+                if let Some((tx, _alive)) = state.pending_ipc_responses.remove(request_id) {
                     let _ = tx.send(AppIpcResponse::ok(json!({"decision": "deny"})));
                 }
                 AppIpcResponse::ok_empty()
@@ -6940,7 +7050,7 @@ fn handle_app_ipc_request(
                 .allow_flow
                 .allow_all_for_workspace(*workspace, &mut pane_ptys);
             for (req_id, _) in &resolved {
-                if let Some(tx) = state.pending_ipc_responses.remove(req_id) {
+                if let Some((tx, _alive)) = state.pending_ipc_responses.remove(req_id) {
                     let _ = tx.send(AppIpcResponse::ok(json!({"decision": "allow"})));
                 }
             }
@@ -7070,6 +7180,10 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
                     Ok(s) => BufReader::new(s),
                     Err(_) => continue,
                 };
+                // Track the connection alive flag for this client.
+                let connection_alive = Arc::new(AtomicBool::new(true));
+                let mut had_permission_request = false;
+
                 for line in reader.lines() {
                     let line = match line {
                         Ok(l) => l,
@@ -7087,11 +7201,18 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
                     if let Ok(request) = serde_json::from_str::<AppIpcRequest>(cmd) {
                         let is_permission_request =
                             matches!(&request, AppIpcRequest::PermissionRequest { .. });
+                        let alive_for_event = if is_permission_request {
+                            had_permission_request = true;
+                            Some(Arc::clone(&connection_alive))
+                        } else {
+                            None
+                        };
                         let (tx, rx) = std_mpsc::channel();
                         if proxy
                             .send_event(UserEvent::AppIpc {
                                 request,
                                 response_tx: tx,
+                                connection_alive: alive_for_event,
                             })
                             .is_err()
                         {
@@ -7127,6 +7248,13 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
                             }
                         }
                     }
+                }
+                // Client disconnected (reader.lines() ended).
+                // Mark the connection as dead and notify the GUI to clean up
+                // any stale pending permission requests or agent state.
+                connection_alive.store(false, Ordering::SeqCst);
+                if had_permission_request {
+                    let _ = proxy.send_event(UserEvent::IpcClientDisconnected);
                 }
             }
             Err(e) => {

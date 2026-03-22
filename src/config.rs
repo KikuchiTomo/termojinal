@@ -29,6 +29,8 @@ pub struct TermojinalConfig {
     #[serde(default)]
     pub allow_flow: termojinal_claude::AllowFlowConfig,
     #[serde(default)]
+    pub allow_flow_ui: AllowFlowUiConfig,
+    #[serde(default)]
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub quick_terminal: QuickTerminalConfig,
@@ -49,9 +51,45 @@ impl Default for TermojinalConfig {
             palette: PaletteConfig::default(),
             status_bar: StatusBarConfig::default(),
             allow_flow: termojinal_claude::AllowFlowConfig::default(),
+            allow_flow_ui: AllowFlowUiConfig::default(),
             notifications: NotificationConfig::default(),
             quick_terminal: QuickTerminalConfig::default(),
             startup: StartupConfig::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [allow_flow_ui]
+// ---------------------------------------------------------------------------
+
+/// Allow Flow hint bar appearance settings (`[allow_flow_ui]`).
+///
+/// Controls the colors of the thin permission-hint bar rendered at the
+/// bottom of the focused pane when an AI tool needs approval.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AllowFlowUiConfig {
+    /// Background color of the permission hint bar (hex, default: orange).
+    #[serde(default = "default_hint_bar_bg")]
+    pub hint_bar_bg: String,
+    /// Foreground (text) color of the permission hint bar (hex, default: dark).
+    #[serde(default = "default_hint_bar_fg")]
+    pub hint_bar_fg: String,
+    /// Accent line color at top of hint bar (hex, default: bright amber).
+    #[serde(default = "default_hint_bar_accent")]
+    pub hint_bar_accent: String,
+}
+
+fn default_hint_bar_bg() -> String { "#D97706E0".into() }
+fn default_hint_bar_fg() -> String { "#1A1A24".into() }
+fn default_hint_bar_accent() -> String { "#F59E0B".into() }
+
+impl Default for AllowFlowUiConfig {
+    fn default() -> Self {
+        Self {
+            hint_bar_bg: default_hint_bar_bg(),
+            hint_bar_fg: default_hint_bar_fg(),
+            hint_bar_accent: default_hint_bar_accent(),
         }
     }
 }
@@ -438,18 +476,18 @@ fn default_sidebar_width() -> f32 { 240.0 }
 fn default_sidebar_min_width() -> f32 { 120.0 }
 fn default_sidebar_max_width() -> f32 { 400.0 }
 fn default_sidebar_bg() -> String { "#0D0D12".into() }
-fn default_sidebar_active_entry_bg() -> String { "#1A1A24".into() }
+fn default_sidebar_active_entry_bg() -> String { "#1E1E2A".into() }
 fn default_sidebar_active_fg() -> String { "#F2F2F8".into() }
-fn default_sidebar_inactive_fg() -> String { "#8C8C99".into() }
-fn default_sidebar_dim_fg() -> String { "#666670".into() }
+fn default_sidebar_inactive_fg() -> String { "#A0A0AC".into() }
+fn default_sidebar_dim_fg() -> String { "#77778A".into() }
 fn default_sidebar_git_branch_fg() -> String { "#5AB3D9".into() }
 fn default_sidebar_separator_color() -> String { "#333338".into() }
 fn default_sidebar_notification_dot() -> String { "#FF941A".into() }
 fn default_sidebar_git_dirty_color() -> String { "#CCB34D".into() }
 fn default_sidebar_top_pad() -> f32 { 6.0 }
 fn default_sidebar_side_pad() -> f32 { 6.0 }
-fn default_sidebar_entry_gap() -> f32 { 4.0 }
-fn default_sidebar_info_line_gap() -> f32 { 1.0 }
+fn default_sidebar_entry_gap() -> f32 { 8.0 }
+fn default_sidebar_info_line_gap() -> f32 { 2.0 }
 fn default_sidebar_allow_accent_color() -> String { "#4FC1FF".into() }
 fn default_sidebar_allow_hint_fg() -> String { "#7DC8FF".into() }
 fn default_agent_status_enabled() -> bool { true }

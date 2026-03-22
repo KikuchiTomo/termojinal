@@ -478,6 +478,23 @@ fn handle_allow_request() {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
+
+    // Tools that are not permission requests — auto-allow them so the user can
+    // interact with them directly in the terminal (e.g. answering a question).
+    const PASSTHROUGH_TOOLS: &[&str] = &["AskUserQuestion", "AskFollowupQuestion"];
+    if PASSTHROUGH_TOOLS.contains(&tool_name.as_str()) {
+        let output = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "decision": {
+                    "behavior": "allow"
+                }
+            }
+        });
+        println!("{}", output);
+        return;
+    }
+
     let tool_input = hook_input
         .get("tool_input")
         .cloned()

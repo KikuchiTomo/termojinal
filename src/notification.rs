@@ -1,22 +1,18 @@
-//! macOS desktop notifications via Notification Center API.
+//! macOS desktop notifications via UNUserNotificationCenter API.
 //!
-//! Uses `mac-notification-sys` which wraps `NSUserNotificationCenter` natively.
-
-/// Bundle identifier — matches Info.plist in the .app bundle.
-fn bundle_id() -> &'static str {
-    if cfg!(debug_assertions) {
-        "com.termojinal.app.dev"
-    } else {
-        "com.termojinal.app"
-    }
-}
+//! Uses `objc2` raw message sends to talk to `UNUserNotificationCenter`,
+//! the modern replacement for the deprecated `NSUserNotificationCenter`
+//! (removed in macOS 13+).
 
 /// Initialize the notification system. Call once at startup.
+///
+/// With UNUserNotificationCenter the bundle identifier is read automatically
+/// from the running .app bundle, so no explicit registration is needed.
+/// This function is kept as a no-op for call-site compatibility.
 pub fn init() {
-    let bid = bundle_id();
-    if let Err(e) = mac_notification_sys::set_application(bid) {
-        log::warn!("notification init failed for {bid}: {e}");
-    }
+    // UNUserNotificationCenter derives the app identity from the bundle,
+    // so there is nothing to configure here.
+    log::debug!("notification::init() — UNUserNotificationCenter uses bundle ID automatically");
 }
 
 /// Send a macOS desktop notification.
@@ -25,14 +21,106 @@ pub fn init() {
 /// `body`  — notification body text.
 /// `sound` — if `true`, plays the default notification sound.
 pub fn send_notification(title: &str, body: &str, sound: bool) {
-    let mut notif = mac_notification_sys::Notification::new();
-    if sound {
-        notif.sound("default");
+    use std::ffi::CString;
+
+    use objc2::rc::Id;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{msg_send, msg_send_id};
+
+    // --- UNUserNotificationCenter ---
+    let center_class = match AnyClass::get("UNUserNotificationCenter") {
+        Some(cls) => cls,
+        None => {
+            log::warn!("UNUserNotificationCenter class not available");
+            return;
+        }
+    };
+    let center: Id<AnyObject> =
+        unsafe { msg_send_id![center_class, currentNotificationCenter] };
+
+    // --- UNMutableNotificationContent ---
+    let content_class = match AnyClass::get("UNMutableNotificationContent") {
+        Some(cls) => cls,
+        None => {
+            log::warn!("UNMutableNotificationContent class not available");
+            return;
+        }
+    };
+    let content: Id<AnyObject> = unsafe { msg_send_id![content_class, new] };
+
+    // --- NSString helpers ---
+    let ns_string_class = match AnyClass::get("NSString") {
+        Some(cls) => cls,
+        None => {
+            log::warn!("NSString class not available");
+            return;
+        }
+    };
+
+    let title_c = CString::new(title).unwrap_or_default();
+    let title_ns: Id<AnyObject> = unsafe {
+        msg_send_id![ns_string_class, stringWithUTF8String: title_c.as_ptr()]
+    };
+
+    let body_c = CString::new(body).unwrap_or_default();
+    let body_ns: Id<AnyObject> = unsafe {
+        msg_send_id![ns_string_class, stringWithUTF8String: body_c.as_ptr()]
+    };
+
+    unsafe {
+        let _: () = msg_send![&*content, setTitle: &*title_ns];
+        let _: () = msg_send![&*content, setBody: &*body_ns];
     }
 
-    if let Err(e) = mac_notification_sys::send_notification(title, None, body, Some(&notif)) {
-        log::warn!("notification failed: {e}");
+    // --- Sound ---
+    if sound {
+        if let Some(sound_class) = AnyClass::get("UNNotificationSound") {
+            let default_sound: Id<AnyObject> =
+                unsafe { msg_send_id![sound_class, defaultSound] };
+            unsafe {
+                let _: () = msg_send![&*content, setSound: &*default_sound];
+            }
+        }
     }
+
+    // --- Unique request identifier ---
+    let uuid_class = match AnyClass::get("NSUUID") {
+        Some(cls) => cls,
+        None => {
+            log::warn!("NSUUID class not available");
+            return;
+        }
+    };
+    let uuid: Id<AnyObject> = unsafe { msg_send_id![uuid_class, new] };
+    let uuid_string: Id<AnyObject> = unsafe { msg_send_id![&*uuid, UUIDString] };
+
+    // --- UNNotificationRequest ---
+    let request_class = match AnyClass::get("UNNotificationRequest") {
+        Some(cls) => cls,
+        None => {
+            log::warn!("UNNotificationRequest class not available");
+            return;
+        }
+    };
+    let request: Id<AnyObject> = unsafe {
+        msg_send_id![
+            request_class,
+            requestWithIdentifier: &*uuid_string
+            content: &*content
+            trigger: std::ptr::null::<AnyObject>()
+        ]
+    };
+
+    // --- Deliver ---
+    unsafe {
+        let _: () = msg_send![
+            &*center,
+            addNotificationRequest: &*request
+            withCompletionHandler: std::ptr::null::<AnyObject>()
+        ];
+    }
+
+    log::debug!("notification sent: {title}");
 }
 
 /// Request notification permission if not already granted.

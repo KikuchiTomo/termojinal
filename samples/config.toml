@@ -145,3 +145,9 @@ bg = "#0F0F18"
 content = "{time}"
 fg = "#1A1A28"
 bg = "#7AA2F7"
+
+# --- Allow Flow UI -----------------------------------------------------------
+[allow_flow_ui]
+hint_bar_bg = "#D97706E0"       # Permission bar background (orange, semi-transparent)
+hint_bar_fg = "#1A1A24"          # Permission bar text color (dark)
+hint_bar_accent = "#F59E0B"      # Permission bar top accent line (bright amber)
