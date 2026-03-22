@@ -37,6 +37,8 @@ pub struct TermojinalConfig {
     #[serde(default)]
     pub startup: StartupConfig,
     #[serde(default)]
+    pub directory_tree: DirectoryTreeConfig,
+    #[serde(default)]
     pub time_travel: TimeTravelConfig,
 }
 
@@ -57,6 +59,7 @@ impl Default for TermojinalConfig {
             notifications: NotificationConfig::default(),
             quick_terminal: QuickTerminalConfig::default(),
             startup: StartupConfig::default(),
+            directory_tree: DirectoryTreeConfig::default(),
             time_travel: TimeTravelConfig::default(),
         }
     }
@@ -120,6 +123,86 @@ impl Default for NotificationConfig {
         Self {
             enabled: default_notifications_enabled(),
             sound: default_notification_sound(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [directory_tree]
+// ---------------------------------------------------------------------------
+
+/// How to determine the root directory for the tree display.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TreeRootMode {
+    /// Auto-detect: use git root if inside a repo, otherwise use CWD.
+    Auto,
+    /// Always use the terminal's current working directory.
+    Cwd,
+    /// Always use the git repository root (falls back to CWD if not in a repo).
+    GitRoot,
+}
+
+impl Default for TreeRootMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Directory tree configuration section (`[directory_tree]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DirectoryTreeConfig {
+    /// How to determine the tree root directory.
+    #[serde(default)]
+    pub root_mode: TreeRootMode,
+    /// Foreground color for directory names.
+    #[serde(default = "default_tree_dir_fg")]
+    pub dir_fg: String,
+    /// Foreground color for file names.
+    #[serde(default = "default_tree_file_fg")]
+    pub file_fg: String,
+    /// Foreground color for the selected/highlighted entry.
+    #[serde(default = "default_tree_selected_fg")]
+    pub selected_fg: String,
+    /// Background color for the selected/highlighted entry.
+    #[serde(default = "default_tree_selected_bg")]
+    pub selected_bg: String,
+    /// Foreground color for tree guide lines (▸/▾ arrows).
+    #[serde(default = "default_tree_guide_fg")]
+    pub guide_fg: String,
+    /// Maximum number of visible tree lines before scrolling.
+    #[serde(default = "default_tree_max_lines")]
+    pub max_visible_lines: usize,
+    /// Editor command used when pressing `v` on a file.
+    /// Defaults to $EDITOR, falling back to "nvim".
+    #[serde(default = "default_tree_editor")]
+    pub editor: String,
+    /// Double-click interval in milliseconds for cd action.
+    #[serde(default = "default_tree_double_click_ms")]
+    pub double_click_ms: u64,
+}
+
+fn default_tree_dir_fg() -> String { "#89B4FA".into() }  // blue (matches Catppuccin)
+fn default_tree_file_fg() -> String { "#BAC2DE".into() }  // subtext
+fn default_tree_selected_fg() -> String { "#F2F2F8".into() }
+fn default_tree_selected_bg() -> String { "#313244".into() }
+fn default_tree_guide_fg() -> String { "#6C7086".into() }
+fn default_tree_max_lines() -> usize { 20 }
+fn default_tree_editor() -> String { String::new() }  // empty = use $EDITOR or "nvim"
+fn default_tree_double_click_ms() -> u64 { 400 }
+
+impl Default for DirectoryTreeConfig {
+    fn default() -> Self {
+        Self {
+            root_mode: TreeRootMode::default(),
+            dir_fg: default_tree_dir_fg(),
+            file_fg: default_tree_file_fg(),
+            selected_fg: default_tree_selected_fg(),
+            selected_bg: default_tree_selected_bg(),
+            guide_fg: default_tree_guide_fg(),
+            max_visible_lines: default_tree_max_lines(),
+            editor: default_tree_editor(),
+            double_click_ms: default_tree_double_click_ms(),
         }
     }
 }

@@ -78,6 +78,8 @@ pub enum Action {
     None,
     /// Show the About screen (license, credits, version).
     About,
+    /// Toggle the directory tree in the sidebar.
+    ToggleDirectoryTree,
     /// Run a named command or plugin.
     Command(String),
     /// Jump to the previous command output (time travel).
@@ -160,6 +162,9 @@ impl Default for KeybindingConfig {
 
         // Sidebar toggle
         normal.insert("cmd+b".to_string(), Action::ToggleSidebar);
+
+        // Directory tree toggle
+        normal.insert("cmd+shift+e".to_string(), Action::ToggleDirectoryTree);
 
         // Tab navigation (Cmd+Shift+{ and Cmd+Shift+} produce these characters)
         normal.insert("cmd+shift+{".to_string(), Action::PrevTab);

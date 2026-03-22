@@ -141,6 +141,12 @@ impl CommandPalette {
                 kind: CommandKind::Builtin,
             },
             PaletteCommand {
+                name: "Toggle Directory Tree".to_string(),
+                description: "Show/hide file tree in sidebar".to_string(),
+                action: Action::ToggleDirectoryTree,
+                kind: CommandKind::Builtin,
+            },
+            PaletteCommand {
                 name: "Copy".to_string(),
                 description: "Copy selection to clipboard".to_string(),
                 action: Action::Copy,
@@ -1083,6 +1089,378 @@ struct Workspace {
 }
 
 // ---------------------------------------------------------------------------
+// Directory tree state
+// ---------------------------------------------------------------------------
+
+/// A single entry in the flattened directory tree.
+#[derive(Clone, Debug)]
+struct DirEntry {
+    /// Display name (file/directory name only).
+    name: String,
+    /// Full absolute path.
+    path: String,
+    /// Whether this entry is a directory.
+    is_dir: bool,
+    /// Indentation depth (0 = root level).
+    depth: usize,
+    /// Whether this directory is expanded (only meaningful for dirs).
+    expanded: bool,
+    /// Whether children have been loaded from the filesystem.
+    children_loaded: bool,
+}
+
+/// Per-workspace directory tree state.
+struct DirectoryTreeState {
+    /// Whether the tree is visible for this workspace.
+    visible: bool,
+    /// Root path of the tree.
+    root_path: String,
+    /// Flattened list of visible entries.
+    entries: Vec<DirEntry>,
+    /// Index of the currently selected entry (keyboard navigation).
+    selected: usize,
+    /// Scroll offset (first visible entry index).
+    scroll_offset: usize,
+    /// Whether the tree has keyboard focus.
+    focused: bool,
+    /// Last time a click was registered (for double-click detection).
+    last_click_time: Option<Instant>,
+    /// Index of the last clicked entry (for double-click detection).
+    last_click_index: Option<usize>,
+    /// Pending "open in editor" request (set by click handler, consumed by event loop).
+    pending_open_in_editor: bool,
+}
+
+impl DirectoryTreeState {
+    fn new() -> Self {
+        Self {
+            visible: false,
+            root_path: String::new(),
+            entries: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+            focused: false,
+            last_click_time: None,
+            last_click_index: None,
+            pending_open_in_editor: false,
+        }
+    }
+}
+
+/// Resolve the tree root directory for a workspace.
+/// Uses git root if in a repo (when mode is Auto or GitRoot), otherwise CWD.
+fn resolve_tree_root(cwd: &str, mode: &config::TreeRootMode) -> String {
+    if cwd.is_empty() {
+        return String::new();
+    }
+    match mode {
+        config::TreeRootMode::Cwd => cwd.to_string(),
+        config::TreeRootMode::GitRoot | config::TreeRootMode::Auto => {
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["-C", cwd, "rev-parse", "--show-toplevel"])
+                .output()
+            {
+                if output.status.success() {
+                    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !root.is_empty() {
+                        return root;
+                    }
+                }
+            }
+            if matches!(mode, config::TreeRootMode::Auto) {
+                cwd.to_string()
+            } else {
+                cwd.to_string() // fallback for GitRoot when not in a repo
+            }
+        }
+    }
+}
+
+/// Read a single directory level and return sorted entries.
+/// Directories first (alphabetical), then files (alphabetical).
+fn read_directory_entries(dir_path: &str, depth: usize) -> Vec<DirEntry> {
+    let Ok(read_dir) = std::fs::read_dir(dir_path) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<DirEntry> = Vec::new();
+    let mut files: Vec<DirEntry> = Vec::new();
+
+    for entry in read_dir.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path().to_string_lossy().to_string();
+        let is_dir = metadata.is_dir();
+
+        let de = DirEntry {
+            name,
+            path,
+            is_dir,
+            depth,
+            expanded: false,
+            children_loaded: false,
+        };
+
+        if is_dir {
+            dirs.push(de);
+        } else {
+            files.push(de);
+        }
+    }
+
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.extend(files);
+    dirs
+}
+
+/// Load the initial tree (1 level deep) from the root path.
+fn load_tree_root(tree: &mut DirectoryTreeState, root: &str) {
+    tree.root_path = root.to_string();
+    tree.entries = read_directory_entries(root, 0);
+    tree.selected = 0;
+    tree.scroll_offset = 0;
+}
+
+/// Toggle expand/collapse of a directory entry at the given index.
+fn toggle_tree_entry(tree: &mut DirectoryTreeState, index: usize) {
+    if index >= tree.entries.len() || !tree.entries[index].is_dir {
+        return;
+    }
+
+    if tree.entries[index].expanded {
+        // Collapse: remove all children (entries with depth > this entry's depth
+        // until we hit an entry at the same or lesser depth).
+        let parent_depth = tree.entries[index].depth;
+        let remove_start = index + 1;
+        let mut remove_end = remove_start;
+        while remove_end < tree.entries.len() && tree.entries[remove_end].depth > parent_depth {
+            remove_end += 1;
+        }
+        tree.entries.drain(remove_start..remove_end);
+        tree.entries[index].expanded = false;
+        // Clamp selected index to avoid out-of-bounds after removing children.
+        if tree.selected >= tree.entries.len() {
+            tree.selected = tree.entries.len().saturating_sub(1);
+        }
+        // Also adjust scroll_offset if it's now past the end.
+        if tree.scroll_offset >= tree.entries.len() {
+            tree.scroll_offset = tree.entries.len().saturating_sub(1);
+        }
+    } else {
+        // Expand: load children and insert them after this entry.
+        let children = read_directory_entries(&tree.entries[index].path, tree.entries[index].depth + 1);
+        tree.entries[index].expanded = true;
+        tree.entries[index].children_loaded = true;
+        let insert_at = index + 1;
+        for (ci, child) in children.into_iter().enumerate() {
+            tree.entries.insert(insert_at + ci, child);
+        }
+    }
+}
+
+/// Move selection down in the directory tree.
+fn dir_tree_move_down(state: &mut AppState) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() { return; }
+    let tree = &mut state.dir_trees[wi];
+    if tree.entries.is_empty() { return; }
+    if tree.selected + 1 < tree.entries.len() {
+        tree.selected += 1;
+        // Scroll if needed.
+        let max_lines = state.config.directory_tree.max_visible_lines;
+        if tree.selected >= tree.scroll_offset + max_lines {
+            tree.scroll_offset = tree.selected + 1 - max_lines;
+        }
+    }
+    state.window.request_redraw();
+}
+
+/// Move selection up in the directory tree.
+fn dir_tree_move_up(state: &mut AppState) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() { return; }
+    let tree = &mut state.dir_trees[wi];
+    if tree.entries.is_empty() { return; }
+    if tree.selected > 0 {
+        tree.selected -= 1;
+        if tree.selected < tree.scroll_offset {
+            tree.scroll_offset = tree.selected;
+        }
+    }
+    state.window.request_redraw();
+}
+
+/// Expand the selected directory entry (or move into it if already expanded).
+fn dir_tree_expand(state: &mut AppState) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() { return; }
+    let idx = state.dir_trees[wi].selected;
+    if idx >= state.dir_trees[wi].entries.len() { return; }
+    if state.dir_trees[wi].entries[idx].is_dir {
+        if state.dir_trees[wi].entries[idx].expanded {
+            // Already expanded: move to first child.
+            if idx + 1 < state.dir_trees[wi].entries.len()
+                && state.dir_trees[wi].entries[idx + 1].depth > state.dir_trees[wi].entries[idx].depth
+            {
+                state.dir_trees[wi].selected = idx + 1;
+            }
+        } else {
+            toggle_tree_entry(&mut state.dir_trees[wi], idx);
+        }
+    }
+    state.window.request_redraw();
+}
+
+/// Collapse the selected directory entry (or move to parent if already collapsed/is a file).
+fn dir_tree_collapse(state: &mut AppState) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() { return; }
+    let idx = state.dir_trees[wi].selected;
+    if idx >= state.dir_trees[wi].entries.len() { return; }
+
+    if state.dir_trees[wi].entries[idx].is_dir && state.dir_trees[wi].entries[idx].expanded {
+        // Collapse this directory.
+        toggle_tree_entry(&mut state.dir_trees[wi], idx);
+    } else {
+        // Move to parent directory.
+        let current_depth = state.dir_trees[wi].entries[idx].depth;
+        if current_depth > 0 {
+            // Search backwards for the parent (entry with depth - 1).
+            let mut pi = idx;
+            while pi > 0 {
+                pi -= 1;
+                if state.dir_trees[wi].entries[pi].depth < current_depth {
+                    state.dir_trees[wi].selected = pi;
+                    if pi < state.dir_trees[wi].scroll_offset {
+                        state.dir_trees[wi].scroll_offset = pi;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    state.window.request_redraw();
+}
+
+/// cd to the selected entry (directory) in the active pane.
+fn dir_tree_cd(state: &mut AppState) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() { return; }
+    let idx = state.dir_trees[wi].selected;
+    if idx >= state.dir_trees[wi].entries.len() { return; }
+
+    let entry = &state.dir_trees[wi].entries[idx];
+    let path = if entry.is_dir {
+        entry.path.clone()
+    } else {
+        // For files, cd to parent directory.
+        std::path::Path::new(&entry.path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+
+    if !path.is_empty() {
+        let focused_id = active_tab(state).layout.focused();
+        if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+            let cmd = format!("cd {}\n", shell_escape(&path));
+            let _ = pane.pty.write(cmd.as_bytes());
+        }
+    }
+    state.window.request_redraw();
+}
+
+/// Open the selected file in $EDITOR (or nvim) in a new tab.
+/// The tab is created with the shell, and the editor command is sent immediately
+/// so that by the time the tab is displayed, the editor is already running.
+fn dir_tree_open_in_editor(
+    state: &mut AppState,
+    proxy: &EventLoopProxy<UserEvent>,
+    buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() { return; }
+    let idx = state.dir_trees[wi].selected;
+    if idx >= state.dir_trees[wi].entries.len() { return; }
+
+    let entry_path = state.dir_trees[wi].entries[idx].path.clone();
+    let entry_is_dir = state.dir_trees[wi].entries[idx].is_dir;
+
+    // Determine editor command (config > $EDITOR > nvim).
+    let cfg_editor = &state.config.directory_tree.editor;
+    let editor = if !cfg_editor.is_empty() {
+        cfg_editor.clone()
+    } else {
+        std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string())
+    };
+
+    // Determine CWD for the new tab (parent dir of the file, or the dir itself).
+    let cwd = if entry_is_dir {
+        Some(entry_path.clone())
+    } else {
+        std::path::Path::new(&entry_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+    };
+
+    // Create a new tab (similar to Action::NewTab).
+    let new_id = state.next_pane_id;
+    state.next_pane_id += 1;
+    let layout = LayoutTree::new(new_id);
+    let size = state.window.inner_size();
+    let phys_w = size.width as f32;
+    let phys_h = size.height as f32;
+    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let cw = (phys_w - sidebar_w).max(1.0);
+    let ch = (phys_h - state.config.tab_bar.height).max(1.0);
+    let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
+
+    match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
+        Ok(pane) => {
+            // Immediately write the editor command to the PTY so it starts
+            // before the user sees the tab (prevents flicker).
+            let cmd = format!("{} {}\n", editor, shell_escape(&entry_path));
+            let _ = pane.pty.write(cmd.as_bytes());
+
+            let mut panes = HashMap::new();
+            panes.insert(new_id, pane);
+            let fmt = state.config.tab_bar.format.clone();
+            let ws = active_ws_mut(state);
+            let tab_num = ws.tabs.len() + 1;
+
+            // Use file/dir name as tab title.
+            let tab_name = std::path::Path::new(&entry_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("editor")
+                .to_string();
+
+            let tab = Tab {
+                layout,
+                panes,
+                name: tab_name.clone(),
+                display_title: format_tab_title(&fmt, &tab_name, "", tab_num),
+            };
+            ws.tabs.push(tab);
+            ws.active_tab = ws.tabs.len() - 1;
+            resize_all_panes(state);
+            update_window_title(state);
+
+            // Unfocus the tree since we're switching to the new tab.
+            if wi < state.dir_trees.len() {
+                state.dir_trees[wi].focused = false;
+            }
+            state.window.request_redraw();
+        }
+        Err(e) => {
+            log::error!("failed to spawn pane for editor: {e}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar / tab bar constants
 // ---------------------------------------------------------------------------
 
@@ -1346,6 +1724,8 @@ struct AppState {
     about_visible: bool,
     /// Scroll offset for the about overlay content.
     about_scroll: usize,
+    /// Per-workspace directory tree states.
+    dir_trees: Vec<DirectoryTreeState>,
     // -- Time Travel state --
     /// Whether the command timeline overlay is visible.
     timeline_visible: bool,
@@ -2161,6 +2541,7 @@ impl ApplicationHandler<UserEvent> for App {
             quick_terminal: QuickTerminalState::new(),
             about_visible: false,
             about_scroll: 0,
+            dir_trees: vec![DirectoryTreeState::new()],
             timeline_visible: false,
             timeline_input: String::new(),
             timeline_selected: 0,
@@ -2413,6 +2794,76 @@ impl ApplicationHandler<UserEvent> for App {
                 if !state.command_palette.visible {
                     if active_tab(state).panes.get(&focused_id).map_or(false, |p| p.preedit.is_some()) {
                         return;
+                    }
+                }
+
+                // --- Directory tree keyboard navigation ---
+                // When the tree has focus, intercept keys before anything else.
+                {
+                    let wi = state.active_workspace;
+                    let tree_has_focus = wi < state.dir_trees.len()
+                        && state.dir_trees[wi].visible
+                        && state.dir_trees[wi].focused;
+                    if tree_has_focus {
+                        let is_ctrl = state.modifiers.control_key();
+                        let handled = match &event.logical_key {
+                            // Move down: Arrow Down, Ctrl+N
+                            Key::Named(NamedKey::ArrowDown) => {
+                                dir_tree_move_down(state);
+                                true
+                            }
+                            Key::Character(c) if is_ctrl && (c.as_str() == "n" || c.as_str() == "\x0e") => {
+                                dir_tree_move_down(state);
+                                true
+                            }
+                            // Move up: Arrow Up, Ctrl+P
+                            Key::Named(NamedKey::ArrowUp) => {
+                                dir_tree_move_up(state);
+                                true
+                            }
+                            Key::Character(c) if is_ctrl && (c.as_str() == "p" || c.as_str() == "\x10") => {
+                                dir_tree_move_up(state);
+                                true
+                            }
+                            // Expand: Arrow Right, Ctrl+F
+                            Key::Named(NamedKey::ArrowRight) => {
+                                dir_tree_expand(state);
+                                true
+                            }
+                            Key::Character(c) if is_ctrl && (c.as_str() == "f" || c.as_str() == "\x06") => {
+                                dir_tree_expand(state);
+                                true
+                            }
+                            // Collapse: Arrow Left, Ctrl+B
+                            Key::Named(NamedKey::ArrowLeft) => {
+                                dir_tree_collapse(state);
+                                true
+                            }
+                            Key::Character(c) if is_ctrl && (c.as_str() == "b" || c.as_str() == "\x02") => {
+                                dir_tree_collapse(state);
+                                true
+                            }
+                            // Enter: cd to selected directory
+                            Key::Named(NamedKey::Enter) => {
+                                dir_tree_cd(state);
+                                true
+                            }
+                            // v: open selected file in new tab with $EDITOR or nvim
+                            Key::Character(c) if c.as_str() == "v" && !is_ctrl => {
+                                dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
+                                true
+                            }
+                            // Escape: unfocus tree (return focus to terminal)
+                            Key::Named(NamedKey::Escape) => {
+                                state.dir_trees[wi].focused = false;
+                                state.window.request_redraw();
+                                true
+                            }
+                            _ => false,
+                        };
+                        if handled {
+                            return;
+                        }
                     }
                 }
 
@@ -2915,6 +3366,12 @@ impl ApplicationHandler<UserEvent> for App {
                             let proxy = &self.proxy;
                             let buffers = &self.pty_buffers;
                             dispatch_action(state, &action, proxy, buffers, event_loop);
+                        }
+                        // Handle deferred "open in editor" from double-click on file.
+                        let wi = state.active_workspace;
+                        if wi < state.dir_trees.len() && state.dir_trees[wi].pending_open_in_editor {
+                            state.dir_trees[wi].pending_open_in_editor = false;
+                            dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
                         }
                         break 'mouse_input;
                     }
@@ -3500,6 +3957,9 @@ impl ApplicationHandler<UserEvent> for App {
                                 if ws_idx < state.agent_infos.len() {
                                     state.agent_infos.remove(ws_idx);
                                 }
+                                if ws_idx < state.dir_trees.len() {
+                                    state.dir_trees.remove(ws_idx);
+                                }
                                 cleanup_session_to_workspace(state, ws_idx);
                                 if state.active_workspace >= state.workspaces.len() {
                                     state.active_workspace = state.workspaces.len() - 1;
@@ -3979,6 +4439,7 @@ fn dispatch_action(
                     };
                     state.workspaces.push(ws);
                     state.agent_infos.push(AgentSessionInfo::default());
+                    state.dir_trees.push(DirectoryTreeState::new());
                     state.active_workspace = state.workspaces.len() - 1;
                     resize_all_panes(state);
                     update_window_title(state);
@@ -4115,6 +4576,39 @@ fn dispatch_action(
         Action::ToggleSidebar => {
             state.sidebar_visible = !state.sidebar_visible;
             resize_all_panes(state);
+            state.window.request_redraw();
+            true
+        }
+        Action::ToggleDirectoryTree => {
+            let wi = state.active_workspace;
+            while state.dir_trees.len() <= wi {
+                state.dir_trees.push(DirectoryTreeState::new());
+            }
+            let now_visible = !state.dir_trees[wi].visible;
+            state.dir_trees[wi].visible = now_visible;
+            if now_visible {
+                // Ensure sidebar is visible when showing tree.
+                if !state.sidebar_visible {
+                    state.sidebar_visible = true;
+                    resize_all_panes(state);
+                }
+                // Load tree if root changed or not yet loaded.
+                let cwd = {
+                    let ws = &state.workspaces[wi];
+                    let tab = &ws.tabs[ws.active_tab];
+                    let fid = tab.layout.focused();
+                    tab.panes.get(&fid)
+                        .map(|p| p.terminal.osc.cwd.clone())
+                        .unwrap_or_default()
+                };
+                let root = resolve_tree_root(&cwd, &state.config.directory_tree.root_mode);
+                if state.dir_trees[wi].entries.is_empty() || state.dir_trees[wi].root_path != root {
+                    load_tree_root(&mut state.dir_trees[wi], &root);
+                }
+                state.dir_trees[wi].focused = true;
+            } else {
+                state.dir_trees[wi].focused = false;
+            }
             state.window.request_redraw();
             true
         }
@@ -4396,6 +4890,9 @@ fn close_focused_pane(
                     if removed_idx < state.agent_infos.len() {
                         state.agent_infos.remove(removed_idx);
                     }
+                    if removed_idx < state.dir_trees.len() {
+                        state.dir_trees.remove(removed_idx);
+                    }
                     cleanup_session_to_workspace(state, removed_idx);
                     if state.active_workspace >= state.workspaces.len() {
                         state.active_workspace = state.workspaces.len() - 1;
@@ -4473,6 +4970,15 @@ fn compute_tab_width(title: &str, cell_w: f32, max_width: f32, min_width: f32) -
 
 /// Truncate a string to at most `max_chars` characters, appending an
 /// ellipsis if truncation occurs.
+/// Escape a path for safe use in shell commands.
+fn shell_escape(s: &str) -> String {
+    if s.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-') {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
 fn truncate_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
@@ -4593,13 +5099,74 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             if !state.agent_infos[i].summary.is_empty() {
                 entry_h += info_line_gap + cell_h; // summary line
             }
-            if state.agent_infos[i].subagent_count > 0 {
-                entry_h += info_line_gap + cell_h; // subagent line
-            }
+            // Note: subagent count is merged into the agent status line (no extra height).
         }
+
+        // Directory tree area (only for active workspace).
+        let max_tree_lines = state.config.directory_tree.max_visible_lines.max(1);
+        let tree_visible_click = is_active
+            && i < state.dir_trees.len()
+            && state.dir_trees[i].visible
+            && !state.dir_trees[i].entries.is_empty();
+        let tree_area_start = entry_y + entry_h; // before tree
+        let mut tree_area_h: f32 = 0.0;
+        if tree_visible_click {
+            let entry_count = state.dir_trees[i].entries.len();
+            let total = 1 + entry_count.min(max_tree_lines) + 1; // header + entries + hint
+            tree_area_h = info_line_gap + (total as f32) * cell_h;
+            entry_h += tree_area_h;
+        }
+
         entry_h += entry_gap; // gap between entries
 
         if cy >= entry_y && cy < entry_y + entry_h {
+            // Check if click is within the tree area.
+            if tree_visible_click && cy >= tree_area_start && cy < tree_area_start + tree_area_h {
+                let tree_content_start = tree_area_start + info_line_gap + cell_h; // skip header
+                if cy >= tree_content_start {
+                    let line_offset = ((cy - tree_content_start) / cell_h) as usize;
+                    let tree = &state.dir_trees[i];
+                    let entry_idx = tree.scroll_offset + line_offset;
+                    let max_lines = state.config.directory_tree.max_visible_lines;
+                    if entry_idx < tree.entries.len() && line_offset < max_lines {
+                        // Double-click detection.
+                        let now = Instant::now();
+                        let dbl_ms = state.config.directory_tree.double_click_ms;
+                        let is_double_click = state.dir_trees[i].last_click_time
+                            .map(|t| now.duration_since(t).as_millis() < dbl_ms as u128)
+                            .unwrap_or(false)
+                            && state.dir_trees[i].last_click_index == Some(entry_idx);
+
+                        state.dir_trees[i].last_click_time = Some(now);
+                        state.dir_trees[i].last_click_index = Some(entry_idx);
+                        state.dir_trees[i].selected = entry_idx;
+                        state.dir_trees[i].focused = true;
+
+                        if is_double_click {
+                            if state.dir_trees[i].entries[entry_idx].is_dir {
+                                // Double-click on directory: cd to it.
+                                let path = state.dir_trees[i].entries[entry_idx].path.clone();
+                                let focused_id = active_tab(state).layout.focused();
+                                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                                    let cmd = format!("cd {}\n", shell_escape(&path));
+                                    let _ = pane.pty.write(cmd.as_bytes());
+                                }
+                            } else {
+                                // Double-click on file: mark for opening in editor.
+                                // The caller will handle the actual spawn since we don't
+                                // have access to proxy/buffers here.
+                                state.dir_trees[i].pending_open_in_editor = true;
+                            }
+                        } else if state.dir_trees[i].entries[entry_idx].is_dir {
+                            // Single click on directory: toggle expand/collapse.
+                            toggle_tree_entry(&mut state.dir_trees[i], entry_idx);
+                        }
+                        state.window.request_redraw();
+                    }
+                }
+                return None;
+            }
+
             if state.active_workspace != i {
                 state.active_workspace = i;
                 if i < state.workspace_infos.len() {
@@ -4608,6 +5175,12 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                 resize_all_panes(state);
                 update_window_title(state);
                 state.window.request_redraw();
+            } else {
+                // Click on active workspace outside tree — check if it's the CWD line to toggle tree.
+                let cwd_line_y = entry_y + cell_h; // after name line
+                if !ws_cwd.is_empty() && cy >= cwd_line_y && cy < cwd_line_y + info_line_gap + cell_h {
+                    return Some(Action::ToggleDirectoryTree);
+                }
             }
             return None;
         }
@@ -4869,6 +5442,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     while state.agent_infos.len() < state.workspaces.len() {
         state.agent_infos.push(AgentSessionInfo::default());
     }
+    // Keep dir_trees in sync.
+    while state.dir_trees.len() < state.workspaces.len() {
+        state.dir_trees.push(DirectoryTreeState::new());
+    }
 
     // Refresh all workspaces (active every 5s, inactive every 30s).
     for wi in 0..state.workspaces.len() {
@@ -4966,6 +5543,25 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             }
             // Subagent count is now merged into the status line, no extra line needed.
         }
+
+        // Directory tree height (only for active workspace when visible).
+        let tree_visible = is_active
+            && i < state.dir_trees.len()
+            && state.dir_trees[i].visible
+            && !state.dir_trees[i].entries.is_empty();
+        let tree_line_count = if tree_visible {
+            let max_lines = state.config.directory_tree.max_visible_lines.max(1);
+            let entry_count = state.dir_trees[i].entries.len();
+            // +1 for the header/toggle line, +1 for bottom hint line
+            let total = 1 + entry_count.min(max_lines) + 1;
+            content_h += info_line_gap + (total as f32) * cell_h;
+            entry_count.min(max_lines)
+        } else if is_active {
+            // Show CWD toggle hint (tree collapsed) — no extra height, shown inline with CWD
+            0
+        } else {
+            0
+        };
 
         // Clamp content height to remaining space so we don't render past the sidebar.
         let content_h = content_h.min(phys_h - entry_y);
@@ -5271,6 +5867,92 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 line_y += cell_h;
             }
             let _ = line_y; // suppress unused warning
+        }
+
+        // --- Directory tree (only for active workspace when visible) ---
+        if tree_visible && tree_line_count > 0 {
+            let tc = &state.config.directory_tree;
+            let dir_fg = color_or(&tc.dir_fg, [0.54, 0.71, 0.98, 1.0]);
+            let file_fg = color_or(&tc.file_fg, [0.73, 0.76, 0.87, 1.0]);
+            let selected_fg_color = color_or(&tc.selected_fg, [0.95, 0.95, 0.97, 1.0]);
+            let selected_bg_color = color_or(&tc.selected_bg, [0.19, 0.20, 0.27, 1.0]);
+            let guide_fg = color_or(&tc.guide_fg, [0.42, 0.44, 0.53, 1.0]);
+            let info_indent = text_left + cell_w * 0.5;
+            let tree = &state.dir_trees[i];
+
+            line_y += info_line_gap;
+
+            // Header line: root path (shortened) with toggle hint.
+            let root_short = if let Ok(home) = std::env::var("HOME") {
+                if tree.root_path.starts_with(&home) {
+                    format!("~{}", &tree.root_path[home.len()..])
+                } else {
+                    tree.root_path.clone()
+                }
+            } else {
+                tree.root_path.clone()
+            };
+            let header = format!("\u{25BE} {}", root_short); // ▾ root
+            let header_display: String = header.chars().take(max_chars.saturating_sub(1)).collect();
+            state.renderer.render_text(view, &header_display, info_indent, line_y, guide_fg, bg);
+            line_y += cell_h;
+
+            // Tree entries.
+            let scroll = tree.scroll_offset;
+            let visible_end = (scroll + tree_line_count).min(tree.entries.len());
+            for ei in scroll..visible_end {
+                let entry = &tree.entries[ei];
+                let indent = info_indent + (entry.depth as f32) * cell_w * 1.5;
+                let is_selected = ei == tree.selected;
+
+                // Draw selection background.
+                if is_selected && tree.focused {
+                    state.renderer.submit_separator(
+                        view,
+                        info_indent as u32,
+                        line_y as u32,
+                        (sidebar_w - info_indent - side_pad) as u32,
+                        cell_h as u32,
+                        selected_bg_color,
+                    );
+                }
+
+                let fg = if is_selected && tree.focused {
+                    selected_fg_color
+                } else if entry.is_dir {
+                    dir_fg
+                } else {
+                    file_fg
+                };
+                let entry_bg = if is_selected && tree.focused {
+                    selected_bg_color
+                } else {
+                    bg
+                };
+
+                // Arrow + name.
+                let prefix = if entry.is_dir {
+                    if entry.expanded { "\u{25BE} " } else { "\u{25B8} " } // ▾ or ▸
+                } else {
+                    "  "
+                };
+                let label = format!("{}{}", prefix, entry.name);
+                let avail = ((sidebar_w - indent - side_pad) / cell_w).max(1.0) as usize;
+                let display: String = label.chars().take(avail).collect();
+                state.renderer.render_text(view, &display, indent, line_y, fg, entry_bg);
+                line_y += cell_h;
+            }
+
+            // Bottom hint line.
+            let hint = if tree.focused {
+                "\u{2191}\u{2193}nav  \u{21B5}cd  v:open  esc:close"
+            } else {
+                "Cmd+Shift+E to focus"
+            };
+            let hint_fg_col = [0.40, 0.45, 0.55, 0.8];
+            let hint_display: String = hint.chars().take(max_chars.saturating_sub(1)).collect();
+            state.renderer.render_text(view, &hint_display, info_indent, line_y, hint_fg_col, bg);
+            let _ = line_y;
         }
 
         entry_y += content_h + entry_gap;
@@ -7394,6 +8076,9 @@ fn handle_app_ipc_request(
                 }
                 if *index < state.agent_infos.len() {
                     state.agent_infos.remove(*index);
+                }
+                if *index < state.dir_trees.len() {
+                    state.dir_trees.remove(*index);
                 }
                 cleanup_session_to_workspace(state, *index);
                 if state.active_workspace >= state.workspaces.len() {

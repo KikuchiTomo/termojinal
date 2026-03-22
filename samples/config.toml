@@ -151,3 +151,15 @@ bg = "#7AA2F7"
 hint_bar_bg = "#D97706E0"       # Permission bar background (orange, semi-transparent)
 hint_bar_fg = "#1A1A24"          # Permission bar text color (dark)
 hint_bar_accent = "#F59E0B"      # Permission bar top accent line (bright amber)
+
+# --- Directory Tree ----------------------------------------------------------
+[directory_tree]
+root_mode = "auto"               # Tree root: "auto" (git root or CWD), "cwd", "git_root"
+max_visible_lines = 20           # Max visible entries before scrolling
+double_click_ms = 400            # Double-click interval for cd action (ms)
+editor = ""                      # Editor for 'v' key ("" = $EDITOR or nvim)
+dir_fg = "#7AA2F7"               # Directory name color
+file_fg = "#B0B0C0"              # File name color
+selected_fg = "#E8E8F0"          # Selected entry foreground
+selected_bg = "#2A2A40"          # Selected entry background
+guide_fg = "#505060"             # Tree guide arrows (▸/▾) color
