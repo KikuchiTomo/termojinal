@@ -8,6 +8,7 @@ use crate::image::{
 };
 use crate::scrollback::ScrollbackBuffer;
 use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
 
 /// DCS accumulation mode for Sixel graphics.
@@ -20,7 +21,7 @@ enum DcsMode {
 }
 
 /// Cursor shape (DECSCUSR).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CursorShape {
     Block,
     Underline,
@@ -110,6 +111,85 @@ pub struct OscState {
     pub command_start: Option<(usize, usize)>,
 }
 
+/// A structured record of a single shell command and its output region.
+///
+/// Built from OSC 133 shell integration markers (A/B/C/D).
+/// Enables command-level navigation, timeline UI, and session persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandRecord {
+    /// Monotonically increasing command ID within a session.
+    pub id: u64,
+    /// The command text entered by the user (extracted from grid between B and C markers).
+    pub command_text: String,
+    /// Working directory at the time the command was executed (from OSC 7).
+    pub cwd: String,
+    /// When the command started executing (OSC 133 C received).
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Duration in milliseconds (computed when OSC 133 D is received).
+    pub duration_ms: Option<u64>,
+    /// Exit code (parsed from OSC 133 D parameter).
+    pub exit_code: Option<i32>,
+    /// Absolute scrollback line where command output begins.
+    pub scrollback_line_start: usize,
+    /// Absolute scrollback line where command output ends (set when next prompt starts).
+    pub scrollback_line_end: Option<usize>,
+    /// Absolute scrollback line of the prompt for this command.
+    pub prompt_line: usize,
+}
+
+/// Transient state accumulated between OSC 133 markers while a command is in progress.
+#[derive(Debug, Clone)]
+struct PendingCommand {
+    /// Absolute line of the prompt (OSC 133 A).
+    prompt_abs_line: usize,
+    /// Absolute line where command input starts (OSC 133 B).
+    command_start_abs_line: usize,
+    /// Column where command input starts (OSC 133 B).
+    command_start_col: usize,
+    /// Working directory at command start.
+    cwd: String,
+    /// When the command was executed (OSC 133 C).
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Absolute line where output begins (OSC 133 C).
+    output_start_abs_line: Option<usize>,
+}
+
+/// A serializable snapshot of the terminal state, used for session persistence
+/// and named snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSnapshot {
+    /// Main grid cells (row-major).
+    pub grid_cells: Vec<Vec<Cell>>,
+    /// Cursor position and shape.
+    pub cursor_col: usize,
+    pub cursor_row: usize,
+    pub cursor_shape: CursorShape,
+    /// Current pen style.
+    pub pen: Pen,
+    /// Terminal dimensions.
+    pub cols: usize,
+    pub rows: usize,
+    /// Command history records.
+    pub command_history: Vec<CommandRecord>,
+    /// Total scrolled lines counter (for absolute line tracking).
+    pub total_scrolled_lines: usize,
+    /// Window/tab title.
+    pub title: String,
+    /// Current working directory.
+    pub cwd: String,
+}
+
+/// A named snapshot that can be saved and restored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamedSnapshot {
+    /// User-assigned name for this snapshot.
+    pub name: String,
+    /// When the snapshot was created.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// The terminal state at snapshot time.
+    pub terminal_snapshot: TerminalSnapshot,
+}
+
 /// The full terminal state.
 pub struct Terminal {
     /// Main screen grid.
@@ -164,6 +244,21 @@ pub struct Terminal {
     dcs_data: Vec<u8>,
     /// Current DCS accumulation mode.
     dcs_mode: DcsMode,
+    /// Completed command records (time travel history).
+    command_history: Vec<CommandRecord>,
+    /// Next command ID to assign.
+    next_command_id: u64,
+    /// Command currently being tracked between OSC 133 markers.
+    pending_command: Option<PendingCommand>,
+    /// Total number of lines that have been scrolled into the scrollback buffer.
+    /// Used to compute absolute line numbers: abs_line = total_scrolled_lines + screen_row.
+    total_scrolled_lines: usize,
+    /// Whether command history tracking is enabled (config: time_travel.command_history).
+    command_history_enabled: bool,
+    /// Maximum number of command records to keep.
+    max_command_history: usize,
+    /// Temporary storage for command text extracted at OSC 133 C, used at D.
+    pending_command_text: Option<String>,
 }
 
 impl Terminal {
@@ -205,6 +300,13 @@ impl Terminal {
             kitty_accumulator: KittyAccumulator::new(),
             dcs_data: Vec::new(),
             dcs_mode: DcsMode::None,
+            command_history: Vec::new(),
+            next_command_id: 0,
+            pending_command: None,
+            total_scrolled_lines: 0,
+            command_history_enabled: true,
+            max_command_history: 10_000,
+            pending_command_text: None,
         }
     }
 
@@ -246,6 +348,270 @@ impl Terminal {
     /// Set the scroll offset, clamped to scrollback length.
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset.min(self.scrollback.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // Command history (Time Travel)
+    // -----------------------------------------------------------------------
+
+    /// Compute the current absolute line number for a given screen row.
+    fn abs_line(&self, screen_row: usize) -> usize {
+        self.total_scrolled_lines + screen_row
+    }
+
+    /// Get the full command history.
+    pub fn command_history(&self) -> &[CommandRecord] {
+        &self.command_history
+    }
+
+    /// Total scrolled lines (for converting between absolute and relative positions).
+    pub fn total_scrolled_lines(&self) -> usize {
+        self.total_scrolled_lines
+    }
+
+    /// Enable or disable command history tracking.
+    pub fn set_command_history_enabled(&mut self, enabled: bool) {
+        self.command_history_enabled = enabled;
+    }
+
+    /// Set maximum command history size.
+    pub fn set_max_command_history(&mut self, max: usize) {
+        self.max_command_history = max;
+    }
+
+    /// Convert an absolute line number to a scroll_offset suitable for `set_scroll_offset`.
+    /// Returns None if the line is currently visible on screen or doesn't exist in scrollback.
+    fn abs_line_to_scroll_offset(&self, abs_line: usize) -> usize {
+        if abs_line >= self.total_scrolled_lines {
+            // Line is on the current screen, scroll to live view
+            0
+        } else {
+            // Line is in the scrollback. scrollback index 0 = most recent.
+            // abs_line is 0-based from the beginning of all output.
+            // total_scrolled_lines - 1 is the most recent scrollback line (index 0).
+            // abs_line maps to scrollback index = total_scrolled_lines - 1 - abs_line.
+            let scrollback_idx = self.total_scrolled_lines - 1 - abs_line;
+            // scroll_offset is how many lines back from live view we're looking.
+            // scroll_offset 1 = scrollback index 0 is the top visible line.
+            scrollback_idx + 1
+        }
+    }
+
+    /// Jump to the previous command's output from the current scroll position.
+    /// Returns the command record if a previous command was found.
+    pub fn jump_to_prev_command(&mut self) -> Option<&CommandRecord> {
+        if self.command_history.is_empty() {
+            return None;
+        }
+
+        // Determine the current "view line" (absolute line at top of viewport)
+        let current_abs = if self.scroll_offset == 0 {
+            // At live view — we're at the very bottom
+            self.total_scrolled_lines + self.rows
+        } else {
+            // In scrollback: the top visible absolute line
+            let scrollback_idx = self.scroll_offset;
+            self.total_scrolled_lines.saturating_sub(scrollback_idx)
+        };
+
+        // Find the command whose prompt_line is just before current view
+        let idx = self.command_history
+            .iter()
+            .rposition(|cmd| cmd.prompt_line < current_abs)?;
+
+        let target_line = self.command_history[idx].prompt_line;
+        self.scroll_offset = self.abs_line_to_scroll_offset(target_line);
+        Some(&self.command_history[idx])
+    }
+
+    /// Jump to the next command's output from the current scroll position.
+    /// Returns the command record if a next command was found.
+    pub fn jump_to_next_command(&mut self) -> Option<&CommandRecord> {
+        if self.command_history.is_empty() || self.scroll_offset == 0 {
+            return None;
+        }
+
+        let current_abs = {
+            let scrollback_idx = self.scroll_offset;
+            self.total_scrolled_lines.saturating_sub(scrollback_idx)
+        };
+
+        // Find the command whose prompt_line is after current view
+        let idx = self.command_history
+            .iter()
+            .position(|cmd| cmd.prompt_line > current_abs)?;
+
+        let target_line = self.command_history[idx].prompt_line;
+        self.scroll_offset = self.abs_line_to_scroll_offset(target_line);
+        Some(&self.command_history[idx])
+    }
+
+    /// Jump to a specific command by ID.
+    pub fn jump_to_command(&mut self, id: u64) -> Option<&CommandRecord> {
+        let idx = self.command_history
+            .iter()
+            .position(|cmd| cmd.id == id)?;
+
+        let target_line = self.command_history[idx].prompt_line;
+        self.scroll_offset = self.abs_line_to_scroll_offset(target_line);
+        Some(&self.command_history[idx])
+    }
+
+    /// Return the command that is currently visible at the top of the viewport.
+    pub fn current_visible_command(&self) -> Option<(usize, &CommandRecord)> {
+        if self.command_history.is_empty() {
+            return None;
+        }
+
+        let view_abs = if self.scroll_offset == 0 {
+            self.total_scrolled_lines + self.rows
+        } else {
+            self.total_scrolled_lines.saturating_sub(self.scroll_offset)
+        };
+
+        // Find the last command whose prompt_line <= view_abs
+        let idx = self.command_history
+            .iter()
+            .rposition(|cmd| cmd.prompt_line <= view_abs)?;
+        Some((idx, &self.command_history[idx]))
+    }
+
+    /// Extract command text from the grid between two positions.
+    /// Used to capture the text the user typed between OSC 133 B and C.
+    fn extract_command_text(&self, start_col: usize, start_row: usize) -> String {
+        let end_col = self.cursor_col;
+        let end_row = self.cursor_row;
+        let grid = self.grid();
+        let mut text = String::new();
+
+        for row in start_row..=end_row.min(grid.rows().saturating_sub(1)) {
+            let col_start = if row == start_row { start_col } else { 0 };
+            let col_end = if row == end_row { end_col } else { grid.cols() };
+            for col in col_start..col_end.min(grid.cols()) {
+                let cell = grid.cell(col, row);
+                if cell.width > 0 {
+                    text.push(cell.c);
+                }
+            }
+            if row != end_row {
+                // Don't add newline for the last row
+                text.push('\n');
+            }
+        }
+        text.trim().to_string()
+    }
+
+    /// Store command text extracted at OSC 133 C time for use at D time.
+    fn store_pending_command_text(&mut self, text: String) {
+        self.pending_command_text = Some(text);
+    }
+
+    // -----------------------------------------------------------------------
+    // Session Persistence (Snapshots)
+    // -----------------------------------------------------------------------
+
+    /// Create a serializable snapshot of the current terminal state.
+    pub fn snapshot(&self) -> TerminalSnapshot {
+        let grid = self.grid();
+        let mut grid_cells = Vec::with_capacity(grid.rows());
+        for row in 0..grid.rows() {
+            let mut row_cells = Vec::with_capacity(grid.cols());
+            for col in 0..grid.cols() {
+                row_cells.push(*grid.cell(col, row));
+            }
+            grid_cells.push(row_cells);
+        }
+
+        TerminalSnapshot {
+            grid_cells,
+            cursor_col: self.cursor_col,
+            cursor_row: self.cursor_row,
+            cursor_shape: self.cursor_shape,
+            pen: self.pen,
+            cols: self.cols,
+            rows: self.rows,
+            command_history: self.command_history.clone(),
+            total_scrolled_lines: self.total_scrolled_lines,
+            title: self.osc.title.clone(),
+            cwd: self.osc.cwd.clone(),
+        }
+    }
+
+    /// Restore a terminal from a snapshot.
+    ///
+    /// Creates a new Terminal with the snapshot's state applied.
+    /// The scrollback buffer is fresh (warm tier files must be preserved
+    /// separately for full scrollback restoration).
+    pub fn restore_from_snapshot(snapshot: &TerminalSnapshot) -> Self {
+        let mut term = Self::new(snapshot.cols, snapshot.rows);
+
+        // Restore grid cells.
+        let grid = &mut term.main_grid;
+        for (row_idx, row_cells) in snapshot.grid_cells.iter().enumerate() {
+            if row_idx >= grid.rows() {
+                break;
+            }
+            for (col_idx, cell) in row_cells.iter().enumerate() {
+                if col_idx >= grid.cols() {
+                    break;
+                }
+                *grid.cell_mut(col_idx, row_idx) = *cell;
+            }
+        }
+
+        term.cursor_col = snapshot.cursor_col.min(snapshot.cols.saturating_sub(1));
+        term.cursor_row = snapshot.cursor_row.min(snapshot.rows.saturating_sub(1));
+        term.cursor_shape = snapshot.cursor_shape;
+        term.pen = snapshot.pen;
+        term.command_history = snapshot.command_history.clone();
+        term.total_scrolled_lines = snapshot.total_scrolled_lines;
+        term.next_command_id = snapshot
+            .command_history
+            .last()
+            .map_or(0, |c| c.id + 1);
+        term.osc.title = snapshot.title.clone();
+        term.osc.cwd = snapshot.cwd.clone();
+
+        term
+    }
+
+    /// Create a named snapshot of the current state.
+    pub fn create_named_snapshot(&self, name: &str) -> NamedSnapshot {
+        NamedSnapshot {
+            name: name.to_string(),
+            created_at: chrono::Utc::now(),
+            terminal_snapshot: self.snapshot(),
+        }
+    }
+
+    /// Finalize a pending command and add it to history.
+    fn finalize_pending_command(&mut self, current_abs_line: usize) {
+        if let Some(pending) = self.pending_command.take() {
+            if let Some(started_at) = pending.started_at {
+                if let Some(output_start) = pending.output_start_abs_line {
+                    let id = self.next_command_id;
+                    self.next_command_id += 1;
+
+                    let record = CommandRecord {
+                        id,
+                        command_text: String::new(), // Already extracted at C time
+                        cwd: pending.cwd,
+                        timestamp: started_at,
+                        duration_ms: None,
+                        exit_code: None,
+                        scrollback_line_start: output_start,
+                        scrollback_line_end: Some(current_abs_line),
+                        prompt_line: pending.prompt_abs_line,
+                    };
+                    self.command_history.push(record);
+
+                    // Enforce max history size
+                    if self.command_history.len() > self.max_command_history {
+                        self.command_history.remove(0);
+                    }
+                }
+            }
+        }
     }
 
     /// Get the current Kitty keyboard protocol flags (0 if none set).
@@ -354,6 +720,7 @@ impl Terminal {
             if self.scroll_top == 0 && !self.using_alt {
                 let row = self.grid().row_cells(0);
                 self.scrollback.push(row);
+                self.total_scrolled_lines += 1;
             }
             let top = self.scroll_top;
             let bottom = self.scroll_bottom;
@@ -1097,17 +1464,105 @@ impl vte::Perform for Terminal {
                                 self.osc.prompt_start =
                                     Some((self.cursor_col, self.cursor_row));
                                 log::debug!("OSC 133: prompt start");
+
+                                if self.command_history_enabled {
+                                    let current_abs = self.abs_line(self.cursor_row);
+                                    // Finalize previous pending command if any
+                                    self.finalize_pending_command(current_abs);
+                                    // Start tracking a new command
+                                    self.pending_command = Some(PendingCommand {
+                                        prompt_abs_line: current_abs,
+                                        command_start_abs_line: 0,
+                                        command_start_col: 0,
+                                        cwd: self.osc.cwd.clone(),
+                                        started_at: None,
+                                        output_start_abs_line: None,
+                                    });
+                                }
                             }
                             Some('B') => {
                                 self.osc.command_start =
                                     Some((self.cursor_col, self.cursor_row));
                                 log::debug!("OSC 133: command start");
+
+                                if self.command_history_enabled {
+                                    let abs = self.abs_line(self.cursor_row);
+                                    let col = self.cursor_col;
+                                    if let Some(ref mut pending) = self.pending_command {
+                                        pending.command_start_abs_line = abs;
+                                        pending.command_start_col = col;
+                                    }
+                                }
                             }
                             Some('C') => {
                                 log::debug!("OSC 133: command executed");
+
+                                if self.command_history_enabled {
+                                    // Extract command text from grid (between B and C)
+                                    let cmd_text = if let Some(ref pending) = self.pending_command {
+                                        let start_row = pending.command_start_abs_line
+                                            .saturating_sub(self.total_scrolled_lines);
+                                        let start_col = pending.command_start_col;
+                                        self.extract_command_text(start_col, start_row)
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    let abs = self.abs_line(self.cursor_row);
+                                    if let Some(ref mut pending) = self.pending_command {
+                                        pending.started_at = Some(chrono::Utc::now());
+                                        pending.output_start_abs_line = Some(abs);
+                                    }
+
+                                    self.store_pending_command_text(cmd_text);
+                                }
                             }
                             Some('D') => {
                                 log::debug!("OSC 133: command finished");
+
+                                if self.command_history_enabled {
+                                    // Parse exit code from parameters (e.g., "D;0" or "D;1")
+                                    let exit_code = s.get(2..).and_then(|rest| {
+                                        rest.trim_start_matches(';').parse::<i32>().ok()
+                                    });
+
+                                    let current_abs = self.abs_line(self.cursor_row);
+
+                                    if let Some(pending) = self.pending_command.take() {
+                                        if let (Some(started_at), Some(output_start)) =
+                                            (pending.started_at, pending.output_start_abs_line)
+                                        {
+                                            let duration_ms = chrono::Utc::now()
+                                                .signed_duration_since(started_at)
+                                                .num_milliseconds()
+                                                .max(0) as u64;
+
+                                            let id = self.next_command_id;
+                                            self.next_command_id += 1;
+
+                                            // Get stored command text
+                                            let cmd_text = self.pending_command_text.take()
+                                                .unwrap_or_default();
+
+                                            let record = CommandRecord {
+                                                id,
+                                                command_text: cmd_text,
+                                                cwd: pending.cwd,
+                                                timestamp: started_at,
+                                                duration_ms: Some(duration_ms),
+                                                exit_code,
+                                                scrollback_line_start: output_start,
+                                                scrollback_line_end: Some(current_abs),
+                                                prompt_line: pending.prompt_abs_line,
+                                            };
+                                            self.command_history.push(record);
+
+                                            if self.command_history.len() > self.max_command_history {
+                                                self.command_history.remove(0);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         }

@@ -36,6 +36,8 @@ pub struct TermojinalConfig {
     pub quick_terminal: QuickTerminalConfig,
     #[serde(default)]
     pub startup: StartupConfig,
+    #[serde(default)]
+    pub time_travel: TimeTravelConfig,
 }
 
 impl Default for TermojinalConfig {
@@ -55,6 +57,7 @@ impl Default for TermojinalConfig {
             notifications: NotificationConfig::default(),
             quick_terminal: QuickTerminalConfig::default(),
             startup: StartupConfig::default(),
+            time_travel: TimeTravelConfig::default(),
         }
     }
 }
@@ -117,6 +120,68 @@ impl Default for NotificationConfig {
         Self {
             enabled: default_notifications_enabled(),
             sound: default_notification_sound(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [time_travel]
+// ---------------------------------------------------------------------------
+
+/// Time Travel feature configuration (`[time_travel]`).
+///
+/// Controls command history tracking, navigation, timeline UI,
+/// session persistence, and named snapshots.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimeTravelConfig {
+    /// Enable command history recording (OSC 133 based).
+    #[serde(default = "default_true")]
+    pub command_history: bool,
+    /// Maximum number of command records to keep per session.
+    #[serde(default = "default_max_command_history")]
+    pub max_command_history: usize,
+    /// Enable Cmd+Up/Down command navigation.
+    #[serde(default = "default_true")]
+    pub command_navigation: bool,
+    /// Show command boundary markers in the left gutter.
+    #[serde(default = "default_true")]
+    pub show_command_marker: bool,
+    /// Show command position (e.g. "Command 15/42") in the status bar.
+    #[serde(default = "default_true")]
+    pub show_command_position: bool,
+    /// Enable the Command Timeline UI (Cmd+Shift+T).
+    #[serde(default = "default_true")]
+    pub timeline_ui: bool,
+    /// Save full session state on exit.
+    #[serde(default = "default_true")]
+    pub session_persistence: bool,
+    /// Restore previous session on startup.
+    #[serde(default = "default_true")]
+    pub restore_on_startup: bool,
+    /// Enable named snapshots.
+    #[serde(default = "default_true")]
+    pub snapshots: bool,
+    /// Maximum number of named snapshots per session.
+    #[serde(default = "default_max_snapshots")]
+    pub max_snapshots_per_session: usize,
+}
+
+fn default_max_command_history() -> usize { 10_000 }
+fn default_max_snapshots() -> usize { 50 }
+
+impl Default for TimeTravelConfig {
+    fn default() -> Self {
+        Self {
+            command_history: true,
+            max_command_history: default_max_command_history(),
+            command_navigation: true,
+            show_command_marker: true,
+            show_command_position: true,
+            timeline_ui: true,
+            session_persistence: true,
+            restore_on_startup: true,
+            snapshots: true,
+            max_snapshots_per_session: default_max_snapshots(),
         }
     }
 }
