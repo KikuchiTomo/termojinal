@@ -1237,6 +1237,14 @@ fn toggle_tree_entry(tree: &mut DirectoryTreeState, index: usize) {
         }
         tree.entries.drain(remove_start..remove_end);
         tree.entries[index].expanded = false;
+        // Clamp selected index to avoid out-of-bounds after removing children.
+        if tree.selected >= tree.entries.len() {
+            tree.selected = tree.entries.len().saturating_sub(1);
+        }
+        // Also adjust scroll_offset if it's now past the end.
+        if tree.scroll_offset >= tree.entries.len() {
+            tree.scroll_offset = tree.entries.len().saturating_sub(1);
+        }
     } else {
         // Expand: load children and insert them after this entry.
         let children = read_directory_entries(&tree.entries[index].path, tree.entries[index].depth + 1);
@@ -4874,21 +4882,20 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             if !state.agent_infos[i].summary.is_empty() {
                 entry_h += info_line_gap + cell_h; // summary line
             }
-            if state.agent_infos[i].subagent_count > 0 {
-                entry_h += info_line_gap + cell_h; // subagent line
-            }
+            // Note: subagent count is merged into the agent status line (no extra height).
         }
 
         // Directory tree area (only for active workspace).
+        let max_tree_lines = state.config.directory_tree.max_visible_lines.max(1);
         let tree_visible_click = is_active
             && i < state.dir_trees.len()
-            && state.dir_trees[i].visible;
+            && state.dir_trees[i].visible
+            && !state.dir_trees[i].entries.is_empty();
         let tree_area_start = entry_y + entry_h; // before tree
         let mut tree_area_h: f32 = 0.0;
         if tree_visible_click {
-            let max_lines = state.config.directory_tree.max_visible_lines;
             let entry_count = state.dir_trees[i].entries.len();
-            let total = 1 + entry_count.min(max_lines) + 1; // header + entries + hint
+            let total = 1 + entry_count.min(max_tree_lines) + 1; // header + entries + hint
             tree_area_h = info_line_gap + (total as f32) * cell_h;
             entry_h += tree_area_h;
         }
@@ -5316,9 +5323,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // Directory tree height (only for active workspace when visible).
         let tree_visible = is_active
             && i < state.dir_trees.len()
-            && state.dir_trees[i].visible;
+            && state.dir_trees[i].visible
+            && !state.dir_trees[i].entries.is_empty();
         let tree_line_count = if tree_visible {
-            let max_lines = state.config.directory_tree.max_visible_lines;
+            let max_lines = state.config.directory_tree.max_visible_lines.max(1);
             let entry_count = state.dir_trees[i].entries.len();
             // +1 for the header/toggle line, +1 for bottom hint line
             let total = 1 + entry_count.min(max_lines) + 1;
