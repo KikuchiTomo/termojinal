@@ -20,4 +20,7 @@ pub use image::{
     ApcExtractor, ImagePlacement, ImageStore, KittyAccumulator, TerminalImage,
 };
 pub use scrollback::ScrollbackBuffer;
-pub use term::{ClipboardEvent, CursorShape, Modes, MouseFormat, MouseMode, OscState, Terminal};
+pub use term::{
+    ClipboardEvent, CommandRecord, CursorShape, Modes, MouseFormat, MouseMode, NamedSnapshot,
+    OscState, Terminal, TerminalSnapshot,
+};

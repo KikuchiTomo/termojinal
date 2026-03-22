@@ -80,6 +80,18 @@ pub enum Action {
     About,
     /// Run a named command or plugin.
     Command(String),
+    /// Jump to the previous command output (time travel).
+    PrevCommand,
+    /// Jump to the next command output (time travel).
+    NextCommand,
+    /// Jump to the very first command in history.
+    FirstCommand,
+    /// Jump to the latest (live) view from time travel.
+    LastCommand,
+    /// Open the command timeline UI.
+    CommandTimeline,
+    /// Create a named snapshot of the current terminal state.
+    CreateSnapshot,
 }
 
 /// 3-layer keybinding configuration.
@@ -156,6 +168,17 @@ impl Default for KeybindingConfig {
         // Workspace navigation
         normal.insert("cmd+shift+[".to_string(), Action::PrevWorkspace);
         normal.insert("cmd+shift+]".to_string(), Action::NextWorkspace);
+
+        // Time travel: command navigation
+        normal.insert("cmd+up".to_string(), Action::PrevCommand);
+        normal.insert("cmd+down".to_string(), Action::NextCommand);
+        normal.insert("cmd+shift+up".to_string(), Action::FirstCommand);
+        normal.insert("cmd+shift+down".to_string(), Action::LastCommand);
+
+        // Time travel: timeline UI
+        normal.insert("cmd+shift+t".to_string(), Action::CommandTimeline);
+
+        // Time travel: named snapshots (no default keybinding until fully implemented)
 
         // Global keybindings (active even when termojinal is not focused).
         let mut global = HashMap::new();
@@ -465,6 +488,12 @@ mod tests {
             Action::ToggleQuickTerminal,
             Action::None,
             Action::Command("test_cmd".to_string()),
+            Action::PrevCommand,
+            Action::NextCommand,
+            Action::FirstCommand,
+            Action::LastCommand,
+            Action::CommandTimeline,
+            Action::CreateSnapshot,
         ];
 
         for action in &actions {

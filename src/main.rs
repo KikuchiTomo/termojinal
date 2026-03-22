@@ -1346,6 +1346,17 @@ struct AppState {
     about_visible: bool,
     /// Scroll offset for the about overlay content.
     about_scroll: usize,
+    // -- Time Travel state --
+    /// Whether the command timeline overlay is visible.
+    timeline_visible: bool,
+    /// Filter input for the timeline overlay.
+    timeline_input: String,
+    /// Currently selected item in the timeline.
+    timeline_selected: usize,
+    /// Scroll offset for the timeline list.
+    timeline_scroll_offset: usize,
+    /// S4: Pane ID the timeline was opened for (prevents switching on pane focus change).
+    timeline_pane_id: Option<PaneId>,
 }
 
 /// Update session_to_workspace mapping after a workspace at `removed_idx` is removed.
@@ -1631,6 +1642,7 @@ fn spawn_pane(
     proxy: &EventLoopProxy<UserEvent>,
     buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
     cwd: Option<String>,
+    time_travel_config: Option<&crate::config::TimeTravelConfig>,
 ) -> Result<Pane, termojinal_pty::PtyError> {
     let config = PtyConfig {
         size: PtySize { cols, rows },
@@ -1640,7 +1652,11 @@ fn spawn_pane(
     let pty = Pty::spawn(&config)?;
     log::info!("pane {id}: shell={}, pid={}", config.shell, pty.pid());
 
-    let terminal = Terminal::new(cols as usize, rows as usize);
+    let mut terminal = Terminal::new(cols as usize, rows as usize);
+    if let Some(tt) = time_travel_config {
+        terminal.set_command_history_enabled(tt.command_history);
+        terminal.set_max_command_history(tt.max_command_history);
+    }
     let vt_parser = vte::Parser::new();
 
     // Insert buffer for this pane.
@@ -2064,7 +2080,7 @@ impl ApplicationHandler<UserEvent> for App {
         let layout = LayoutTree::new(initial_id);
 
         let startup_cwd = resolve_startup_cwd(&cfg);
-        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers, startup_cwd) {
+        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers, startup_cwd, Some(&cfg.time_travel)) {
             Ok(p) => p,
             Err(e) => {
                 log::error!("failed to spawn initial pane: {e}");
@@ -2145,6 +2161,11 @@ impl ApplicationHandler<UserEvent> for App {
             quick_terminal: QuickTerminalState::new(),
             about_visible: false,
             about_scroll: 0,
+            timeline_visible: false,
+            timeline_input: String::new(),
+            timeline_selected: 0,
+            timeline_scroll_offset: 0,
+            timeline_pane_id: None,
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -2447,6 +2468,41 @@ impl ApplicationHandler<UserEvent> for App {
                             state.window.request_redraw();
                             return;
                         }
+                    }
+                }
+
+                // Command timeline intercepts keyboard input when visible.
+                if state.timeline_visible {
+                    match handle_timeline_key(state, &event) {
+                        TimelineKeyResult::Consumed => {
+                            state.window.request_redraw();
+                            return;
+                        }
+                        TimelineKeyResult::JumpToCommand(cmd_id) => {
+                            let focused_id = active_tab(state).layout.focused();
+                            if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                                pane.terminal.jump_to_command(cmd_id);
+                            }
+                            state.timeline_visible = false;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        TimelineKeyResult::RerunCommand(cmd_text) => {
+                            state.timeline_visible = false;
+                            let focused_id = active_tab(state).layout.focused();
+                            if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                                let cmd_with_newline = format!("{}\n", cmd_text);
+                                let _ = pane.pty.write(cmd_with_newline.as_bytes());
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        TimelineKeyResult::Dismiss => {
+                            state.timeline_visible = false;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        TimelineKeyResult::Pass => {}
                     }
                 }
 
@@ -3609,6 +3665,92 @@ fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> Se
     SearchKeyResult::Pass
 }
 
+// ---------------------------------------------------------------------------
+// Command Timeline keyboard handling
+// ---------------------------------------------------------------------------
+
+enum TimelineKeyResult {
+    Consumed,
+    JumpToCommand(u64),
+    RerunCommand(String),
+    Dismiss,
+    Pass,
+}
+
+fn handle_timeline_key(state: &mut AppState, event: &winit::event::KeyEvent) -> TimelineKeyResult {
+    use winit::keyboard::{Key, NamedKey};
+
+    // W2: Work with references instead of cloning the entire history.
+    let focused_id = active_tab(state).layout.focused();
+    let filter = state.timeline_input.to_lowercase();
+
+    // Build filtered index list from a borrow (no clone).
+    let filtered_len = active_tab(state)
+        .panes
+        .get(&focused_id)
+        .map(|p| {
+            p.terminal.command_history().iter().enumerate().rev()
+                .filter(|(_, cmd)| filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter))
+                .count()
+        })
+        .unwrap_or(0);
+
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => TimelineKeyResult::Dismiss,
+        Key::Named(NamedKey::ArrowUp) => {
+            if state.timeline_selected > 0 {
+                state.timeline_selected -= 1;
+            }
+            TimelineKeyResult::Consumed
+        }
+        Key::Named(NamedKey::ArrowDown) => {
+            if filtered_len > 0 && state.timeline_selected < filtered_len - 1 {
+                state.timeline_selected += 1;
+            }
+            TimelineKeyResult::Consumed
+        }
+        Key::Named(NamedKey::Enter) => {
+            // Only clone the single selected record for Enter action.
+            let result = active_tab(state).panes.get(&focused_id).and_then(|p| {
+                let history = p.terminal.command_history();
+                let filtered: Vec<usize> = history.iter().enumerate().rev()
+                    .filter(|(_, cmd)| filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter))
+                    .map(|(i, _)| i)
+                    .collect();
+                filtered.get(state.timeline_selected).map(|&cmd_idx| {
+                    let cmd = &history[cmd_idx];
+                    if state.modifiers.super_key() {
+                        TimelineKeyResult::RerunCommand(cmd.command_text.clone())
+                    } else {
+                        TimelineKeyResult::JumpToCommand(cmd.id)
+                    }
+                })
+            });
+            result.unwrap_or(TimelineKeyResult::Consumed)
+        }
+        Key::Named(NamedKey::Backspace) => {
+            state.timeline_input.pop();
+            state.timeline_selected = 0;
+            state.timeline_scroll_offset = 0;
+            TimelineKeyResult::Consumed
+        }
+        _ => {
+            if let Some(ref text) = event.text {
+                if !text.is_empty() && !text.contains('\r') && !text.contains('\x1b') {
+                    // S7: Cap timeline input length to prevent rendering issues.
+                    if state.timeline_input.len() < 256 {
+                        state.timeline_input.push_str(text);
+                    }
+                    state.timeline_selected = 0;
+                    state.timeline_scroll_offset = 0;
+                    return TimelineKeyResult::Consumed;
+                }
+            }
+            TimelineKeyResult::Pass
+        }
+    }
+}
+
 /// Run search on the focused pane's grid.
 fn search_in_focused_pane(state: &mut AppState) {
     let ws_idx = state.active_workspace;
@@ -3688,7 +3830,7 @@ fn dispatch_action(
             if let Some(rect) = new_rect {
                 let (cols, rows) =
                     state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
+                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -3718,7 +3860,7 @@ fn dispatch_action(
             if let Some(rect) = new_rect {
                 let (cols, rows) =
                     state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
+                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -3776,7 +3918,7 @@ fn dispatch_action(
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = (phys_h - state.config.tab_bar.height).max(1.0);
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
+            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -3818,7 +3960,7 @@ fn dispatch_action(
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = phys_h.max(1.0); // Single tab, no tab bar
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd) {
+            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -4069,6 +4211,72 @@ fn dispatch_action(
             state.about_visible = !state.about_visible;
             state.about_scroll = 0;
             state.window.request_redraw();
+            true
+        }
+        Action::PrevCommand => {
+            if state.config.time_travel.command_navigation {
+                let focused_id = active_tab(state).layout.focused();
+                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                    pane.terminal.jump_to_prev_command();
+                }
+                state.window.request_redraw();
+            }
+            true
+        }
+        Action::NextCommand => {
+            if state.config.time_travel.command_navigation {
+                let focused_id = active_tab(state).layout.focused();
+                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                    pane.terminal.jump_to_next_command();
+                }
+                state.window.request_redraw();
+            }
+            true
+        }
+        Action::FirstCommand => {
+            if state.config.time_travel.command_navigation {
+                let focused_id = active_tab(state).layout.focused();
+                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                    if let Some(first) = pane.terminal.command_history().front() {
+                        let id = first.id;
+                        pane.terminal.jump_to_command(id);
+                    }
+                }
+                state.window.request_redraw();
+            }
+            true
+        }
+        Action::LastCommand => {
+            if state.config.time_travel.command_navigation {
+                let focused_id = active_tab(state).layout.focused();
+                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                    pane.terminal.set_scroll_offset(0);
+                }
+                state.window.request_redraw();
+            }
+            true
+        }
+        Action::CommandTimeline => {
+            if state.config.time_travel.timeline_ui {
+                state.timeline_visible = !state.timeline_visible;
+                if state.timeline_visible {
+                    state.timeline_input.clear();
+                    state.timeline_selected = 0;
+                    state.timeline_scroll_offset = 0;
+                    // S4: Remember which pane the timeline was opened for
+                    state.timeline_pane_id = Some(active_tab(state).layout.focused());
+                } else {
+                    state.timeline_pane_id = None;
+                }
+                state.window.request_redraw();
+            }
+            true
+        }
+        Action::CreateSnapshot => {
+            if state.config.time_travel.snapshots {
+                // Snapshot creation will be handled in the snapshot module
+                log::debug!("snapshot creation requested (time_travel.snapshots)");
+            }
             true
         }
         Action::UnreadJump
@@ -5746,6 +5954,11 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
         render_command_palette(state, &view, phys_w, phys_h);
     }
 
+    // Render command timeline overlay if visible.
+    if state.timeline_visible {
+        render_command_timeline(state, &view, phys_w, phys_h);
+    }
+
     // Render About overlay if visible.
     if state.about_visible {
         render_about_overlay(state, &view, phys_w, phys_h);
@@ -6293,6 +6506,187 @@ fn load_about_text() -> String {
     }
 
     text
+}
+
+/// Render the command timeline overlay (Cmd+Shift+T).
+///
+/// Shows a searchable list of all commands executed in the focused pane,
+/// with timestamps, exit codes, and durations.
+fn render_command_timeline(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    phys_w: f32,
+    phys_h: f32,
+) {
+    let cell_size = state.renderer.cell_size();
+    let cell_w = cell_size.width;
+    let cell_h = cell_size.height;
+
+    // W3: Extract only the lightweight data needed for rendering (no full clone).
+    struct TimelineEntry {
+        command_text: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        exit_code: Option<i32>,
+        duration_ms: Option<u64>,
+        id: u64,
+    }
+    let focused_id = active_tab(state).layout.focused();
+    let filter = state.timeline_input.to_lowercase();
+    let entries: Vec<TimelineEntry> = active_tab(state)
+        .panes
+        .get(&focused_id)
+        .map(|p| {
+            p.terminal.command_history().iter().enumerate().rev()
+                .filter(|(_, cmd)| filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter))
+                .map(|(_, cmd)| TimelineEntry {
+                    command_text: cmd.command_text.clone(),
+                    timestamp: cmd.timestamp,
+                    exit_code: cmd.exit_code,
+                    duration_ms: cmd.duration_ms,
+                    id: cmd.id,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // 1. Semi-transparent overlay.
+    let overlay_color = [0.0, 0.0, 0.0, 0.5];
+    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+
+    // 2. Centered floating box.
+    let box_w = (phys_w * 0.6).min(phys_w - 40.0).max(300.0);
+    let max_visible = 15usize;
+    let visible_items = entries.len().min(max_visible);
+    let rows_needed = 1 + visible_items.max(1);
+    let box_h = ((rows_needed as f32) * cell_h + cell_h * 1.5).min(phys_h - 40.0);
+    let box_x = (phys_w - box_w) / 2.0;
+    let box_y = (phys_h * 0.15).min(phys_h - box_h - 20.0).max(20.0);
+
+    let box_bg = [0.10, 0.10, 0.14, 0.95];
+    let border_color = [0.3, 0.3, 0.4, 1.0];
+
+    let timeline_rect = RoundedRect {
+        rect: [box_x, box_y, box_w, box_h],
+        color: box_bg,
+        border_color,
+        params: [8.0, 1.0, 12.0, 0.3],
+    };
+    state.renderer.submit_rounded_rects(view, &[timeline_rect]);
+
+    // 3. Input field.
+    let input_y = box_y + cell_h * 0.25;
+    let input_x = box_x + cell_w;
+    let prompt = format!("> {}", state.timeline_input);
+    let input_fg = [0.95, 0.95, 0.95, 1.0];
+    state.renderer.render_text(view, &prompt, input_x, input_y, input_fg, box_bg);
+
+    // Separator.
+    let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
+    let sep_color = [0.25, 0.25, 0.3, 1.0];
+    state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, sep_color);
+
+    // 4. Command list.
+    let list_start_y = sep_y as f32 + cell_h * 0.25;
+    let cmd_fg = [0.8, 0.8, 0.82, 1.0];
+    let selected_bg = [0.22, 0.22, 0.32, 1.0];
+    let time_fg = [0.5, 0.5, 0.55, 1.0];
+    let success_fg = [0.65, 0.89, 0.63, 1.0]; // green
+    let fail_fg = [0.95, 0.55, 0.66, 1.0]; // red
+
+    // Clamp selected.
+    if !entries.is_empty() {
+        state.timeline_selected = state.timeline_selected.min(entries.len() - 1);
+    }
+    // Ensure visible.
+    if state.timeline_selected < state.timeline_scroll_offset {
+        state.timeline_scroll_offset = state.timeline_selected;
+    } else if state.timeline_selected >= state.timeline_scroll_offset + max_visible {
+        state.timeline_scroll_offset = state.timeline_selected + 1 - max_visible;
+    }
+
+    let max_chars = ((box_w - 2.0 * cell_w) / cell_w) as usize;
+
+    if entries.is_empty() {
+        let msg = if filter.is_empty() {
+            "No commands recorded (OSC 133 required)"
+        } else {
+            "No matching commands"
+        };
+        let msg_y = list_start_y + cell_h * 0.5;
+        state.renderer.render_text(view, msg, input_x, msg_y, time_fg, box_bg);
+    } else {
+        for (vi, entry) in entries.iter()
+            .enumerate()
+            .skip(state.timeline_scroll_offset)
+            .take(max_visible)
+        {
+            let row = vi - state.timeline_scroll_offset;
+            let item_y = list_start_y + (row as f32) * cell_h;
+            if item_y + cell_h > box_y + box_h {
+                break;
+            }
+
+            let is_selected = vi == state.timeline_selected;
+            let bg = if is_selected { selected_bg } else { box_bg };
+
+            if is_selected {
+                let sel_rect = RoundedRect {
+                    rect: [box_x + 1.0, item_y, box_w - 2.0, cell_h],
+                    color: selected_bg,
+                    border_color: [0.0; 4],
+                    params: [4.0, 0.0, 0.0, 0.0],
+                };
+                state.renderer.submit_rounded_rects(view, &[sel_rect]);
+            }
+
+            let cmd = entry;
+
+            // Format: "HH:MM:SS  command_text  [exit_code] [duration]"
+            let time_str = cmd.timestamp.format("%H:%M:%S").to_string();
+            let exit_indicator = match cmd.exit_code {
+                Some(0) => "OK".to_string(),
+                Some(code) => format!("E{code}"),
+                None => "..".to_string(),
+            };
+            let duration_str = cmd.duration_ms
+                .map(|ms| {
+                    if ms < 1000 { format!("{ms}ms") }
+                    else if ms < 60_000 { format!("{:.1}s", ms as f64 / 1000.0) }
+                    else { format!("{:.0}m", ms as f64 / 60_000.0) }
+                })
+                .unwrap_or_default();
+
+            // Time
+            let time_x = box_x + cell_w * 0.5;
+            state.renderer.render_text(view, &time_str, time_x, item_y, time_fg, bg);
+
+            // Command text (truncated)
+            let cmd_x = time_x + cell_w * 10.0;
+            let max_cmd_chars = max_chars.saturating_sub(18);
+            let cmd_display: String = cmd.command_text.chars().take(max_cmd_chars).collect();
+            state.renderer.render_text(view, &cmd_display, cmd_x, item_y, cmd_fg, bg);
+
+            // Exit code indicator (right-aligned)
+            let exit_fg = match cmd.exit_code {
+                Some(0) => success_fg,
+                Some(_) => fail_fg,
+                None => time_fg,
+            };
+            let exit_x = box_x + box_w - cell_w * 8.0;
+            state.renderer.render_text(view, &exit_indicator, exit_x, item_y, exit_fg, bg);
+
+            // Duration (right-aligned)
+            if !duration_str.is_empty() {
+                let dur_x = box_x + box_w - cell_w * 4.0;
+                state.renderer.render_text(view, &duration_str, dur_x, item_y, time_fg, bg);
+            }
+        }
+    }
+
+    // 5. Footer with keyboard shortcuts.
+    let footer_y = box_y + box_h - cell_h * 0.75;
+    let footer_text = "Up/Down navigate  Enter jump  Esc close  Cmd+R rerun";
+    state.renderer.render_text(view, footer_text, input_x, footer_y, time_fg, box_bg);
 }
 
 /// Render the "About Termojinal" overlay on top of the terminal.
@@ -7340,6 +7734,42 @@ fn handle_app_ipc_request(
 
         AppIpcRequest::ShowPalette => {
             state.command_palette.toggle();
+            state.window.request_redraw();
+            AppIpcResponse::ok_empty()
+        }
+
+        // --- Time Travel IPC ---
+        AppIpcRequest::GetCommandHistory { pane_id, limit } => {
+            let focused_id = pane_id.unwrap_or_else(|| active_tab(state).layout.focused());
+            if let Some(pane) = active_tab(state).panes.get(&focused_id) {
+                let history = pane.terminal.command_history();
+                let limit = limit.unwrap_or(history.len());
+                let records: Vec<_> = history.iter().rev().take(limit).collect();
+                AppIpcResponse::ok(serde_json::to_value(&records).unwrap_or_default())
+            } else {
+                AppIpcResponse::err("pane not found")
+            }
+        }
+        AppIpcRequest::JumpToCommand { pane_id, command_id } => {
+            let focused_id = pane_id.unwrap_or_else(|| active_tab(state).layout.focused());
+            if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                if pane.terminal.jump_to_command(*command_id).is_some() {
+                    state.window.request_redraw();
+                    AppIpcResponse::ok_empty()
+                } else {
+                    AppIpcResponse::err("command not found")
+                }
+            } else {
+                AppIpcResponse::err("pane not found")
+            }
+        }
+        AppIpcRequest::ToggleTimeline => {
+            state.timeline_visible = !state.timeline_visible;
+            if state.timeline_visible {
+                state.timeline_input.clear();
+                state.timeline_selected = 0;
+                state.timeline_scroll_offset = 0;
+            }
             state.window.request_redraw();
             AppIpcResponse::ok_empty()
         }

@@ -1,5 +1,6 @@
 use crate::color::Color;
 use bitflags::bitflags;
+use serde::{Deserialize, Serialize};
 
 bitflags! {
     /// Cell rendering attributes.
@@ -20,8 +21,21 @@ bitflags! {
     }
 }
 
+impl Serialize for Attrs {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.bits().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Attrs {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bits = u16::deserialize(deserializer)?;
+        Ok(Self::from_bits_truncate(bits))
+    }
+}
+
 /// A single terminal cell.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     /// The character displayed in this cell (NUL for empty).
     pub c: char,
@@ -60,7 +74,7 @@ impl Cell {
 }
 
 /// The "pen" — current style attributes applied to new characters.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Pen {
     pub fg: Color,
     pub bg: Color,

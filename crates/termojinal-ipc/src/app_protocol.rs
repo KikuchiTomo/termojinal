@@ -115,6 +115,21 @@ pub enum AppIpcRequest {
         notification_type: Option<String>,
     },
 
+    // --- Time Travel ---
+    /// Get the command history for a pane.
+    GetCommandHistory {
+        pane_id: Option<u64>,
+        /// Maximum number of records to return (newest first).
+        limit: Option<usize>,
+    },
+    /// Jump to a specific command by ID.
+    JumpToCommand {
+        pane_id: Option<u64>,
+        command_id: u64,
+    },
+    /// Open/close the command timeline UI.
+    ToggleTimeline,
+
     // --- Legacy ---
     /// Toggle the quick terminal overlay.
     ToggleQuickTerminal,

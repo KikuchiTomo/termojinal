@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// Terminal color representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Color {
     /// Default foreground or background color (from theme).
     Default,
@@ -12,7 +14,7 @@ pub enum Color {
 }
 
 /// The 16 standard ANSI named colors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum NamedColor {
     Black = 0,
