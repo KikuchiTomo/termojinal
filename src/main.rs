@@ -544,6 +544,8 @@ enum AgentState {
 struct AgentSessionInfo {
     active: bool,
     session_id: Option<String>,
+    /// The pane where this agent session is running.
+    pane_id: Option<PaneId>,
     subagent_count: usize,
     summary: String,
     state: AgentState,
@@ -555,6 +557,7 @@ impl Default for AgentSessionInfo {
         Self {
             active: false,
             session_id: None,
+            pane_id: None,
             subagent_count: 0,
             summary: String::new(),
             state: AgentState::Inactive,
@@ -4979,6 +4982,7 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn truncate_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
@@ -5076,19 +5080,9 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                 entry_h += info_line_gap + cell_h;
             }
         }
-        // Allow Flow lines.
+        // Allow Flow indicator line (same compact badge for both active and inactive).
         if has_allow_pending {
-            if is_active {
-                let pending = state.allow_flow.pending_for_workspace(i);
-                let shown = pending.len().min(3);
-                entry_h += info_line_gap;
-                entry_h += (shown as f32) * (cell_h * 3.0 + info_line_gap);
-                if pending.len() > 3 {
-                    entry_h += cell_h;
-                }
-            } else {
-                entry_h += info_line_gap + cell_h;
-            }
+            entry_h += info_line_gap + cell_h;
         }
         // Agent status lines.
         let has_agent = state.config.sidebar.agent_status_enabled
@@ -5240,8 +5234,24 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                         }
                         resize_all_panes(state);
                         update_window_title(state);
-                        state.window.request_redraw();
                     }
+                    // Focus the specific pane where the agent is running.
+                    if let Some(target_pane) = state.agent_infos.get(wi).and_then(|a| a.pane_id) {
+                        let ws = &mut state.workspaces[wi];
+                        // Search all tabs for the pane and switch to the correct tab.
+                        let mut found_tab = None;
+                        for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+                            if tab.panes.contains_key(&target_pane) {
+                                found_tab = Some(tab_idx);
+                                break;
+                            }
+                        }
+                        if let Some(tab_idx) = found_tab {
+                            ws.active_tab = tab_idx;
+                            ws.tabs[tab_idx].layout = ws.tabs[tab_idx].layout.focus(target_pane);
+                        }
+                    }
+                    state.window.request_redraw();
                     return None;
                 }
                 sy = session_end;
@@ -5413,7 +5423,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     let yellow_fg = color_or(&sc.git_dirty_color, [0.8, 0.7, 0.3, 1.0]);
     // Allow Flow accent colors.
     let allow_accent_color = color_or(&sc.allow_accent_color, [0.31, 0.76, 1.0, 1.0]);
-    let allow_hint_fg = color_or(&sc.allow_hint_fg, [0.49, 0.78, 1.0, 1.0]);
+    let _allow_hint_fg = color_or(&sc.allow_hint_fg, [0.49, 0.78, 1.0, 1.0]);
     // Agent status colors.
     let agent_status_enabled = sc.agent_status_enabled;
     let agent_indicator_style = sc.agent_indicator_style.clone();
@@ -5514,22 +5524,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         if has_ports {
             content_h += info_line_gap + cell_h; // ports line
         }
-        // Allow Flow lines: expanded for active workspace, collapsed for inactive.
+        // Allow Flow indicator line (compact badge for both active and inactive).
         if has_allow_pending {
-            if is_active {
-                // Active workspace: up to 3 expanded requests, each has
-                // tool+action line + detail line + key hints line = 3 lines.
-                let pending = state.allow_flow.pending_for_workspace(i);
-                let shown = pending.len().min(3);
-                content_h += info_line_gap; // gap before first request
-                content_h += (shown as f32) * (cell_h * 3.0 + info_line_gap);
-                if pending.len() > 3 {
-                    content_h += cell_h; // "+N more..." line
-                }
-            } else {
-                // Inactive workspace: single collapsed badge line.
-                content_h += info_line_gap + cell_h;
-            }
+            content_h += info_line_gap + cell_h;
         }
         // Agent status line (below Allow Flow / ports / git).
         let has_agent = agent_status_enabled
@@ -5771,66 +5768,18 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             }
         }
 
-        // --- Inline Allow Flow requests (below ports) ---
+        // --- Inline Allow Flow indicator (below ports) ---
+        // Show a compact badge indicating pending approval count. The full
+        // approval prompt is already shown at the bottom of the screen.
         if has_allow_pending {
-            if is_active {
-                // Active workspace: expanded view with full request details.
-                let pending = state.allow_flow.pending_for_workspace(i);
-                for (ri, req) in pending.iter().take(3).enumerate() {
-                    line_y += info_line_gap;
-                    // Tool + action line (lightning bolt icon).
-                    let tool_line = format!(
-                        "\u{26A1} {}: {}",
-                        req.tool_name,
-                        truncate_str(&req.action, max_chars.saturating_sub(4))
-                    );
-                    state.renderer.render_text(
-                        view, &tool_line, text_left, line_y, allow_hint_fg, bg,
-                    );
-                    line_y += cell_h;
-
-                    // Detail line (quoted, slightly dimmed).
-                    let detail_line = format!(
-                        "  \"{}\"",
-                        truncate_str(&req.detail, max_chars.saturating_sub(4))
-                    );
-                    state.renderer.render_text(
-                        view, &detail_line, text_left, line_y, dim_fg, bg,
-                    );
-                    line_y += cell_h;
-
-                    // Key hints line (only on the first request to avoid clutter,
-                    // unless there's only one request).
-                    if ri == 0 || pending.len() == 1 {
-                        let hint = if pending.len() > 1 {
-                            "  y/n one  Y/N all  A always"
-                        } else {
-                            "  Y Allow  N Deny  A Always"
-                        };
-                        let hint_fg_col = [0.45, 0.55, 0.65, 1.0];
-                        state.renderer.render_text(
-                            view, hint, text_left, line_y, hint_fg_col, bg,
-                        );
-                    }
-                    line_y += cell_h;
-                }
-                if pending.len() > 3 {
-                    let more = format!("  +{} more...", pending.len() - 3);
-                    state.renderer.render_text(
-                        view, &more, text_left, line_y, dim_fg, bg,
-                    );
-                    // line_y not used further; entry_y advances by content_h.
-                }
-            } else {
-                // Inactive workspace: collapsed badge.
-                line_y += info_line_gap;
-                let count = state.allow_flow.pending_count_for_workspace(i);
-                let badge = format!("\u{26A1} {} pending", count);
-                state.renderer.render_text(
-                    view, &badge, text_left, line_y, allow_accent_color, bg,
-                );
-                // line_y not used further; entry_y advances by content_h.
-            }
+            line_y += info_line_gap;
+            let count = state.allow_flow.pending_count_for_workspace(i);
+            let info_indent = text_left + cell_w * 0.5;
+            let badge = format!("\u{26A1} {} pending", count);
+            state.renderer.render_text(
+                view, &badge, info_indent, line_y, allow_accent_color, bg,
+            );
+            line_y += cell_h;
         }
 
         // --- Agent status lines (below Allow Flow / ports / git) ---
@@ -6094,8 +6043,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     // Subtle card background slightly lighter than sidebar.
                     [sidebar_bg[0] + 0.02, sidebar_bg[1] + 0.02, sidebar_bg[2] + 0.025, 1.0]
                 };
-                let card_x: u32 = (side_pad * 0.5) as u32;
-                let card_w = (sidebar_w - side_pad) as u32;
+                let accent_w: u32 = 3;
+                let card_x: u32 = accent_w;
+                let card_w = (sidebar_w as u32).saturating_sub(accent_w);
                 state.renderer.submit_separator(
                     view,
                     card_x,
@@ -6106,7 +6056,6 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 );
 
                 // --- Left accent bar (workspace color for active, dim for inactive) ---
-                let accent_w: u32 = 3;
                 let accent_color = if is_active_ws {
                     WORKSPACE_COLORS[*wi % WORKSPACE_COLORS.len()]
                 } else {
@@ -6115,7 +6064,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 };
                 state.renderer.submit_separator(
                     view,
-                    card_x,
+                    0,
                     sy as u32,
                     accent_w,
                     per_session_h as u32,
@@ -8455,6 +8404,56 @@ fn handle_app_ipc_request(
                 state.timeline_selected = 0;
                 state.timeline_scroll_offset = 0;
             }
+            state.window.request_redraw();
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::UpdateAgentStatus {
+            session_id,
+            pane_id: ipc_pane_id,
+            subagent_count,
+            state: agent_state_str,
+            summary,
+        } => {
+            // Resolve workspace index from session mapping.
+            let ws_idx = session_id
+                .as_ref()
+                .and_then(|sid| state.session_to_workspace.get(sid).copied())
+                .unwrap_or(state.active_workspace);
+
+            while state.agent_infos.len() <= ws_idx {
+                state.agent_infos.push(AgentSessionInfo::default());
+            }
+            let agent = &mut state.agent_infos[ws_idx];
+
+            if let Some(pid) = ipc_pane_id {
+                agent.pane_id = Some(*pid);
+            }
+            if let Some(count) = subagent_count {
+                agent.subagent_count = *count;
+            }
+            if let Some(s) = agent_state_str {
+                agent.state = match s.as_str() {
+                    "running" => AgentState::Running,
+                    "waiting" | "waiting_for_permission" => AgentState::WaitingForPermission,
+                    "idle" => AgentState::Idle,
+                    "inactive" => AgentState::Inactive,
+                    _ => agent.state.clone(),
+                };
+                agent.active = !matches!(agent.state, AgentState::Inactive);
+            }
+            if let Some(s) = summary {
+                agent.summary = s.clone();
+            }
+            agent.last_updated = std::time::Instant::now();
+
+            // Store session mapping if not already present.
+            if let Some(sid) = session_id.as_ref() {
+                if !state.session_to_workspace.contains_key(sid) {
+                    state.session_to_workspace.insert(sid.clone(), ws_idx);
+                }
+            }
+
             state.window.request_redraw();
             AppIpcResponse::ok_empty()
         }

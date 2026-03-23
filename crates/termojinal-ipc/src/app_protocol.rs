@@ -130,6 +130,27 @@ pub enum AppIpcRequest {
     /// Open/close the command timeline UI.
     ToggleTimeline,
 
+    // --- Agent Status ---
+    /// Update agent session status (subagent count, state, summary).
+    /// Sent by external tools to keep the sidebar session list up-to-date.
+    UpdateAgentStatus {
+        /// Claude Code session ID for correlation.
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Pane ID where the agent is running.
+        #[serde(default)]
+        pane_id: Option<u64>,
+        /// Number of active subagents.
+        #[serde(default)]
+        subagent_count: Option<usize>,
+        /// Agent state: "running", "idle", "waiting", "inactive".
+        #[serde(default)]
+        state: Option<String>,
+        /// Short summary of current activity.
+        #[serde(default)]
+        summary: Option<String>,
+    },
+
     // --- Legacy ---
     /// Toggle the quick terminal overlay.
     ToggleQuickTerminal,
@@ -657,6 +678,21 @@ mod tests {
                 subtitle: None,
                 notification_type: None,
             },
+            // Agent Status
+            AppIpcRequest::UpdateAgentStatus {
+                session_id: Some("sess-1".to_string()),
+                pane_id: Some(42),
+                subagent_count: Some(3),
+                state: Some("running".to_string()),
+                summary: Some("building project".to_string()),
+            },
+            AppIpcRequest::UpdateAgentStatus {
+                session_id: None,
+                pane_id: None,
+                subagent_count: None,
+                state: None,
+                summary: None,
+            },
             // Legacy
             AppIpcRequest::ToggleQuickTerminal,
             AppIpcRequest::ShowPalette,
@@ -786,6 +822,16 @@ mod tests {
                     notification_type: None,
                 },
                 "notify",
+            ),
+            (
+                AppIpcRequest::UpdateAgentStatus {
+                    session_id: None,
+                    pane_id: None,
+                    subagent_count: None,
+                    state: None,
+                    summary: None,
+                },
+                "update_agent_status",
             ),
             (AppIpcRequest::ToggleQuickTerminal, "toggle_quick_terminal"),
             (AppIpcRequest::ShowPalette, "show_palette"),
