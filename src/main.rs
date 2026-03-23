@@ -1909,27 +1909,39 @@ fn update_tree_root_for_focused_pane(state: &mut AppState) {
         return;
     }
 
-    // Get the focused pane's CWD.
+    // Get the focused pane's CWD with multiple fallbacks.
     let cwd = {
         let ws = &state.workspaces[wi];
         let tab = &ws.tabs[ws.active_tab];
         let fid = tab.layout.focused();
-        let osc_cwd = tab.panes.get(&fid)
-            .map(|p| p.terminal.osc.cwd.clone())
-            .unwrap_or_default();
-        if osc_cwd.is_empty() {
-            // Fallback: use cached workspace info CWD.
-            state.workspace_infos.get(wi)
-                .map(|inf| inf.cwd.clone())
-                .unwrap_or_default()
-        } else {
+        let pane = tab.panes.get(&fid);
+
+        // 1. OSC 7 reported CWD (most reliable, set by shell integration).
+        let osc_cwd = pane.map(|p| p.terminal.osc.cwd.clone()).unwrap_or_default();
+        if !osc_cwd.is_empty() {
             osc_cwd
+        } else {
+            // 2. lsof process inspection (works even without shell integration).
+            let pty_cwd = pane.and_then(|p| {
+                let pid = p.pty.pid().as_raw();
+                if pid > 0 { get_child_cwd(pid) } else { None }
+            });
+            if let Some(cwd) = pty_cwd {
+                cwd
+            } else {
+                // 3. Cached workspace info CWD.
+                state.workspace_infos.get(wi)
+                    .map(|inf| inf.cwd.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        // 4. Last resort: current process working directory.
+                        std::env::current_dir()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| "/".to_string())
+                    })
+            }
         }
     };
-
-    if cwd.is_empty() {
-        return;
-    }
 
     // Only reload if CWD has changed.
     if cwd != state.dir_trees[wi].last_resolved_cwd {
@@ -6261,15 +6273,21 @@ fn dispatch_action(
                     let ws = &state.workspaces[wi];
                     let tab = &ws.tabs[ws.active_tab];
                     let fid = tab.layout.focused();
-                    let osc_cwd = tab.panes.get(&fid)
-                        .map(|p| p.terminal.osc.cwd.clone())
-                        .unwrap_or_default();
-                    if osc_cwd.is_empty() {
-                        // OSC 7 CWD not yet reported — fall back to $HOME or
-                        // startup directory so the tree has something to show.
-                        std::env::var("HOME").unwrap_or_default()
-                    } else {
+                    let pane = tab.panes.get(&fid);
+                    let osc_cwd = pane.map(|p| p.terminal.osc.cwd.clone()).unwrap_or_default();
+                    if !osc_cwd.is_empty() {
                         osc_cwd
+                    } else {
+                        // lsof fallback for CWD detection.
+                        let pty_cwd = pane.and_then(|p| {
+                            let pid = p.pty.pid().as_raw();
+                            if pid > 0 { get_child_cwd(pid) } else { None }
+                        });
+                        pty_cwd.unwrap_or_else(|| {
+                            std::env::current_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_default())
+                        })
                     }
                 };
                 let root = resolve_tree_root(&cwd, &state.config.directory_tree.root_mode);
@@ -7773,18 +7791,50 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             // Tree entries with guide lines and file type icons.
             let scroll = tree.scroll_offset;
             let visible_end = (scroll + visible_lines).min(tree.entries.len());
+
+            // Precompute guide line data in a single O(N) backward pass.
+            // For each visible entry, compute which depth levels have continuations
+            // and whether this entry is the last sibling at its depth.
+            let max_depth = tree.entries[scroll..visible_end].iter()
+                .map(|e| e.depth).max().unwrap_or(0);
+            // `active_depths` tracks which depth levels have a sibling below the current entry.
+            // Scan backward from the end of visible entries.
+            let mut entry_is_last: Vec<bool> = vec![true; visible_end - scroll];
+            let mut entry_continuations: Vec<Vec<bool>> = vec![vec![false; max_depth + 1]; visible_end - scroll];
+            {
+                // Track the last-seen depth-level activity scanning backward.
+                let mut depth_has_more = vec![false; max_depth + 2];
+                // Scan backward through ALL entries from end to scroll start for correctness.
+                let scan_end = tree.entries.len().min(visible_end + 200); // look ahead a bit for continuations
+                for j in (scroll..scan_end).rev() {
+                    let d = tree.entries[j].depth;
+                    if j < visible_end {
+                        let vi = j - scroll;
+                        entry_is_last[vi] = !depth_has_more[d];
+                        for dd in 0..=max_depth {
+                            entry_continuations[vi][dd] = depth_has_more[dd];
+                        }
+                    }
+                    // Mark this depth as active.
+                    depth_has_more[d] = true;
+                    // Clear deeper levels (a shallower entry resets deeper continuations).
+                    for dd in (d + 1)..depth_has_more.len() {
+                        depth_has_more[dd] = false;
+                    }
+                }
+            }
+
             for ei in scroll..visible_end {
+                let vi = ei - scroll;
                 let entry = &tree.entries[ei];
                 let depth_indent = info_indent + (entry.depth as f32) * cell_w * 1.5;
                 let is_selected = ei == tree.selected;
 
-                // --- Guide lines for hierarchy visualization ---
+                // --- Guide lines for hierarchy visualization (precomputed) ---
                 if entry.depth > 0 {
-                    // Draw vertical guide lines at each ancestor depth level.
                     for d in 0..entry.depth {
                         let gx = info_indent + (d as f32) * cell_w * 1.5 + cell_w * 0.5;
-                        if has_continuation_at_depth(&tree.entries, ei, d) {
-                            // Full-height vertical guide line.
+                        if d < entry_continuations[vi].len() && entry_continuations[vi][d] {
                             state.renderer.submit_separator(
                                 view,
                                 gx as u32,
@@ -7795,27 +7845,15 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                             );
                         }
                     }
-                    // Connector for this entry: half-height vertical + horizontal.
                     let conn_x = info_indent + ((entry.depth - 1) as f32) * cell_w * 1.5 + cell_w * 0.5;
-                    let is_last = is_last_at_depth(&tree.entries, ei);
+                    let is_last = entry_is_last[vi];
                     let vert_h = if is_last { (cell_h * 0.5) as u32 } else { cell_h as u32 };
                     state.renderer.submit_separator(
-                        view,
-                        conn_x as u32,
-                        tree_y as u32,
-                        1,
-                        vert_h,
-                        guide_line_color,
+                        view, conn_x as u32, tree_y as u32, 1, vert_h, guide_line_color,
                     );
-                    // Horizontal connector.
                     let horiz_len = (cell_w * 0.8) as u32;
                     state.renderer.submit_separator(
-                        view,
-                        conn_x as u32,
-                        (tree_y + cell_h * 0.5) as u32,
-                        horiz_len,
-                        1,
-                        guide_line_color,
+                        view, conn_x as u32, (tree_y + cell_h * 0.5) as u32, horiz_len, 1, guide_line_color,
                     );
                 }
 
