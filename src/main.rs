@@ -528,8 +528,20 @@ impl CommandPalette {
     /// Process input changes in file finder mode — handle `/` path navigation
     /// and `..` parent directory, then filter entries.
     fn handle_file_finder_input_change(&mut self) {
+        // `..` (with or without trailing `/`) → navigate to parent directory.
+        if self.input == ".." || self.input == "../" {
+            if let Some(parent) = std::path::Path::new(&self.file_finder.search_root)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+            {
+                self.file_finder.load_entries(&parent);
+            }
+            self.input.clear();
+            return;
+        }
+
+        // Path with `/` → split into directory navigation + filter.
         if self.input.contains('/') {
-            // Split at the last `/`.
             if let Some(slash_pos) = self.input.rfind('/') {
                 let dir_part = &self.input[..slash_pos];
                 let filter_part = self.input[slash_pos + 1..].to_string();
@@ -562,17 +574,12 @@ impl CommandPalette {
                 return;
             }
         }
-        // Handle `..` without trailing slash.
-        if self.input == ".." {
-            if let Some(parent) = std::path::Path::new(&self.file_finder.search_root)
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-            {
-                self.file_finder.load_entries(&parent);
-                self.input.clear();
-                return;
-            }
+
+        // Single `.` → don't filter yet (user might be typing `..`).
+        if self.input == "." {
+            return;
         }
+
         self.file_finder.update_filter(&self.input);
     }
 }
@@ -5901,16 +5908,25 @@ fn dispatch_action(
                 let cwd = {
                     let tab = active_tab(state);
                     let pane = tab.panes.get(&focused_id);
-                    pane.map(|p| {
+                    pane.and_then(|p| {
+                        // Prefer OSC 7 CWD (shell-reported, always up-to-date).
                         let osc_cwd = &p.terminal.osc.cwd;
                         if !osc_cwd.is_empty() {
-                            osc_cwd.clone()
-                        } else {
-                            std::env::current_dir()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|_| "/".to_string())
+                            return Some(osc_cwd.clone());
                         }
-                    }).unwrap_or_else(|| "/".to_string())
+                        // Fallback: inspect the child process's CWD via lsof.
+                        let pty_pid = p.pty.pid().as_raw();
+                        if pty_pid > 0 {
+                            if let Some(cwd) = get_child_cwd(pty_pid) {
+                                return Some(cwd);
+                            }
+                        }
+                        None
+                    }).unwrap_or_else(|| {
+                        std::env::current_dir()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| "/".to_string())
+                    })
                 };
                 state.command_palette.init_file_finder(&cwd);
             }
