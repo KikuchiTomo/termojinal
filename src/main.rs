@@ -1679,6 +1679,10 @@ struct DirectoryTreeState {
     find_active: bool,
     /// Current find query string.
     find_query: String,
+    /// Number of visible lines computed during last render (for scroll/click handling).
+    current_visible_lines: usize,
+    /// Last resolved CWD used to detect pane CWD changes for tree root updates.
+    last_resolved_cwd: String,
 }
 
 impl DirectoryTreeState {
@@ -1695,6 +1699,8 @@ impl DirectoryTreeState {
             pending_open_in_editor: false,
             find_active: false,
             find_query: String::new(),
+            current_visible_lines: 0,
+            last_resolved_cwd: String::new(),
         }
     }
 }
@@ -1773,6 +1779,96 @@ fn load_tree_root(tree: &mut DirectoryTreeState, root: &str) {
     tree.entries = read_directory_entries(root, 0);
     tree.selected = 0;
     tree.scroll_offset = 0;
+}
+
+/// Check whether there is a subsequent entry at the given depth level after `idx`.
+/// Used to draw vertical continuation guide lines.
+fn has_continuation_at_depth(entries: &[DirEntry], idx: usize, depth: usize) -> bool {
+    for j in (idx + 1)..entries.len() {
+        if entries[j].depth <= depth {
+            // We found an entry at or above this depth — continuation exists
+            // only if it IS at exactly this depth.
+            return entries[j].depth == depth;
+        }
+    }
+    false
+}
+
+/// Check whether entry at `idx` is the last sibling at its depth level.
+/// Used to draw └─ style connectors instead of ├─.
+fn is_last_at_depth(entries: &[DirEntry], idx: usize) -> bool {
+    if idx >= entries.len() {
+        return true;
+    }
+    let depth = entries[idx].depth;
+    for j in (idx + 1)..entries.len() {
+        if entries[j].depth < depth {
+            return true; // parent boundary — this was the last at this depth
+        }
+        if entries[j].depth == depth {
+            return false; // another sibling follows
+        }
+    }
+    true // no more entries at this depth
+}
+
+/// Return a color based on file extension for the directory tree.
+fn file_extension_color(name: &str) -> [f32; 4] {
+    let ext = name.rsplit('.').next().unwrap_or("");
+    match ext {
+        "rs" => [1.0, 0.6, 0.2, 1.0],           // orange — Rust
+        "toml" | "json" | "yaml" | "yml" => [0.9, 0.85, 0.4, 1.0], // yellow — config
+        "md" => [0.5, 0.7, 1.0, 1.0],            // blue — markdown
+        "js" | "ts" | "jsx" | "tsx" => [0.4, 0.85, 0.85, 1.0],     // cyan — JS/TS
+        "py" => [0.4, 0.75, 0.6, 1.0],           // blue-green — Python
+        "sh" | "bash" | "zsh" => [0.5, 0.8, 0.4, 1.0],             // green — shell
+        "lock" => [0.4, 0.4, 0.45, 0.7],         // dim grey — lock files
+        _ => [0.6, 0.6, 0.65, 1.0],              // default
+    }
+}
+
+/// Update the directory tree root when the focused pane's CWD changes.
+/// Detects CWD changes by comparing against `last_resolved_cwd` and reloads
+/// the tree only when necessary.
+fn update_tree_root_for_focused_pane(state: &mut AppState) {
+    let wi = state.active_workspace;
+    if wi >= state.dir_trees.len() || wi >= state.workspaces.len() {
+        return;
+    }
+    if !state.dir_trees[wi].visible {
+        return;
+    }
+
+    // Get the focused pane's CWD.
+    let cwd = {
+        let ws = &state.workspaces[wi];
+        let tab = &ws.tabs[ws.active_tab];
+        let fid = tab.layout.focused();
+        let osc_cwd = tab.panes.get(&fid)
+            .map(|p| p.terminal.osc.cwd.clone())
+            .unwrap_or_default();
+        if osc_cwd.is_empty() {
+            // Fallback: use cached workspace info CWD.
+            state.workspace_infos.get(wi)
+                .map(|inf| inf.cwd.clone())
+                .unwrap_or_default()
+        } else {
+            osc_cwd
+        }
+    };
+
+    if cwd.is_empty() {
+        return;
+    }
+
+    // Only reload if CWD has changed.
+    if cwd != state.dir_trees[wi].last_resolved_cwd {
+        state.dir_trees[wi].last_resolved_cwd = cwd.clone();
+        let root = resolve_tree_root(&cwd, &state.config.directory_tree.root_mode);
+        if root != state.dir_trees[wi].root_path {
+            load_tree_root(&mut state.dir_trees[wi], &root);
+        }
+    }
 }
 
 /// Toggle expand/collapse of a directory entry at the given index.
@@ -1897,7 +1993,11 @@ fn dir_tree_find_match_path(tree: &mut DirectoryTreeState, query: &str) {
 
 /// Ensure `tree.selected` is within the visible scroll window.
 fn dir_tree_ensure_visible(tree: &mut DirectoryTreeState) {
-    let max_visible = 20; // approximate, matches config default
+    let max_visible = if tree.current_visible_lines > 0 {
+        tree.current_visible_lines
+    } else {
+        20 // fallback before first render
+    };
     if tree.selected < tree.scroll_offset {
         tree.scroll_offset = tree.selected;
     } else if tree.selected >= tree.scroll_offset + max_visible {
@@ -1949,8 +2049,12 @@ fn dir_tree_move_down(state: &mut AppState) {
     if tree.entries.is_empty() { return; }
     if tree.selected + 1 < tree.entries.len() {
         tree.selected += 1;
-        // Scroll if needed.
-        let max_lines = state.config.directory_tree.max_visible_lines;
+        // Scroll if needed — use dynamic visible lines, fall back to config.
+        let max_lines = if tree.current_visible_lines > 0 {
+            tree.current_visible_lines
+        } else {
+            state.config.directory_tree.max_visible_lines
+        };
         if tree.selected >= tree.scroll_offset + max_lines {
             tree.scroll_offset = tree.selected + 1 - max_lines;
         }
@@ -4878,7 +4982,11 @@ impl ApplicationHandler<UserEvent> for App {
                         };
                         if scroll_lines != 0 {
                             let tree = &mut state.dir_trees[wi];
-                            let max_visible = state.config.directory_tree.max_visible_lines.max(1);
+                            let max_visible = if tree.current_visible_lines > 0 {
+                                tree.current_visible_lines
+                            } else {
+                                state.config.directory_tree.max_visible_lines.max(1)
+                            };
                             if scroll_lines > 0 {
                                 // Scroll up.
                                 tree.scroll_offset = tree.scroll_offset.saturating_sub(scroll_lines as usize);
@@ -5115,6 +5223,21 @@ impl ApplicationHandler<UserEvent> for App {
                     if total > 0 && wi != state.active_workspace {
                         if wi < state.workspace_infos.len() {
                             state.workspace_infos[wi].has_unread = true;
+                        }
+                    }
+                }
+
+                // Check if the focused pane's CWD changed (via OSC 7) and
+                // update the directory tree root if needed.  This avoids calling
+                // update_tree_root_for_focused_pane on every render frame.
+                if let Some(wi) = found_ws_idx {
+                    if wi == state.active_workspace && wi < state.dir_trees.len() && state.dir_trees[wi].visible {
+                        let focused_id = active_tab(state).layout.focused();
+                        let osc_cwd = active_tab(state).panes.get(&focused_id)
+                            .map(|p| p.terminal.osc.cwd.clone())
+                            .unwrap_or_default();
+                        if !osc_cwd.is_empty() && osc_cwd != state.dir_trees[wi].last_resolved_cwd {
+                            update_tree_root_for_focused_pane(state);
                         }
                     }
                 }
@@ -5745,6 +5868,7 @@ fn dispatch_action(
             let ti = ws.active_tab;
             update_tab_title(&mut ws.tabs[ti], &fmt, ti + 1, &fb_cwd);
             update_window_title(state);
+            update_tree_root_for_focused_pane(state);
             state.window.request_redraw();
             true
         }
@@ -5758,6 +5882,7 @@ fn dispatch_action(
             let ti = ws.active_tab;
             update_tab_title(&mut ws.tabs[ti], &fmt, ti + 1, &fb_cwd);
             update_window_title(state);
+            update_tree_root_for_focused_pane(state);
             state.window.request_redraw();
             true
         }
@@ -6070,6 +6195,7 @@ fn dispatch_action(
                 state.active_workspace += 1;
                 resize_all_panes(state);
                 update_window_title(state);
+                update_tree_root_for_focused_pane(state);
                 state.window.request_redraw();
             }
             true
@@ -6080,6 +6206,7 @@ fn dispatch_action(
                 state.active_workspace -= 1;
                 resize_all_panes(state);
                 update_window_title(state);
+                update_tree_root_for_focused_pane(state);
                 state.window.request_redraw();
             }
             true
@@ -6560,33 +6687,52 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             // Note: subagent count is merged into the agent status line (no extra height).
         }
 
-        // Directory tree area (only for active workspace).
-        let max_tree_lines = state.config.directory_tree.max_visible_lines.max(1);
+        entry_h += entry_gap; // gap between entries
+
+        if cy >= entry_y && cy < entry_y + entry_h {
+            if state.active_workspace != i {
+                state.active_workspace = i;
+                if i < state.workspace_infos.len() {
+                    state.workspace_infos[i].has_unread = false;
+                }
+                resize_all_panes(state);
+                update_window_title(state);
+                state.window.request_redraw();
+            } else {
+                // Click on active workspace outside tree — check if it's the CWD line to toggle tree.
+                let cwd_line_y = entry_y + cell_h; // after name line
+                if !ws_cwd.is_empty() && cy >= cwd_line_y && cy < cwd_line_y + info_line_gap + cell_h {
+                    return Some(Action::ToggleDirectoryTree);
+                }
+            }
+            return None;
+        }
+        entry_y += entry_h;
+
+        // --- Tree block click detection (standalone, after active workspace entry) ---
         let tree_visible_click = is_active
             && i < state.dir_trees.len()
             && state.dir_trees[i].visible
             && !state.dir_trees[i].entries.is_empty();
-        let tree_area_start = entry_y + entry_h; // before tree
-        let mut tree_area_h: f32 = 0.0;
         if tree_visible_click {
-            let entry_count = state.dir_trees[i].entries.len();
-            let total = 1 + entry_count.min(max_tree_lines) + 1; // header + entries + hint
-            tree_area_h = info_line_gap + (total as f32) * cell_h;
-            entry_h += tree_area_h;
-        }
+            let tree = &state.dir_trees[i];
+            let visible_lines = if tree.current_visible_lines > 0 {
+                tree.current_visible_lines
+            } else {
+                state.config.directory_tree.max_visible_lines.max(1)
+            };
+            let entry_count = tree.entries.len();
+            let actual_visible = entry_count.min(visible_lines);
+            let total = 1 + actual_visible + 1; // header + entries + hint
+            let tree_area_h = info_line_gap + (total as f32) * cell_h;
+            let tree_area_start = entry_y;
 
-        entry_h += entry_gap; // gap between entries
-
-        if cy >= entry_y && cy < entry_y + entry_h {
-            // Check if click is within the tree area.
-            if tree_visible_click && cy >= tree_area_start && cy < tree_area_start + tree_area_h {
+            if cy >= tree_area_start && cy < tree_area_start + tree_area_h {
                 let tree_content_start = tree_area_start + info_line_gap + cell_h; // skip header
                 if cy >= tree_content_start {
                     let line_offset = ((cy - tree_content_start) / cell_h) as usize;
-                    let tree = &state.dir_trees[i];
                     let entry_idx = tree.scroll_offset + line_offset;
-                    let max_lines = state.config.directory_tree.max_visible_lines;
-                    if entry_idx < tree.entries.len() && line_offset < max_lines {
+                    if entry_idx < tree.entries.len() && line_offset < actual_visible {
                         // Double-click detection.
                         let now = Instant::now();
                         let dbl_ms = state.config.directory_tree.double_click_ms;
@@ -6611,8 +6757,6 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                                 }
                             } else {
                                 // Double-click on file: mark for opening in editor.
-                                // The caller will handle the actual spawn since we don't
-                                // have access to proxy/buffers here.
                                 state.dir_trees[i].pending_open_in_editor = true;
                             }
                         } else if state.dir_trees[i].entries[entry_idx].is_dir {
@@ -6624,25 +6768,8 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                 }
                 return None;
             }
-
-            if state.active_workspace != i {
-                state.active_workspace = i;
-                if i < state.workspace_infos.len() {
-                    state.workspace_infos[i].has_unread = false;
-                }
-                resize_all_panes(state);
-                update_window_title(state);
-                state.window.request_redraw();
-            } else {
-                // Click on active workspace outside tree — check if it's the CWD line to toggle tree.
-                let cwd_line_y = entry_y + cell_h; // after name line
-                if !ws_cwd.is_empty() && cy >= cwd_line_y && cy < cwd_line_y + info_line_gap + cell_h {
-                    return Some(Action::ToggleDirectoryTree);
-                }
-            }
-            return None;
+            entry_y += tree_area_h + entry_gap;
         }
-        entry_y += entry_h;
     }
 
     // Check "+ New Workspace" button (below separator).
@@ -7195,24 +7322,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             // Subagent count is now merged into the status line, no extra line needed.
         }
 
-        // Directory tree height (only for active workspace when visible).
+        // Directory tree visibility flag (tree is rendered as a standalone block after this entry).
         let tree_visible = is_active
             && i < state.dir_trees.len()
             && state.dir_trees[i].visible
             && !state.dir_trees[i].entries.is_empty();
-        let tree_line_count = if tree_visible {
-            let max_lines = state.config.directory_tree.max_visible_lines.max(1);
-            let entry_count = state.dir_trees[i].entries.len();
-            // +1 for the header/toggle line, +1 for bottom hint line
-            let total = 1 + entry_count.min(max_lines) + 1;
-            content_h += info_line_gap + (total as f32) * cell_h;
-            entry_count.min(max_lines)
-        } else if is_active {
-            // Show CWD toggle hint (tree collapsed) — no extra height, shown inline with CWD
-            0
-        } else {
-            0
-        };
 
         // Clamp content height to remaining space so we don't render past the sidebar.
         let content_h = content_h.min(phys_h - entry_y);
@@ -7490,20 +7604,64 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let _ = line_y; // suppress unused warning
         }
 
-        // --- Directory tree (only for active workspace when visible) ---
-        if tree_visible && tree_line_count > 0 {
+        let _ = line_y; // suppress unused warning
+
+        entry_y += content_h + entry_gap;
+
+        // --- Standalone directory tree block (after active workspace entry) ---
+        // Re-check tree_visible: update_tree_root_for_focused_pane (called on pane/workspace
+        // switch) may have reloaded entries, so verify they are still non-empty.
+        let tree_visible = tree_visible && !state.dir_trees[i].entries.is_empty();
+        if tree_visible {
             let tc = &state.config.directory_tree;
             let dir_fg = color_or(&tc.dir_fg, [0.54, 0.71, 0.98, 1.0]);
-            let file_fg = color_or(&tc.file_fg, [0.73, 0.76, 0.87, 1.0]);
             let selected_fg_color = color_or(&tc.selected_fg, [0.95, 0.95, 0.97, 1.0]);
             let selected_bg_color = color_or(&tc.selected_bg, [0.19, 0.20, 0.27, 1.0]);
             let guide_fg = color_or(&tc.guide_fg, [0.42, 0.44, 0.53, 1.0]);
             let info_indent = text_left + cell_w * 0.5;
+            let tree_accent_color: [f32; 4] = [0.35, 0.45, 0.55, 0.6]; // muted blue-grey
+            let guide_line_color: [f32; 4] = [0.25, 0.28, 0.35, 0.5]; // subtle guide lines
+
+            // Calculate remaining space for tree.
+            // Estimate below-entries height: remaining workspaces + new ws button + sessions + padding.
+            let mut below_h: f32 = 0.0;
+            for j in (i + 1)..num_workspaces {
+                // Rough estimate: each inactive entry is ~1-3 lines + gap
+                let _ = j;
+                below_h += cell_h * 2.0 + entry_gap;
+            }
+            below_h += 8.0 + 1.0 + 8.0 + cell_h; // separator + new ws button
+            below_h += 16.0; // bottom padding margin
+
+            let tree_start_y = entry_y;
+            let tree_available_h = (phys_h - tree_start_y - below_h).max(cell_h * 3.0);
+            // +2 for header and hint lines
+            let tree_lines = ((tree_available_h / cell_h) as usize).saturating_sub(2).max(3);
+
+            // Store current_visible_lines for scroll/click handling.
+            state.dir_trees[i].current_visible_lines = tree_lines;
+
             let tree = &state.dir_trees[i];
+            let entry_count = tree.entries.len();
+            let visible_lines = entry_count.min(tree_lines);
+            let total_lines = 1 + visible_lines + 1; // header + entries + hint
+            let tree_block_h = info_line_gap + (total_lines as f32) * cell_h;
+            let tree_bg = sidebar_bg; // same as sidebar background
 
-            line_y += info_line_gap;
+            // --- Tree accent bar (left edge, muted blue-grey) ---
+            let accent_w: u32 = 3;
+            state.renderer.submit_separator(
+                view,
+                0,
+                tree_start_y as u32,
+                accent_w,
+                tree_block_h as u32,
+                tree_accent_color,
+            );
 
-            // Header line: root path (shortened) with toggle hint.
+            let mut tree_y = tree_start_y + info_line_gap;
+
+            // Header line: root path (shortened).
             let root_short = if let Ok(home) = std::env::var("HOME") {
                 if tree.root_path.starts_with(&home) {
                     format!("~{}", &tree.root_path[home.len()..])
@@ -7515,56 +7673,102 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             };
             let header = format!("\u{25BE} {}", root_short); // ▾ root
             let header_display: String = header.chars().take(max_chars.saturating_sub(1)).collect();
-            state.renderer.render_text(view, &header_display, info_indent, line_y, guide_fg, bg);
-            line_y += cell_h;
+            state.renderer.render_text(view, &header_display, info_indent, tree_y, guide_fg, tree_bg);
+            tree_y += cell_h;
 
-            // Tree entries.
+            // Tree entries with guide lines and file type icons.
             let scroll = tree.scroll_offset;
-            let visible_end = (scroll + tree_line_count).min(tree.entries.len());
+            let visible_end = (scroll + visible_lines).min(tree.entries.len());
             for ei in scroll..visible_end {
                 let entry = &tree.entries[ei];
-                let indent = info_indent + (entry.depth as f32) * cell_w * 1.5;
+                let depth_indent = info_indent + (entry.depth as f32) * cell_w * 1.5;
                 let is_selected = ei == tree.selected;
+
+                // --- Guide lines for hierarchy visualization ---
+                if entry.depth > 0 {
+                    // Draw vertical guide lines at each ancestor depth level.
+                    for d in 0..entry.depth {
+                        let gx = info_indent + (d as f32) * cell_w * 1.5 + cell_w * 0.5;
+                        if has_continuation_at_depth(&tree.entries, ei, d) {
+                            // Full-height vertical guide line.
+                            state.renderer.submit_separator(
+                                view,
+                                gx as u32,
+                                tree_y as u32,
+                                1,
+                                cell_h as u32,
+                                guide_line_color,
+                            );
+                        }
+                    }
+                    // Connector for this entry: half-height vertical + horizontal.
+                    let conn_x = info_indent + ((entry.depth - 1) as f32) * cell_w * 1.5 + cell_w * 0.5;
+                    let is_last = is_last_at_depth(&tree.entries, ei);
+                    let vert_h = if is_last { (cell_h * 0.5) as u32 } else { cell_h as u32 };
+                    state.renderer.submit_separator(
+                        view,
+                        conn_x as u32,
+                        tree_y as u32,
+                        1,
+                        vert_h,
+                        guide_line_color,
+                    );
+                    // Horizontal connector.
+                    let horiz_len = (cell_w * 0.8) as u32;
+                    state.renderer.submit_separator(
+                        view,
+                        conn_x as u32,
+                        (tree_y + cell_h * 0.5) as u32,
+                        horiz_len,
+                        1,
+                        guide_line_color,
+                    );
+                }
 
                 // Draw selection background.
                 if is_selected && tree.focused {
                     state.renderer.submit_separator(
                         view,
                         info_indent as u32,
-                        line_y as u32,
+                        tree_y as u32,
                         (sidebar_w - info_indent - side_pad) as u32,
                         cell_h as u32,
                         selected_bg_color,
                     );
                 }
 
+                // --- File type icon and color ---
+                let (prefix, icon_color) = if entry.is_dir {
+                    if entry.expanded {
+                        ("\u{25BE} ", dir_fg) // ▾
+                    } else {
+                        ("\u{25B8} ", dir_fg) // ▸
+                    }
+                } else {
+                    let ext_color = file_extension_color(&entry.name);
+                    ("\u{00B7} ", ext_color) // · prefix for files
+                };
+
                 let fg = if is_selected && tree.focused {
                     selected_fg_color
-                } else if entry.is_dir {
-                    dir_fg
                 } else {
-                    file_fg
+                    icon_color
                 };
                 let entry_bg = if is_selected && tree.focused {
                     selected_bg_color
                 } else {
-                    bg
+                    tree_bg
                 };
 
-                // Arrow + name.
-                let prefix = if entry.is_dir {
-                    if entry.expanded { "\u{25BE} " } else { "\u{25B8} " } // ▾ or ▸
-                } else {
-                    "  "
-                };
                 let label = format!("{}{}", prefix, entry.name);
-                let avail = ((sidebar_w - indent - side_pad) / cell_w).max(1.0) as usize;
+                let avail = ((sidebar_w - depth_indent - side_pad) / cell_w).max(1.0) as usize;
                 let display: String = label.chars().take(avail).collect();
-                state.renderer.render_text(view, &display, indent, line_y, fg, entry_bg);
-                line_y += cell_h;
+                state.renderer.render_text(view, &display, depth_indent, tree_y, fg, entry_bg);
+                tree_y += cell_h;
             }
 
             // Bottom hint line / find mode indicator.
+            let tree = &state.dir_trees[i];
             let (hint, hint_fg_col) = if tree.find_active {
                 let q = format!("find: {}\u{2588}", tree.find_query); // █ cursor
                 (q, [0.70, 0.80, 1.0, 1.0])
@@ -7574,11 +7778,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 ("Cmd+Shift+E to focus".to_string(), [0.40, 0.45, 0.55, 0.8])
             };
             let hint_display: String = hint.chars().take(max_chars.saturating_sub(1)).collect();
-            state.renderer.render_text(view, &hint_display, info_indent, line_y, hint_fg_col, bg);
-            let _ = line_y;
-        }
+            state.renderer.render_text(view, &hint_display, info_indent, tree_y, hint_fg_col, tree_bg);
 
-        entry_y += content_h + entry_gap;
+            entry_y += tree_block_h + entry_gap;
+        }
 
         // --- Subtle separator line between entries ---
         if i < num_workspaces - 1 {
