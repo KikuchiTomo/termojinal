@@ -1474,26 +1474,130 @@ fn load_tree_root(tree: &mut DirectoryTreeState, root: &str) {
 /// Toggle expand/collapse of a directory entry at the given index.
 /// Find the first entry whose name starts with `tree.find_query` (case-insensitive)
 /// and move selection to it. Searches from current position forward, wrapping around.
+///
+/// When the query contains `/`, segments are traversed left-to-right: each intermediate
+/// segment finds a matching directory and auto-expands it, and the final segment is
+/// prefix-matched among the newly-visible children.
 fn dir_tree_find_match(tree: &mut DirectoryTreeState) {
+    dir_tree_find_match_from(tree, 0);
+}
+
+/// Same as `dir_tree_find_match` but starts searching from `tree.selected + start_offset`.
+/// `start_offset = 0` searches from current position (inclusive).
+/// `start_offset = 1` skips the current match (used by Tab cycling).
+fn dir_tree_find_match_from(tree: &mut DirectoryTreeState, start_offset: usize) {
     if tree.find_query.is_empty() || tree.entries.is_empty() {
         return;
     }
     let query = tree.find_query.to_lowercase();
+
+    if query.contains('/') {
+        // Path-segmented search: split on '/' and walk segments.
+        dir_tree_find_match_path(tree, &query);
+    } else {
+        // Simple prefix search.
+        dir_tree_find_match_simple(tree, &query, start_offset);
+    }
+}
+
+/// Simple prefix match — searches visible entries for a name starting with `query`.
+fn dir_tree_find_match_simple(tree: &mut DirectoryTreeState, query: &str, start_offset: usize) {
     let n = tree.entries.len();
-    // Search forward from current position.
     for offset in 0..n {
-        let idx = (tree.selected + offset) % n;
-        if tree.entries[idx].name.to_lowercase().starts_with(&query) {
+        let idx = (tree.selected + start_offset + offset) % n;
+        if tree.entries[idx].name.to_lowercase().starts_with(query) {
             tree.selected = idx;
-            // Ensure visible.
-            let max_visible = 20; // approximate, matches config default
-            if tree.selected < tree.scroll_offset {
-                tree.scroll_offset = tree.selected;
-            } else if tree.selected >= tree.scroll_offset + max_visible {
-                tree.scroll_offset = tree.selected.saturating_sub(max_visible / 2);
-            }
+            dir_tree_ensure_visible(tree);
             return;
         }
+    }
+}
+
+/// Path-segmented find: e.g. "docs/api" → expand `docs`, then search for `api` inside.
+fn dir_tree_find_match_path(tree: &mut DirectoryTreeState, query: &str) {
+    let segments: Vec<&str> = query.split('/').collect();
+
+    // Current search scope: start index and the depth we expect entries to be at.
+    let mut scope_start: usize = 0;
+    let mut scope_end: usize = tree.entries.len();
+    let mut scope_depth: Option<usize> = None; // None = any depth in scope
+
+    for (si, seg) in segments.iter().enumerate() {
+        let is_last = si == segments.len() - 1;
+
+        if seg.is_empty() && is_last {
+            // Trailing '/' — nothing more to search. The previous segment already
+            // expanded the directory, so we're done.
+            break;
+        }
+
+        let seg_lower = seg.to_lowercase();
+
+        // Find first matching entry within scope.
+        let mut found_idx: Option<usize> = None;
+        for idx in scope_start..scope_end {
+            // If we have a scope_depth, only consider entries at that depth.
+            if let Some(d) = scope_depth {
+                if tree.entries[idx].depth != d {
+                    continue;
+                }
+            }
+            if tree.entries[idx].name.to_lowercase().starts_with(&seg_lower) {
+                found_idx = Some(idx);
+                break;
+            }
+        }
+
+        let Some(idx) = found_idx else {
+            // No match for this segment — give up.
+            return;
+        };
+
+        if is_last {
+            // Final segment: select the match.
+            tree.selected = idx;
+            dir_tree_ensure_visible(tree);
+            return;
+        }
+
+        // Intermediate segment: must be a directory — expand it if needed.
+        if !tree.entries[idx].is_dir {
+            // Not a directory, can't descend further.
+            tree.selected = idx;
+            dir_tree_ensure_visible(tree);
+            return;
+        }
+
+        // Expand the directory if not already expanded.
+        if !tree.entries[idx].expanded {
+            toggle_tree_entry(tree, idx);
+        }
+
+        // Update scope to children of this directory.
+        let child_depth = tree.entries[idx].depth + 1;
+        scope_start = idx + 1;
+        scope_end = scope_start;
+        while scope_end < tree.entries.len() && tree.entries[scope_end].depth >= child_depth {
+            scope_end += 1;
+        }
+        scope_depth = Some(child_depth);
+
+        // Select the directory we just expanded.
+        tree.selected = idx;
+    }
+
+    // If we exit the loop without returning (e.g. trailing slash),
+    // ensure the selection is visible.
+    dir_tree_ensure_visible(tree);
+}
+
+/// Ensure `tree.selected` is within the visible scroll window.
+fn dir_tree_ensure_visible(tree: &mut DirectoryTreeState) {
+    let max_visible = 20; // approximate, matches config default
+    if tree.selected < tree.scroll_offset {
+        tree.scroll_offset = tree.selected;
+    } else if tree.selected >= tree.scroll_offset + max_visible {
+        tree.scroll_offset = tree.selected.saturating_sub(max_visible / 2);
     }
 }
 
@@ -3247,6 +3351,11 @@ impl ApplicationHandler<UserEvent> for App {
                                     // Accept current match, exit find mode.
                                     tree.find_query.clear();
                                     tree.find_active = false;
+                                    state.window.request_redraw();
+                                }
+                                Key::Named(NamedKey::Tab) => {
+                                    // Cycle to next match (skip current).
+                                    dir_tree_find_match_from(tree, 1);
                                     state.window.request_redraw();
                                 }
                                 Key::Named(NamedKey::Backspace) => {
