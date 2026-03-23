@@ -8310,8 +8310,13 @@ fn load_about_text() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let mut text = format!("Termojinal v{version}\n");
     text.push_str("GPU-accelerated terminal emulator\n");
-    text.push_str("Copyright (c) 2026 Tomoo Kikuchi\n");
-    text.push_str("MIT License\n\n");
+    text.push_str("\n");
+    text.push_str("Copyright (c) 2025-2026 Tomoo Kikuchi\n");
+    text.push_str("All rights reserved.\n");
+    text.push_str("\n");
+    text.push_str("Licensed under the MIT License.\n");
+    text.push_str("https://opensource.org/licenses/MIT\n");
+    text.push_str("\n");
 
     // Try to load THIRD_PARTY_LICENSES.md from the executable's directory
     // or from known locations.
