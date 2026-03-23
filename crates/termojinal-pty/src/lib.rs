@@ -208,11 +208,18 @@ pub fn default_env() -> HashMap<String, String> {
     // Remove variables that are per-session or would be stale/incorrect
     // in a child PTY.
     let exclude = [
-        "TERM_SESSION_ID",   // macOS per-terminal-session identifier
-        "WINDOWID",          // X11 window id, not valid for child PTYs
-        "SECURITYSESSIONID", // macOS security session, inherited automatically by the kernel
-        "OLDPWD",            // stale previous working directory
-        "_",                 // last command, not meaningful for new shell
+        "TERM_SESSION_ID",           // macOS per-terminal-session identifier
+        "WINDOWID",                  // X11 window id, not valid for child PTYs
+        "SECURITYSESSIONID",         // macOS security session, inherited automatically by the kernel
+        "OLDPWD",                    // stale previous working directory
+        "_",                         // last command, not meaningful for new shell
+        "DYLD_INSERT_LIBRARIES",     // macOS dynamic linker injection
+        "DYLD_FRAMEWORK_PATH",       // macOS framework path override
+        "DYLD_LIBRARY_PATH",         // macOS library path override
+        "DYLD_FALLBACK_FRAMEWORK_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "LD_PRELOAD",                // Linux dynamic linker injection
+        "LD_AUDIT",                  // Linux linker audit
     ];
     for key in exclude {
         env.remove(key);

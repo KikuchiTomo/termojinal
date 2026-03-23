@@ -208,6 +208,10 @@ impl Grid {
         let row_start = self.idx(0, row);
         let n = count.min(self.cols - col);
         let blank = Cell::blank_with_bg(bg);
+        // Fix wide char fragment at insertion point.
+        if col < self.cols && self.cells[row_start + col].width == 0 && col > 0 {
+            self.cells[row_start + col - 1].reset_with_bg(bg);
+        }
         // Shift right.
         for c in (col + n..self.cols).rev() {
             self.cells[row_start + c] = self.cells[row_start + c - n];
@@ -215,6 +219,13 @@ impl Grid {
         // Clear inserted cells.
         for c in col..col + n {
             self.cells[row_start + c] = blank;
+        }
+        // Fix wide char fragment at right edge (shifted off or split).
+        let edge = self.cols - n;
+        if edge < self.cols && self.cells[row_start + edge].width == 0 && edge > 0 {
+            if self.cells[row_start + edge - 1].width != 2 {
+                self.cells[row_start + edge].reset_with_bg(bg);
+            }
         }
     }
 
@@ -229,6 +240,18 @@ impl Grid {
         let row_start = self.idx(0, row);
         let n = count.min(self.cols - col);
         let blank = Cell::blank_with_bg(bg);
+        // Fix wide char fragment at deletion point.
+        if col < self.cols && self.cells[row_start + col].width == 0 && col > 0 {
+            self.cells[row_start + col - 1].reset_with_bg(bg);
+        }
+        // Fix wide char at the boundary of shifted region.
+        let src_end = col + n;
+        if src_end < self.cols && self.cells[row_start + src_end].width == 0 && src_end > 0 {
+            if self.cells[row_start + src_end - 1].width == 2 && src_end - 1 >= col {
+                // Leading cell is being deleted, orphaning the continuation.
+                self.cells[row_start + src_end].reset_with_bg(bg);
+            }
+        }
         for c in col..self.cols - n {
             self.cells[row_start + c] = self.cells[row_start + c + n];
         }

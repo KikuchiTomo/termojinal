@@ -5480,6 +5480,9 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                         }
                         // Focus the specific pane where the agent is running.
                         if let Some(target_pane) = state.agent_infos.get(entry.wi).and_then(|a| a.pane_id) {
+                            if entry.wi >= state.workspaces.len() {
+                                return None;
+                            }
                             let ws = &mut state.workspaces[entry.wi];
                             let mut found_tab = None;
                             for (tab_idx, tab) in ws.tabs.iter().enumerate() {
@@ -8762,56 +8765,6 @@ fn handle_app_ipc_request(
                 state.timeline_selected = 0;
                 state.timeline_scroll_offset = 0;
             }
-            state.window.request_redraw();
-            AppIpcResponse::ok_empty()
-        }
-
-        AppIpcRequest::UpdateAgentStatus {
-            session_id,
-            pane_id: ipc_pane_id,
-            subagent_count,
-            state: agent_state_str,
-            summary,
-        } => {
-            // Resolve workspace index from session mapping.
-            let ws_idx = session_id
-                .as_ref()
-                .and_then(|sid| state.session_to_workspace.get(sid).copied())
-                .unwrap_or(state.active_workspace);
-
-            while state.agent_infos.len() <= ws_idx {
-                state.agent_infos.push(AgentSessionInfo::default());
-            }
-            let agent = &mut state.agent_infos[ws_idx];
-
-            if let Some(pid) = ipc_pane_id {
-                agent.pane_id = Some(*pid);
-            }
-            if let Some(count) = subagent_count {
-                agent.subagent_count = *count;
-            }
-            if let Some(s) = agent_state_str {
-                agent.state = match s.as_str() {
-                    "running" => AgentState::Running,
-                    "waiting" | "waiting_for_permission" => AgentState::WaitingForPermission,
-                    "idle" => AgentState::Idle,
-                    "inactive" => AgentState::Inactive,
-                    _ => agent.state.clone(),
-                };
-                agent.active = !matches!(agent.state, AgentState::Inactive);
-            }
-            if let Some(s) = summary {
-                agent.summary = s.clone();
-            }
-            agent.last_updated = std::time::Instant::now();
-
-            // Store session mapping if not already present.
-            if let Some(sid) = session_id.as_ref() {
-                if !state.session_to_workspace.contains_key(sid) {
-                    state.session_to_workspace.insert(sid.clone(), ws_idx);
-                }
-            }
-
             state.window.request_redraw();
             AppIpcResponse::ok_empty()
         }

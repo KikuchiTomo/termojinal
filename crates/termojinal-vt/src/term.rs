@@ -1347,6 +1347,23 @@ impl vte::Perform for Terminal {
                 let col = self.cursor_col;
                 let cols = self.cols;
                 let bg = self.pen.bg;
+                // Handle wide char fragment at start of erased region.
+                if col < cols && self.grid().cell(col, row).width == 0 && col > 0 {
+                    self.grid_mut().cell_mut(col - 1, row).reset_with_bg(bg);
+                }
+                // Handle wide char fragment at end of erased region.
+                let end = (col + n).min(cols);
+                if end > 0 && end < cols && self.grid().cell(end, row).width == 0 {
+                    // Continuation of a wide char whose leading cell was erased.
+                    self.grid_mut().cell_mut(end, row).reset_with_bg(bg);
+                }
+                if end > 0 && end <= cols {
+                    let last_erased = end - 1;
+                    if self.grid().cell(last_erased, row).width == 2 && last_erased + 1 < cols {
+                        // Leading cell of wide char partially erased; clear continuation.
+                        // (handled below by the reset loop)
+                    }
+                }
                 for i in 0..n {
                     let c = col + i;
                     if c < cols {
