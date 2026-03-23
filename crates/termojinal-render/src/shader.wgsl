@@ -56,6 +56,7 @@ const FLAG_IS_CURSOR: u32     = 0x10000u;
 const FLAG_SELECTED: u32      = 0x20000u;
 const FLAG_EMOJI: u32         = 0x40000u;
 const FLAG_SEARCH: u32        = 0x80000u;
+const FLAG_SEARCH_CURRENT: u32 = 0x100000u;
 
 // 6 vertices for a quad (two triangles)
 // Vertex positions within a cell: (0,0), (1,0), (0,1), (1,0), (1,1), (0,1)
@@ -203,8 +204,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = in.fg_color.rgb * (1.0 - glyph_alpha) + in.bg_color.rgb * glyph_alpha;
     }
 
-    // Search match highlight: yellow-tinted background
-    if (in.flags & FLAG_SEARCH) != 0u {
+    // Current search match highlight: orange/bright — takes priority over regular search match
+    if (in.flags & FLAG_SEARCH_CURRENT) != 0u {
+        let current_bg = vec3<f32>(0.9, 0.5, 0.1);
+        let current_fg = vec3<f32>(0.0, 0.0, 0.0);
+        color = mix(current_bg, current_fg, glyph_alpha);
+    } else if (in.flags & FLAG_SEARCH) != 0u {
+        // Search match highlight: yellow-tinted background
         let search_bg = vec3<f32>(0.6, 0.5, 0.1);
         let search_fg = vec3<f32>(0.0, 0.0, 0.0);
         color = mix(search_bg, search_fg, glyph_alpha);

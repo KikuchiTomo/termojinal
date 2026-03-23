@@ -24,6 +24,9 @@ struct PaneCache {
     grid_dims: (usize, usize),
     selection: Option<((usize, usize), (usize, usize))>,
     row_instance_counts: Vec<usize>,
+    /// Cached search matches so we can detect changes and force rebuild.
+    search_matches: Option<Vec<(usize, usize, usize)>>,
+    search_current_idx: Option<usize>,
 }
 
 /// Per-cell instance data sent to the GPU.
@@ -99,6 +102,9 @@ const FLAG_EMOJI: u32 = 0x40000;
 
 /// Flag indicating this cell is a search match highlight.
 const FLAG_SEARCH: u32 = 0x80000;
+
+/// Flag indicating this cell is the *current* (focused) search match highlight.
+const FLAG_SEARCH_CURRENT: u32 = 0x100000;
 
 /// Errors from the renderer.
 #[derive(Debug, thiserror::Error)]
@@ -596,8 +602,8 @@ impl Renderer {
         terminal: &termojinal_vt::Terminal,
         row: usize,
         selection: Option<((usize, usize), (usize, usize))>,
-        #[allow(unused_variables)]
         search_matches: Option<&[(usize, usize, usize)]>, // (row, col_start, col_end)
+        search_current_idx: Option<usize>,
     ) -> Vec<CellInstance> {
         let grid = terminal.grid();
         let cols = grid.cols();
@@ -701,9 +707,13 @@ impl Renderer {
 
             // Mark search match cells.
             if let Some(matches) = search_matches {
-                for &(m_row, m_col_start, m_col_end) in matches {
+                for (match_idx, &(m_row, m_col_start, m_col_end)) in matches.iter().enumerate() {
                     if m_row == row && col >= m_col_start && col <= m_col_end {
-                        flags |= FLAG_SEARCH;
+                        if search_current_idx == Some(match_idx) {
+                            flags |= FLAG_SEARCH_CURRENT;
+                        } else {
+                            flags |= FLAG_SEARCH;
+                        }
                         break;
                     }
                 }
@@ -854,6 +864,8 @@ impl Renderer {
         &mut self,
         terminal: &termojinal_vt::Terminal,
         selection: Option<((usize, usize), (usize, usize))>,
+        search_matches: Option<&[(usize, usize, usize)]>,
+        search_current_idx: Option<usize>,
     ) -> usize {
         let key = self.current_pane_key;
         self.pane_caches.entry(key).or_default();
@@ -867,10 +879,13 @@ impl Renderer {
         let dims_match = cache.grid_dims == (cols, rows);
         let scroll_match = cache.scroll_offset == scroll_offset;
         let selection_match = cache.selection == selection;
+        let search_match = cache.search_matches.as_deref() == search_matches
+            && cache.search_current_idx == search_current_idx;
 
         let can_incremental = dims_match
             && scroll_match
             && selection_match
+            && search_match
             && !cache.instances.is_empty()
             && grid.any_dirty();
 
@@ -892,7 +907,7 @@ impl Renderer {
                     continue;
                 }
 
-                let new_row_instances = self.build_row_instances(terminal, row, selection, None);
+                let new_row_instances = self.build_row_instances(terminal, row, selection, search_matches, search_current_idx);
 
                 let cache = &self.pane_caches[&key];
                 let row_start_instance: usize =
@@ -911,7 +926,7 @@ impl Renderer {
                         bytemuck::cast_slice(&new_row_instances),
                     );
                 } else {
-                    return self.full_rebuild(terminal, selection);
+                    return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
                 }
             }
 
@@ -925,12 +940,13 @@ impl Renderer {
             && dims_match
             && scroll_match
             && selection_match
+            && search_match
             && !cache.instances.is_empty()
         {
             return cache.instance_count;
         }
 
-        self.full_rebuild(terminal, selection)
+        self.full_rebuild(terminal, selection, search_matches, search_current_idx)
     }
 
     /// Perform a full rebuild of all instance data for the current pane.
@@ -938,6 +954,8 @@ impl Renderer {
         &mut self,
         terminal: &termojinal_vt::Terminal,
         selection: Option<((usize, usize), (usize, usize))>,
+        search_matches: Option<&[(usize, usize, usize)]>,
+        search_current_idx: Option<usize>,
     ) -> usize {
         let grid = terminal.grid();
         let cols = grid.cols();
@@ -949,7 +967,7 @@ impl Renderer {
         let mut row_counts = Vec::with_capacity(rows);
 
         for row in 0..rows {
-            let row_instances = self.build_row_instances(terminal, row, selection, None);
+            let row_instances = self.build_row_instances(terminal, row, selection, search_matches, search_current_idx);
             row_counts.push(row_instances.len());
             instances.extend_from_slice(&row_instances);
         }
@@ -985,6 +1003,8 @@ impl Renderer {
         cache.grid_dims = (cols, rows);
         cache.selection = selection;
         cache.row_instance_counts = row_counts;
+        cache.search_matches = search_matches.map(|m| m.to_vec());
+        cache.search_current_idx = search_current_idx;
 
         grid.clear_dirty();
         count
@@ -1184,6 +1204,8 @@ impl Renderer {
         pane_key: PaneKey,
         preedit: Option<&str>,
         view: &wgpu::TextureView,
+        search_matches: Option<&[(usize, usize, usize)]>,
+        search_current_idx: Option<usize>,
     ) -> Result<(), RenderError> {
         let (vp_x, vp_y, vp_w, vp_h) = viewport;
 
@@ -1195,7 +1217,7 @@ impl Renderer {
 
         // Select the per-pane cache so dirty optimization works across panes.
         self.set_active_pane(pane_key);
-        let instance_count = self.update_instances(terminal, selection);
+        let instance_count = self.update_instances(terminal, selection, search_matches, search_current_idx);
 
         // Re-upload atlas if needed.
         let current_glyph_count = self.atlas.glyph_count();
@@ -1438,7 +1460,7 @@ impl Renderer {
         view: &wgpu::TextureView,
     ) -> Result<(), RenderError> {
         // Build/update instance data (with dirty-row optimization).
-        let instance_count = self.update_instances(terminal, selection);
+        let instance_count = self.update_instances(terminal, selection, None, None);
 
         // Re-upload atlas texture if new glyphs were rasterized.
         let current_glyph_count = self.atlas.glyph_count();

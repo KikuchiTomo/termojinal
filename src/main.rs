@@ -4912,6 +4912,52 @@ enum SearchKeyResult {
     Pass,
 }
 
+/// Scroll the focused pane's terminal so the current search match is visible.
+///
+/// If the current match row is outside the visible viewport, adjust
+/// `scroll_offset` to bring it into view. Currently, the search only
+/// runs against the visible grid, so this is largely a no-op, but it
+/// serves as the hook for when search is extended to scrollback.
+fn scroll_to_search_match(state: &mut AppState) {
+    let (match_row, rows) = {
+        let search = match state.search.as_ref() {
+            Some(s) if !s.matches.is_empty() => s,
+            _ => return,
+        };
+        let (m_row, _, _) = search.matches[search.current];
+
+        let ws_idx = state.active_workspace;
+        let tab_idx = state.workspaces[ws_idx].active_tab;
+        let focused_id = state.workspaces[ws_idx].tabs[tab_idx].layout.focused();
+        let rows = state.workspaces[ws_idx].tabs[tab_idx]
+            .panes
+            .get(&focused_id)
+            .map(|p| p.terminal.grid().rows())
+            .unwrap_or(0);
+        (m_row, rows)
+    };
+
+    if rows == 0 {
+        return;
+    }
+
+    // If match row is within the visible viewport (0..rows), no scroll needed.
+    if match_row < rows {
+        return;
+    }
+
+    // Match is outside the visible area — adjust scroll offset.
+    // Place the match row roughly in the middle of the viewport.
+    let ws_idx = state.active_workspace;
+    let tab_idx = state.workspaces[ws_idx].active_tab;
+    let focused_id = state.workspaces[ws_idx].tabs[tab_idx].layout.focused();
+    if let Some(pane) = state.workspaces[ws_idx].tabs[tab_idx].panes.get_mut(&focused_id) {
+        let half = rows / 2;
+        let new_offset = match_row.saturating_sub(half);
+        pane.terminal.set_scroll_offset(new_offset);
+    }
+}
+
 fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> SearchKeyResult {
     if state.search.is_none() {
         return SearchKeyResult::Pass;
@@ -4930,6 +4976,7 @@ fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> Se
                     search.next_match();
                 }
             }
+            scroll_to_search_match(state);
             return SearchKeyResult::Consumed;
         }
         Key::Named(NamedKey::Backspace) => {
@@ -7733,6 +7780,20 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
             } else {
                 None
             };
+            // Pass search matches only for the focused pane.
+            let (s_matches, s_current_idx) = if *pid == focused_id {
+                if let Some(ref search) = state.search {
+                    if !search.matches.is_empty() {
+                        (Some(search.matches.as_slice()), Some(search.current))
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
             let viewport = (
                 rect.x as u32,
                 rect.y as u32,
@@ -7741,7 +7802,7 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
             );
             state
                 .renderer
-                .render_pane(&pane.terminal, sel_bounds, viewport, *pid, preedit, &view)?;
+                .render_pane(&pane.terminal, sel_bounds, viewport, *pid, preedit, &view, s_matches, s_current_idx)?;
         }
     }
 
