@@ -59,16 +59,134 @@ enum PaletteResult {
     Dismiss,
     /// Key not handled by palette.
     Pass,
+    /// Open a file in the editor.
+    OpenInEditor(String),
+    /// cd to a directory.
+    CdToDirectory(String),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PaletteMode {
+    /// File finder (default when palette opens).
+    FileFinder,
+    /// Command mode (activated by typing `>`).
+    Command,
+}
+
+/// A file/directory entry in the file finder palette.
+struct FileFinderEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+/// State for the file finder within the command palette.
+struct FileFinderState {
+    /// Current search root directory.
+    search_root: String,
+    /// All entries at the current directory level.
+    entries: Vec<FileFinderEntry>,
+    /// Filtered entry indices (into `entries`).
+    filtered: Vec<usize>,
+    /// Currently selected index into `filtered`.
+    selected: usize,
+    /// Scroll offset for the results list.
+    scroll_offset: usize,
+}
+
+impl FileFinderState {
+    fn new() -> Self {
+        Self {
+            search_root: String::new(),
+            entries: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+        }
+    }
+
+    /// Load entries from the given directory.
+    fn load_entries(&mut self, root: &str) {
+        self.search_root = root.to_string();
+        self.entries.clear();
+        self.filtered.clear();
+        self.selected = 0;
+        self.scroll_offset = 0;
+
+        if let Ok(read_dir) = std::fs::read_dir(root) {
+            let mut dirs = Vec::new();
+            let mut files = Vec::new();
+            for entry in read_dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Skip hidden files/directories.
+                if name.starts_with('.') {
+                    continue;
+                }
+                let path = entry.path().to_string_lossy().to_string();
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let ffe = FileFinderEntry { name, path, is_dir };
+                if is_dir { dirs.push(ffe); } else { files.push(ffe); }
+            }
+            dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            self.entries.extend(dirs);
+            self.entries.extend(files);
+        }
+
+        // Initially show all entries.
+        self.filtered = (0..self.entries.len()).collect();
+    }
+
+    /// Filter entries by prefix match against the query.
+    fn update_filter(&mut self, query: &str) {
+        let q = query.to_lowercase();
+        self.filtered = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.name.to_lowercase().starts_with(&q))
+            .map(|(i, _)| i)
+            .collect();
+        self.selected = 0;
+        self.scroll_offset = 0;
+    }
+
+    fn select_next(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = if self.selected + 1 >= self.filtered.len() { 0 } else { self.selected + 1 };
+        }
+    }
+
+    fn select_prev(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = if self.selected == 0 { self.filtered.len() - 1 } else { self.selected - 1 };
+        }
+    }
+
+    fn selected_entry(&self) -> Option<&FileFinderEntry> {
+        self.filtered.get(self.selected).and_then(|&i| self.entries.get(i))
+    }
+
+    fn ensure_visible(&mut self, max_visible: usize) {
+        if max_visible == 0 { return; }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + max_visible {
+            self.scroll_offset = self.selected + 1 - max_visible;
+        }
+    }
 }
 
 struct CommandPalette {
     visible: bool,
+    mode: PaletteMode,
     input: String,
     preedit: String,       // IME preedit text (displayed but not committed)
     commands: Vec<PaletteCommand>,
     filtered: Vec<usize>, // Indices into commands
     selected: usize,      // Index into filtered
     scroll_offset: usize, // First visible item index (for scrolling)
+    file_finder: FileFinderState,
 }
 
 impl CommandPalette {
@@ -180,22 +298,30 @@ impl CommandPalette {
         let filtered: Vec<usize> = (0..commands.len()).collect();
         Self {
             visible: false,
+            mode: PaletteMode::FileFinder,
             input: String::new(),
             preedit: String::new(),
             commands,
             filtered,
             selected: 0,
             scroll_offset: 0,
+            file_finder: FileFinderState::new(),
         }
     }
 
     fn toggle(&mut self) {
         self.visible = !self.visible;
         if self.visible {
-            // Reset state when opening.
+            // Reset state when opening — always start in file finder mode.
+            self.mode = PaletteMode::FileFinder;
             self.input.clear();
             self.update_filter();
         }
+    }
+
+    /// Initialize file finder from a CWD path. Called when palette opens.
+    fn init_file_finder(&mut self, cwd: &str) {
+        self.file_finder.load_entries(cwd);
     }
 
     fn update_filter(&mut self) {
@@ -252,6 +378,14 @@ impl CommandPalette {
     }
 
     fn handle_key(&mut self, event: &winit::event::KeyEvent) -> PaletteResult {
+        match self.mode {
+            PaletteMode::Command => self.handle_key_command(event),
+            PaletteMode::FileFinder => self.handle_key_file_finder(event),
+        }
+    }
+
+    /// Key handling for command mode (existing behavior).
+    fn handle_key_command(&mut self, event: &winit::event::KeyEvent) -> PaletteResult {
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => PaletteResult::Dismiss,
             Key::Named(NamedKey::Enter) => {
@@ -270,8 +404,14 @@ impl CommandPalette {
                 PaletteResult::Consumed
             }
             Key::Named(NamedKey::Backspace) => {
-                self.input.pop();
-                self.update_filter();
+                if self.input.is_empty() {
+                    // No text left in command mode → switch back to file finder.
+                    self.mode = PaletteMode::FileFinder;
+                    self.file_finder.update_filter("");
+                } else {
+                    self.input.pop();
+                    self.update_filter();
+                }
                 PaletteResult::Consumed
             }
             _ => {
@@ -285,6 +425,155 @@ impl CommandPalette {
                 PaletteResult::Pass
             }
         }
+    }
+
+    /// Key handling for file finder mode.
+    fn handle_key_file_finder(&mut self, event: &winit::event::KeyEvent) -> PaletteResult {
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => PaletteResult::Dismiss,
+            Key::Named(NamedKey::ArrowUp) => {
+                self.file_finder.select_prev();
+                PaletteResult::Consumed
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.file_finder.select_next();
+                PaletteResult::Consumed
+            }
+            Key::Named(NamedKey::Tab) => {
+                // Autocomplete: fill input with selected entry name.
+                if let Some(entry) = self.file_finder.selected_entry() {
+                    let name = entry.name.clone();
+                    let is_dir = entry.is_dir;
+                    // If the input has a path prefix (e.g., "src/"), keep it.
+                    let prefix = if let Some(slash_pos) = self.input.rfind('/') {
+                        &self.input[..=slash_pos]
+                    } else {
+                        ""
+                    };
+                    self.input = format!("{}{}{}", prefix, name, if is_dir { "/" } else { "" });
+                    self.handle_file_finder_input_change();
+                }
+                PaletteResult::Consumed
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(entry) = self.file_finder.selected_entry() {
+                    let path = entry.path.clone();
+                    let is_dir = entry.is_dir;
+                    if is_dir {
+                        // Navigate into the directory.
+                        self.file_finder.load_entries(&path);
+                        self.input.clear();
+                        PaletteResult::Consumed
+                    } else {
+                        PaletteResult::OpenInEditor(path)
+                    }
+                } else {
+                    PaletteResult::Consumed
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if self.input.is_empty() {
+                    // Empty input + Backspace → close palette.
+                    PaletteResult::Dismiss
+                } else {
+                    self.input.pop();
+                    self.handle_file_finder_input_change();
+                    PaletteResult::Consumed
+                }
+            }
+            _ => {
+                if let Some(ref text) = event.text {
+                    if !text.is_empty() && !text.contains('\r') {
+                        // Check for `>` as first character → switch to command mode.
+                        if self.input.is_empty() && text.as_str() == ">" {
+                            self.mode = PaletteMode::Command;
+                            self.input.clear();
+                            self.update_filter();
+                            return PaletteResult::Consumed;
+                        }
+                        // `v` on empty input → open selected in editor.
+                        if self.input.is_empty() && text.as_str() == "v" {
+                            if let Some(entry) = self.file_finder.selected_entry() {
+                                let path = entry.path.clone();
+                                return PaletteResult::OpenInEditor(path);
+                            }
+                        }
+                        // `e` on empty input → cd to selected directory.
+                        if self.input.is_empty() && text.as_str() == "e" {
+                            if let Some(entry) = self.file_finder.selected_entry() {
+                                let path = if entry.is_dir {
+                                    entry.path.clone()
+                                } else {
+                                    // For files, cd to parent directory.
+                                    std::path::Path::new(&entry.path)
+                                        .parent()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_default()
+                                };
+                                if !path.is_empty() {
+                                    return PaletteResult::CdToDirectory(path);
+                                }
+                            }
+                        }
+                        self.input.push_str(text);
+                        self.handle_file_finder_input_change();
+                        return PaletteResult::Consumed;
+                    }
+                }
+                PaletteResult::Pass
+            }
+        }
+    }
+
+    /// Process input changes in file finder mode — handle `/` path navigation
+    /// and `..` parent directory, then filter entries.
+    fn handle_file_finder_input_change(&mut self) {
+        if self.input.contains('/') {
+            // Split at the last `/`.
+            if let Some(slash_pos) = self.input.rfind('/') {
+                let dir_part = &self.input[..slash_pos];
+                let filter_part = self.input[slash_pos + 1..].to_string();
+
+                // Resolve the directory relative to search_root.
+                let target_dir = if dir_part == ".." {
+                    std::path::Path::new(&self.file_finder.search_root)
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| self.file_finder.search_root.clone())
+                } else if dir_part.starts_with('/') {
+                    dir_part.to_string()
+                } else {
+                    format!("{}/{}", self.file_finder.search_root, dir_part)
+                };
+
+                // Only reload if directory changed.
+                let canonical = std::fs::canonicalize(&target_dir)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(target_dir.clone());
+                let current_canonical = std::fs::canonicalize(&self.file_finder.search_root)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(self.file_finder.search_root.clone());
+
+                if canonical != current_canonical && std::path::Path::new(&canonical).is_dir() {
+                    self.file_finder.load_entries(&canonical);
+                    self.input = filter_part.clone();
+                }
+                self.file_finder.update_filter(&filter_part);
+                return;
+            }
+        }
+        // Handle `..` without trailing slash.
+        if self.input == ".." {
+            if let Some(parent) = std::path::Path::new(&self.file_finder.search_root)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+            {
+                self.file_finder.load_entries(&parent);
+                self.input.clear();
+                return;
+            }
+        }
+        self.file_finder.update_filter(&self.input);
     }
 }
 
@@ -1722,6 +2011,88 @@ fn dir_tree_collapse(state: &mut AppState) {
 }
 
 /// cd to the selected entry (directory) in the active pane.
+/// cd to a directory from the file finder palette.
+fn palette_cd_to_dir(state: &mut AppState, path: &str) {
+    let focused_id = active_tab(state).layout.focused();
+    if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+        let cmd = format!("\x15cd {}\n", shell_escape(path));
+        let _ = pane.pty.write(cmd.as_bytes());
+    }
+}
+
+/// Open a file in $EDITOR from the file finder palette (reuses dir_tree_open_in_editor logic).
+fn palette_open_in_editor(
+    state: &mut AppState,
+    path: &str,
+    proxy: &winit::event_loop::EventLoopProxy<UserEvent>,
+    pty_buffers: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PaneId, std::collections::VecDeque<Vec<u8>>>>>,
+) {
+    // Resolve editor.
+    let cfg_editor = state.config.directory_tree.editor.clone();
+    let editor = if !cfg_editor.is_empty() {
+        cfg_editor
+    } else {
+        std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string())
+    };
+
+    // Determine CWD for the new tab.
+    let file_path = std::path::Path::new(path);
+    let tab_cwd = if file_path.is_dir() {
+        path.to_string()
+    } else {
+        file_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+    };
+    if tab_cwd.is_empty() { return; }
+
+    // Compute pane dimensions.
+    let cell_size = state.renderer.cell_size();
+    let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let status_bar_h = if state.config.status_bar.enabled { state.config.status_bar.height } else { 0.0 };
+    let (sw, sh) = state.renderer.surface_size();
+    let phys_w = sw as f32;
+    let phys_h = sh as f32;
+    let avail_w = phys_w - sidebar_w;
+    let avail_h = phys_h - tab_bar_h - status_bar_h;
+    let cols = (avail_w / cell_size.width).floor() as u16;
+    let rows = (avail_h / cell_size.height).floor() as u16;
+    let cjk_width = state.renderer.cjk_width;
+    let fmt = state.config.tab_bar.format.clone();
+
+    let pane_id = state.next_pane_id;
+    state.next_pane_id += 1;
+    let time_travel_cfg = Some(&state.config.time_travel);
+
+    match spawn_pane(pane_id, cols, rows, proxy, pty_buffers, Some(tab_cwd), time_travel_cfg, cjk_width) {
+        Ok(mut pane) => {
+            let cmd = format!("{} {}\n", editor, shell_escape(path));
+            let _ = pane.pty.write(cmd.as_bytes());
+            let layout = LayoutTree::new(pane_id);
+            let mut panes = HashMap::new();
+            panes.insert(pane_id, pane);
+            let tab_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("editor")
+                .to_string();
+            let ws = &mut state.workspaces[state.active_workspace];
+            let tab_num = ws.tabs.len() + 1;
+            let tab = Tab {
+                layout,
+                panes,
+                name: tab_name.clone(),
+                display_title: format_tab_title(&fmt, &tab_name, "", tab_num),
+            };
+            ws.tabs.push(tab);
+            ws.active_tab = ws.tabs.len() - 1;
+            resize_all_panes(state);
+        }
+        Err(e) => {
+            log::error!("palette_open_in_editor: failed to spawn pane: {e}");
+        }
+    }
+}
+
 fn dir_tree_cd(state: &mut AppState) {
     let wi = state.active_workspace;
     if wi >= state.dir_trees.len() { return; }
@@ -3496,6 +3867,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 } else {
                                     exec.selected + 1
                                 };
+                            } else if state.command_palette.mode == PaletteMode::FileFinder {
+                                state.command_palette.file_finder.select_next();
                             } else {
                                 state.command_palette.select_next();
                             }
@@ -3511,6 +3884,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 } else {
                                     exec.selected - 1
                                 };
+                            } else if state.command_palette.mode == PaletteMode::FileFinder {
+                                state.command_palette.file_finder.select_prev();
                             } else {
                                 state.command_palette.select_prev();
                             }
@@ -3594,6 +3969,18 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         PaletteResult::Dismiss => {
                             state.command_palette.visible = false;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        PaletteResult::OpenInEditor(path) => {
+                            state.command_palette.visible = false;
+                            palette_open_in_editor(state, &path, &self.proxy, &self.pty_buffers);
+                            state.window.request_redraw();
+                            return;
+                        }
+                        PaletteResult::CdToDirectory(path) => {
+                            state.command_palette.visible = false;
+                            palette_cd_to_dir(state, &path);
                             state.window.request_redraw();
                             return;
                         }
@@ -5509,6 +5896,24 @@ fn dispatch_action(
                 state.command_execution = None;
             }
             state.command_palette.toggle();
+            // Initialize file finder with focused pane's CWD.
+            if state.command_palette.visible {
+                let cwd = {
+                    let tab = active_tab(state);
+                    let pane = tab.panes.get(&focused_id);
+                    pane.map(|p| {
+                        let osc_cwd = &p.terminal.osc.cwd;
+                        if !osc_cwd.is_empty() {
+                            osc_cwd.clone()
+                        } else {
+                            std::env::current_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| "/".to_string())
+                        }
+                    }).unwrap_or_else(|| "/".to_string())
+                };
+                state.command_palette.init_file_finder(&cwd);
+            }
             state.window.request_redraw();
             true
         }
@@ -8165,8 +8570,12 @@ fn render_command_palette(
     let box_w = (phys_w * pc.width_ratio).min(phys_w - 40.0).max(200.0);
     let max_box_h = pc.max_height;
     let max_visible_items = pc.max_visible_items;
-    let visible_items = state.command_palette.filtered.len().min(max_visible_items);
-    let rows_needed = 1 + visible_items.max(1); // input row + command rows (min 1 for "No matches")
+    let item_count = match state.command_palette.mode {
+        PaletteMode::Command => state.command_palette.filtered.len(),
+        PaletteMode::FileFinder => state.command_palette.file_finder.filtered.len(),
+    };
+    let visible_items = item_count.min(max_visible_items);
+    let rows_needed = 1 + visible_items.max(1); // input row + item rows (min 1 for "No matches")
     let box_h = ((rows_needed as f32) * cell_h + cell_h).min(max_box_h); // extra padding
     let box_x = (phys_w - box_w) / 2.0;
     let box_y = (phys_h * 0.2).min(phys_h - box_h - 20.0).max(20.0);
@@ -8191,10 +8600,29 @@ fn render_command_palette(
     let input_y = box_y + cell_h * 0.25;
     let input_x = box_x + cell_w;
     let preedit = &state.command_palette.preedit;
-    let prompt = if preedit.is_empty() {
-        format!("> {}", state.command_palette.input)
-    } else {
-        format!("> {}[{}]", state.command_palette.input, preedit)
+    let prompt = match state.command_palette.mode {
+        PaletteMode::Command => {
+            if preedit.is_empty() {
+                format!("> {}", state.command_palette.input)
+            } else {
+                format!("> {}[{}]", state.command_palette.input, preedit)
+            }
+        }
+        PaletteMode::FileFinder => {
+            // Show abbreviated CWD + input.
+            let root = &state.command_palette.file_finder.search_root;
+            let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let display_root = if !home.is_empty() && root.starts_with(&home) {
+                format!("~{}/", &root[home.len()..])
+            } else {
+                format!("{}/", root)
+            };
+            if preedit.is_empty() {
+                format!("{}{}", display_root, state.command_palette.input)
+            } else {
+                format!("{}{}[{}]", display_root, state.command_palette.input, preedit)
+            }
+        }
     };
     let palette_input_fg = color_or(&pc.input_fg, [0.95, 0.95, 0.95, 1.0]);
     state.renderer.render_text(view, &prompt, input_x, input_y, palette_input_fg, box_bg);
@@ -8211,100 +8639,111 @@ fn render_command_palette(
         palette_sep_color,
     );
 
-    // 4. Filtered command list.
+    // 4. Filtered item list.
     let list_start_y = sep_y as f32 + cell_h * 0.25;
     let cmd_fg = color_or(&pc.command_fg, [0.8, 0.8, 0.82, 1.0]);
     let selected_bg = color_or(&pc.selected_bg, [0.22, 0.22, 0.32, 1.0]);
     let desc_fg = color_or(&pc.description_fg, [0.5, 0.5, 0.55, 1.0]);
-
-    // Calculate max characters that fit in the box (for truncation).
     let max_chars = ((box_w - 2.0 * cell_w) / cell_w) as usize;
 
-    // Ensure selected item is within the visible scroll window.
-    state.command_palette.ensure_visible(max_visible_items);
-    let scroll_offset = state.command_palette.scroll_offset;
+    match state.command_palette.mode {
+        PaletteMode::Command => {
+            // --- Command list rendering (existing behavior) ---
+            state.command_palette.ensure_visible(max_visible_items);
+            let scroll_offset = state.command_palette.scroll_offset;
 
-    for (vi, &cmd_idx) in state
-        .command_palette
-        .filtered
-        .iter()
-        .enumerate()
-        .skip(scroll_offset)
-        .take(max_visible_items)
-    {
-        let row = vi - scroll_offset;
-        let item_y = list_start_y + (row as f32) * cell_h;
-        if item_y + cell_h > box_y + box_h {
-            break;
+            for (vi, &cmd_idx) in state
+                .command_palette
+                .filtered
+                .iter()
+                .enumerate()
+                .skip(scroll_offset)
+                .take(max_visible_items)
+            {
+                let row = vi - scroll_offset;
+                let item_y = list_start_y + (row as f32) * cell_h;
+                if item_y + cell_h > box_y + box_h { break; }
+
+                let is_selected = vi == state.command_palette.selected;
+                let bg = if is_selected { selected_bg } else { box_bg };
+
+                if is_selected {
+                    let sel_rect = RoundedRect {
+                        rect: [box_x + 1.0, item_y, box_w - 2.0, cell_h],
+                        color: selected_bg,
+                        border_color: [0.0; 4],
+                        params: [4.0, 0.0, 0.0, 0.0],
+                    };
+                    state.renderer.submit_rounded_rects(view, &[sel_rect]);
+                }
+
+                let cmd = &state.command_palette.commands[cmd_idx];
+                let (badge, badge_fg) = match cmd.kind {
+                    CommandKind::Builtin => ("", [0.0; 4]),
+                    CommandKind::Plugin => ("[ext] ", [0.7, 0.55, 0.2, 1.0]),
+                    CommandKind::PluginVerified => ("[ok] ", [0.4, 0.8, 0.4, 1.0]),
+                };
+                let badge_w = if badge.is_empty() { 0.0 } else { badge.chars().count() as f32 * cell_w };
+                if !badge.is_empty() {
+                    state.renderer.render_text(view, badge, input_x, item_y, badge_fg, bg);
+                }
+                let name_display: String = cmd.name.chars().take(max_chars.saturating_sub(badge.chars().count())).collect();
+                let fg = if is_selected { palette_input_fg } else { cmd_fg };
+                state.renderer.render_text(view, &name_display, input_x + badge_w, item_y, fg, bg);
+                let desc_offset = badge_w + name_display.len() as f32 * cell_w + 2.0 * cell_w;
+                if desc_offset < box_w - 2.0 * cell_w {
+                    let remaining = max_chars.saturating_sub(name_display.len() + 2);
+                    let desc_display: String = cmd.description.chars().take(remaining).collect();
+                    state.renderer.render_text(view, &desc_display, input_x + desc_offset, item_y, desc_fg, bg);
+                }
+            }
+            if state.command_palette.filtered.is_empty() {
+                let empty_fg = [0.5, 0.5, 0.55, 1.0];
+                state.renderer.render_text(view, "No matching commands", input_x, list_start_y, empty_fg, box_bg);
+            }
         }
+        PaletteMode::FileFinder => {
+            // --- File finder list rendering ---
+            let ff = &mut state.command_palette.file_finder;
+            ff.ensure_visible(max_visible_items);
+            let scroll_offset = ff.scroll_offset;
+            let dir_icon_fg = [0.55, 0.75, 0.95, 1.0]; // blue-ish for directories
+            let file_icon_fg = [0.65, 0.65, 0.68, 1.0]; // grey for files
 
-        let is_selected = vi == state.command_palette.selected;
-        let bg = if is_selected { selected_bg } else { box_bg };
+            for (vi, &entry_idx) in ff.filtered.iter().enumerate().skip(scroll_offset).take(max_visible_items) {
+                let row = vi - scroll_offset;
+                let item_y = list_start_y + (row as f32) * cell_h;
+                if item_y + cell_h > box_y + box_h { break; }
 
-        // Highlight selected row with a rounded rect for consistent appearance.
-        if is_selected {
-            let sel_rect = RoundedRect {
-                rect: [box_x + 1.0, item_y, box_w - 2.0, cell_h],
-                color: selected_bg,
-                border_color: [0.0; 4],
-                params: [4.0, 0.0, 0.0, 0.0],
-            };
-            state.renderer.submit_rounded_rects(view, &[sel_rect]);
+                let is_selected = vi == ff.selected;
+                let bg = if is_selected { selected_bg } else { box_bg };
+
+                if is_selected {
+                    let sel_rect = RoundedRect {
+                        rect: [box_x + 1.0, item_y, box_w - 2.0, cell_h],
+                        color: selected_bg,
+                        border_color: [0.0; 4],
+                        params: [4.0, 0.0, 0.0, 0.0],
+                    };
+                    state.renderer.submit_rounded_rects(view, &[sel_rect]);
+                }
+
+                let entry = &ff.entries[entry_idx];
+                let icon = if entry.is_dir { "\u{25B8} " } else { "  " }; // ▸ for dirs
+                let icon_fg = if entry.is_dir { dir_icon_fg } else { file_icon_fg };
+                state.renderer.render_text(view, icon, input_x, item_y, icon_fg, bg);
+
+                let name_display: String = entry.name.chars().take(max_chars.saturating_sub(2)).collect();
+                let name_suffix = if entry.is_dir { "/" } else { "" };
+                let display = format!("{}{}", name_display, name_suffix);
+                let fg = if is_selected { palette_input_fg } else { cmd_fg };
+                state.renderer.render_text(view, &display, input_x + cell_w * 2.0, item_y, fg, bg);
+            }
+            if ff.filtered.is_empty() {
+                let empty_fg = [0.5, 0.5, 0.55, 1.0];
+                state.renderer.render_text(view, "No matching files", input_x, list_start_y, empty_fg, box_bg);
+            }
         }
-
-        let cmd = &state.command_palette.commands[cmd_idx];
-
-        // Kind badge: builtin = none, plugin = [ext], verified = [ok]
-        let (badge, badge_fg) = match cmd.kind {
-            CommandKind::Builtin => ("", [0.0; 4]),
-            CommandKind::Plugin => ("[ext] ", [0.7, 0.55, 0.2, 1.0]),
-            CommandKind::PluginVerified => ("[ok] ", [0.4, 0.8, 0.4, 1.0]),
-        };
-        let badge_w = if badge.is_empty() { 0.0 } else { badge.chars().count() as f32 * cell_w };
-        if !badge.is_empty() {
-            state.renderer.render_text(view, badge, input_x, item_y, badge_fg, bg);
-        }
-
-        // Render name in brighter color, description in dimmer color.
-        let name_display: String = cmd.name.chars().take(max_chars.saturating_sub(badge.chars().count())).collect();
-        let fg = if is_selected { palette_input_fg } else { cmd_fg };
-        state.renderer.render_text(
-            view,
-            &name_display,
-            input_x + badge_w,
-            item_y,
-            fg,
-            bg,
-        );
-
-        // Render description after the name.
-        let desc_offset = badge_w + name_display.len() as f32 * cell_w + 2.0 * cell_w;
-        if desc_offset < box_w - 2.0 * cell_w {
-            let remaining = max_chars.saturating_sub(name_display.len() + 2);
-            let desc_display: String = cmd.description.chars().take(remaining).collect();
-            state.renderer.render_text(
-                view,
-                &desc_display,
-                input_x + desc_offset,
-                item_y,
-                desc_fg,
-                bg,
-            );
-        }
-    }
-
-    // Show "No matches" if filtered list is empty.
-    if state.command_palette.filtered.is_empty() {
-        let no_match = "No matching commands";
-        let empty_fg = [0.5, 0.5, 0.55, 1.0];
-        state.renderer.render_text(
-            view,
-            no_match,
-            input_x,
-            list_start_y,
-            empty_fg,
-            box_bg,
-        );
     }
 }
 
