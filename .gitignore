@@ -34,3 +34,4 @@ docs/claude/*.md
 *.pdf
 
 */.DS_Store
+.claude/worktrees/
