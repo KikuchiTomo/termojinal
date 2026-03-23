@@ -636,7 +636,9 @@ impl Renderer {
             };
 
             // Check if this character is an emoji and get glyph from the
-            // appropriate atlas.
+            // appropriate atlas.  For non-emoji characters that fontdue can't
+            // render, fall back to the emoji atlas (Core Text) which handles
+            // font cascading and can render virtually any Unicode character.
             let (glyph, is_emoji_cell) = if emoji_atlas::is_emoji(c) {
                 if let Some(eg) = self.emoji_atlas.get_glyph(c) {
                     (eg, true)
@@ -644,7 +646,21 @@ impl Renderer {
                     (self.atlas.get_glyph(c), false)
                 }
             } else {
-                (self.atlas.get_glyph(c), false)
+                let mono_glyph = self.atlas.get_glyph(c);
+                // If the monospace atlas returned an empty glyph (all-zero region
+                // in the atlas) for a non-trivial character, try the emoji atlas
+                // as a Core Text fallback.
+                if c > ' ' && !c.is_control() && mono_glyph.atlas_w > 0.0
+                    && self.atlas.is_glyph_empty(c)
+                {
+                    if let Some(eg) = self.emoji_atlas.get_glyph(c) {
+                        (eg, true)
+                    } else {
+                        (mono_glyph, false)
+                    }
+                } else {
+                    (mono_glyph, false)
+                }
             };
 
             let fg = color_convert::color_to_rgba_themed(cell.fg, true, &self.theme_palette);
@@ -1244,6 +1260,7 @@ impl Renderer {
                 surface_h,
                 grid_offset_px,
                 Some(viewport),
+                terminal.scroll_offset(),
             );
         }
 
@@ -1511,6 +1528,7 @@ impl Renderer {
                 surface_h,
                 grid_offset_px,
                 viewport,
+                terminal.scroll_offset(),
             );
         }
 
@@ -1676,9 +1694,29 @@ impl Renderer {
         let mut instances = Vec::with_capacity(text.len());
         let mut col = 0usize;
         for c in text.chars() {
-            let glyph = self.atlas.get_glyph(c);
+            let (glyph, is_emoji_cell) = if emoji_atlas::is_emoji(c) {
+                if let Some(eg) = self.emoji_atlas.get_glyph(c) {
+                    (eg, true)
+                } else {
+                    (self.atlas.get_glyph(c), false)
+                }
+            } else {
+                let mono_glyph = self.atlas.get_glyph(c);
+                if c > ' ' && !c.is_control() && mono_glyph.atlas_w > 0.0
+                    && self.atlas.is_glyph_empty(c)
+                {
+                    if let Some(eg) = self.emoji_atlas.get_glyph(c) {
+                        (eg, true)
+                    } else {
+                        (mono_glyph, false)
+                    }
+                } else {
+                    (mono_glyph, false)
+                }
+            };
             let cw = termojinal_vt::char_width(c, self.cjk_width);
             let width_scale = if cw > 1 { cw as f32 } else { 1.0 };
+            let flags = if is_emoji_cell { FLAG_EMOJI } else { 0 };
             instances.push(CellInstance {
                 grid_pos: [col as f32, 0.0],
                 atlas_uv: [
@@ -1689,7 +1727,7 @@ impl Renderer {
                 ],
                 fg_color: fg,
                 bg_color: bg,
-                flags: 0,
+                flags,
                 cell_width_scale: width_scale,
                 _pad: [0; 2],
             });
@@ -1698,6 +1736,13 @@ impl Renderer {
 
         if instances.is_empty() {
             return;
+        }
+
+        // Re-upload emoji atlas if new glyphs were rasterized.
+        let current_emoji_count = self.emoji_atlas.glyph_count();
+        if current_emoji_count != self.emoji_texture_version {
+            self.reupload_emoji_atlas();
+            self.emoji_texture_version = current_emoji_count;
         }
 
         // Re-upload atlas if new glyphs were rasterized.

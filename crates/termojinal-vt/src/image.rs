@@ -36,8 +36,8 @@ pub struct ImagePlacement {
     pub image_id: u32,
     /// Column position (0-based).
     pub col: usize,
-    /// Row position (0-based).
-    pub row: usize,
+    /// Row position (signed: negative means partially scrolled off the top).
+    pub row: isize,
     /// How many cell columns the image spans.
     pub cell_cols: usize,
     /// How many cell rows the image spans.
@@ -154,6 +154,43 @@ impl ImageStore {
     /// Check if there are any placements.
     pub fn has_placements(&self) -> bool {
         !self.placements.is_empty()
+    }
+
+    /// Adjust all image placements when the terminal scrolls up by `lines` rows.
+    ///
+    /// Shifts all placement rows up and removes images that have fully scrolled
+    /// off the top of the screen.  Also garbage-collects images that no longer
+    /// have any placements.
+    pub fn scroll_up(&mut self, lines: usize) {
+        if lines == 0 || self.placements.is_empty() {
+            return;
+        }
+        let lines = lines as isize;
+        // Shift all placement rows up (row can go negative = scrolled off top).
+        for p in &mut self.placements {
+            p.row -= lines;
+        }
+        // Remove placements whose bottom edge is above the screen top.
+        self.placements.retain(|p| p.row + p.cell_rows as isize > 0);
+        // Garbage-collect images that no longer have any placements.
+        let placed_ids: Vec<u32> = self.placements.iter().map(|p| p.image_id).collect();
+        self.images.retain(|id, _| placed_ids.contains(id));
+        self.dirty = true;
+    }
+
+    /// Limit image placement size to fit within the visible terminal grid.
+    ///
+    /// Called after computing cell_cols/cell_rows so images don't extend
+    /// beyond the terminal dimensions.
+    pub fn cap_placement_size(&mut self, max_cols: usize, max_rows: usize) {
+        if let Some(p) = self.placements.last_mut() {
+            if p.cell_cols > max_cols {
+                p.cell_cols = max_cols;
+            }
+            if p.cell_rows > max_rows {
+                p.cell_rows = max_rows;
+            }
+        }
     }
 }
 
@@ -457,7 +494,7 @@ pub fn process_kitty_command(
                 store.add_placement(ImagePlacement {
                     image_id: id,
                     col: cursor_col,
-                    row: cursor_row,
+                    row: cursor_row as isize,
                     cell_cols: cmd.cell_cols.unwrap_or(0),
                     cell_rows: cmd.cell_rows.unwrap_or(0),
                     src_width: img_w,
@@ -492,7 +529,7 @@ pub fn process_kitty_command(
             store.add_placement(ImagePlacement {
                 image_id: id,
                 col: cursor_col,
-                row: cursor_row,
+                row: cursor_row as isize,
                 cell_cols: cmd.cell_cols.unwrap_or(0),
                 cell_rows: cmd.cell_rows.unwrap_or(0),
                 src_width: img_w,
@@ -532,6 +569,182 @@ pub fn process_kitty_command(
 // ---------------------------------------------------------------------------
 // iTerm2 Inline Images (OSC 1337)
 // ---------------------------------------------------------------------------
+
+/// Parsed iTerm2 image metadata from the initial `MultipartFile=` or `File=` header.
+#[derive(Debug, Clone, Default)]
+struct Iterm2Params {
+    inline: bool,
+    width: Option<String>,
+    height: Option<String>,
+    preserve_aspect: bool,
+}
+
+/// Accumulator for iTerm2 multipart image transfer.
+///
+/// The multipart protocol works as follows:
+///   1. `OSC 1337 ; MultipartFile=<params> ST` — begin transfer (metadata, no pixel data)
+///   2. `OSC 1337 ; FilePart=<base64chunk> ST` — one or more data chunks
+///   3. `OSC 1337 ; FileEnd ST`                — finalize: decode & place the image
+#[derive(Debug, Default)]
+pub struct Iterm2Accumulator {
+    /// Parsed parameters from the initial MultipartFile header.
+    params: Option<Iterm2Params>,
+    /// Accumulated base64-encoded data across FilePart chunks.
+    base64_data: String,
+}
+
+impl Iterm2Accumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Begin a new multipart transfer. Parses the `MultipartFile=<params>` payload.
+    pub fn begin(&mut self, payload: &str) {
+        let rest = match payload.strip_prefix("MultipartFile=") {
+            Some(r) => r,
+            None => {
+                log::trace!("iterm2 multipart: missing 'MultipartFile=' prefix");
+                return;
+            }
+        };
+
+        let params = parse_iterm2_params(rest);
+        self.params = Some(params);
+        self.base64_data.clear();
+        log::debug!("iterm2 multipart: begin");
+    }
+
+    /// Accumulate a `FilePart=<base64chunk>` chunk.
+    pub fn add_part(&mut self, payload: &str) {
+        let chunk = match payload.strip_prefix("FilePart=") {
+            Some(c) => c,
+            None => {
+                log::trace!("iterm2 multipart: missing 'FilePart=' prefix");
+                return;
+            }
+        };
+        self.base64_data.push_str(chunk);
+    }
+
+    /// Finalize on `FileEnd`: decode the accumulated data and place the image.
+    /// Returns `true` if an image was successfully placed.
+    pub fn finish(
+        &mut self,
+        store: &mut ImageStore,
+        cursor_col: usize,
+        cursor_row: usize,
+    ) -> bool {
+        let params = match self.params.take() {
+            Some(p) => p,
+            None => {
+                log::trace!("iterm2 multipart: FileEnd without prior MultipartFile");
+                self.base64_data.clear();
+                return false;
+            }
+        };
+
+        if !params.inline {
+            log::trace!("iterm2 multipart: inline=0, not displaying");
+            self.base64_data.clear();
+            return false;
+        }
+
+        let b64 = std::mem::take(&mut self.base64_data);
+        let raw_bytes = match base64::engine::general_purpose::STANDARD.decode(&b64) {
+            Ok(b) => b,
+            Err(e) => {
+                log::trace!("iterm2 multipart: base64 decode error: {e}");
+                return false;
+            }
+        };
+
+        let decoded = if is_png(&raw_bytes) {
+            decode_png(&raw_bytes)
+        } else if is_jpeg(&raw_bytes) {
+            decode_jpeg(&raw_bytes)
+        } else {
+            log::trace!("iterm2 multipart: unsupported format (not PNG or JPEG)");
+            None
+        };
+
+        let decoded = match decoded {
+            Some(d) => d,
+            None => {
+                log::trace!("iterm2 multipart: failed to decode image data");
+                return false;
+            }
+        };
+
+        let id = store.next_id();
+        let img_w = decoded.width;
+        let img_h = decoded.height;
+
+        let cell_cols = params
+            .width
+            .and_then(|w| parse_iterm2_dimension(&w))
+            .unwrap_or(0);
+        let cell_rows = params
+            .height
+            .and_then(|h| parse_iterm2_dimension(&h))
+            .unwrap_or(0);
+
+        store.store_image(TerminalImage {
+            id,
+            data: decoded.data,
+            width: img_w,
+            height: img_h,
+        });
+
+        store.add_placement(ImagePlacement {
+            image_id: id,
+            col: cursor_col,
+            row: cursor_row as isize,
+            cell_cols,
+            cell_rows,
+            src_width: img_w,
+            src_height: img_h,
+        });
+
+        log::debug!(
+            "iterm2 multipart: stored and placed id={id} {img_w}x{img_h}"
+        );
+        true
+    }
+
+    /// Whether a multipart transfer is currently in progress.
+    pub fn is_active(&self) -> bool {
+        self.params.is_some()
+    }
+}
+
+/// Parse iTerm2 key=value parameters from a params string (without the `File=` or
+/// `MultipartFile=` prefix, and without the `:base64data` suffix if present).
+fn parse_iterm2_params(params_str: &str) -> Iterm2Params {
+    let mut result = Iterm2Params {
+        inline: false,
+        width: None,
+        height: None,
+        preserve_aspect: true,
+    };
+
+    for kv in params_str.split(';') {
+        let mut parts = kv.splitn(2, '=');
+        let key = match parts.next() {
+            Some(k) => k,
+            None => continue,
+        };
+        let value = parts.next().unwrap_or("");
+        match key {
+            "inline" => result.inline = value == "1",
+            "width" => result.width = Some(value.to_string()),
+            "height" => result.height = Some(value.to_string()),
+            "preserveAspectRatio" => result.preserve_aspect = value != "0",
+            _ => {}
+        }
+    }
+
+    result
+}
 
 /// Parse an iTerm2 inline image OSC 1337 payload.
 ///
@@ -646,7 +859,7 @@ pub fn parse_iterm2_image(
     store.add_placement(ImagePlacement {
         image_id: id,
         col: cursor_col,
-        row: cursor_row,
+        row: cursor_row as isize,
         cell_cols,
         cell_rows,
         src_width: img_w,
@@ -1007,7 +1220,7 @@ pub fn process_sixel(
             store.add_placement(ImagePlacement {
                 image_id: id,
                 col: cursor_col,
-                row: cursor_row,
+                row: cursor_row as isize,
                 cell_cols: 0,
                 cell_rows: 0,
                 src_width: w,

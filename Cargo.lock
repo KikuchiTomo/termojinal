@@ -2578,6 +2578,7 @@ name = "termojinal-claude"
 version = "0.6.3-beta"
 dependencies = [
  "dirs",
+ "libc",
  "log",
  "regex",
  "serde",

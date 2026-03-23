@@ -2025,6 +2025,14 @@ struct AppState {
     /// Pending close confirmation: pane has running child process.
     /// Stores (process_name, pane_id) to ensure the correct pane is closed.
     pending_close_confirm: Option<(String, PaneId)>,
+    /// Set to `true` during RedrawRequested when continuous animation is needed
+    /// (pulse indicator, command polling, etc.).  Consumed in `about_to_wait`
+    /// to schedule the next frame via `WaitUntil` instead of an immediate
+    /// `request_redraw()`, which would otherwise spin the event loop at 100% CPU.
+    needs_animation_frame: bool,
+    /// Timestamp of the last animation-driven redraw, used to throttle
+    /// continuous redraws to ~30 fps.
+    last_animation_redraw: std::time::Instant,
 }
 
 /// Terminal session info fetched from the daemon.
@@ -2928,6 +2936,8 @@ impl ApplicationHandler<UserEvent> for App {
             sessions_collapsed: false,
             daemon_sessions: Vec::new(),
             pending_close_confirm: None, // (proc_name, pane_id)
+            needs_animation_frame: false,
+            last_animation_redraw: std::time::Instant::now(),
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -4415,6 +4425,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
 
             WindowEvent::RedrawRequested => {
+                // Reset animation flag — set below if continuous frames are needed.
+                state.needs_animation_frame = false;
+
                 // Poll active command execution for new messages.
                 if let Some(ref mut exec) = state.command_execution {
                     if exec.poll() {
@@ -4433,9 +4446,8 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                         }
                     }
-                    // Keep requesting redraws while a command is active
-                    // so we poll for new messages.
-                    state.window.request_redraw();
+                    // Schedule a timer-based redraw (not immediate) to keep polling.
+                    state.needs_animation_frame = true;
                 }
 
                 // Quick Terminal animation tick.
@@ -4443,14 +4455,14 @@ impl ApplicationHandler<UserEvent> for App {
                     state.window.request_redraw();
                 }
 
-                // Agent pulse animation: request continuous redraws when any
+                // Agent pulse animation: schedule timer-based redraws when any
                 // workspace has an active agent with pulse indicator style.
                 if state.sidebar_visible
                     && state.config.sidebar.agent_status_enabled
                     && state.config.sidebar.agent_indicator_style == "pulse"
                     && state.agent_infos.iter().any(|a| a.active)
                 {
-                    state.window.request_redraw();
+                    state.needs_animation_frame = true;
                 }
 
                 if let Err(e) = render_frame(state) {
@@ -4459,6 +4471,27 @@ impl ApplicationHandler<UserEvent> for App {
             }
 
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(state) = &mut self.state {
+            if state.needs_animation_frame {
+                let now = std::time::Instant::now();
+                let interval = std::time::Duration::from_millis(33); // ~30fps
+                let elapsed = now.duration_since(state.last_animation_redraw);
+                if elapsed >= interval {
+                    // Enough time has passed — request a new frame.
+                    state.last_animation_redraw = now;
+                    state.window.request_redraw();
+                } else {
+                    // Not yet time — schedule a wake-up for the remaining duration.
+                    let next = state.last_animation_redraw + interval;
+                    event_loop.set_control_flow(
+                        winit::event_loop::ControlFlow::WaitUntil(next),
+                    );
+                }
+            }
         }
     }
 
@@ -7190,9 +7223,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     };
                     let label_fg = state_color;
                     // Render state icon + state text.
-                    let icon_x = info_indent + cell_w * 0.5;
+                    let icon_x = info_indent + cell_w * 1.0;
                     state.renderer.render_text(view, state_icon, icon_x, line2_y, label_fg, card_bg);
-                    let state_text_x = icon_x + cell_w * 1.5;
+                    let state_text_x = icon_x + cell_w * 2.0;
                     state.renderer.render_text(view, state_text, state_text_x, line2_y, label_fg, card_bg);
                     // Build location string (worktree, branch) after state.
                     let location_info = if !entry.branch.is_empty() {

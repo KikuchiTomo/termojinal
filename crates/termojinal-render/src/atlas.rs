@@ -165,6 +165,36 @@ impl Atlas {
         self.glyphs.len()
     }
 
+    /// Check if a cached glyph has all-zero pixels in the atlas.
+    ///
+    /// Returns `true` if the glyph was rasterized but produced no visible
+    /// output (e.g. the font has no real glyph for this codepoint).
+    /// Returns `false` if the glyph has visible pixels or is not cached.
+    pub fn is_glyph_empty(&self, c: char) -> bool {
+        let Some(&info) = self.glyphs.get(&c) else {
+            return false;
+        };
+        if info.atlas_w <= 0.0 || info.atlas_h <= 0.0 {
+            return true;
+        }
+        // Check the atlas bitmap region for any non-zero pixels.
+        let ax = info.atlas_x as u32;
+        let ay = info.atlas_y as u32;
+        let aw = info.atlas_w as u32;
+        let ah = info.atlas_h as u32;
+        for row in ay..ay + ah {
+            for col in ax..ax + aw {
+                if row < self.height && col < self.width {
+                    let idx = (row * self.width + col) as usize;
+                    if idx < self.data.len() && self.data[idx] > 0 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// Try to draw block elements, shade characters, and box-drawing characters
     /// procedurally. Returns None if the character is not handled.
     fn try_procedural_block(&mut self, c: char) -> Option<GlyphInfo> {
@@ -453,19 +483,40 @@ impl Atlas {
         let entry_h = self.cell_h;
 
         // Check if we should use a fallback font instead.
-        // Use fallback when: the primary returns a zero-size bitmap and the
-        // char is in a special range, OR the primary font has no glyph for it.
+        // Use fallback when:
+        //   - the primary returns a zero-size bitmap, OR
+        //   - the primary font has no glyph (glyph index 0 = .notdef), OR
+        //   - the bitmap has no visible pixels (font has codepoint but empty rendering)
         let primary_missing = (glyph_w == 0 || glyph_h == 0)
-            || self.font.lookup_glyph_index(c) == 0;
+            || self.font.lookup_glyph_index(c) == 0
+            || (Self::needs_fallback_check(c) && bitmap.iter().all(|&b| b == 0));
 
         let (metrics, bitmap) = if Self::is_cjk(c) {
-            // For CJK characters, ALWAYS prefer CJK font (Hiragino) for correct
-            // wide-glyph rendering, even when the primary font has a glyph.
-            if let Some(ref cjk) = self.cjk_font {
-                if cjk.lookup_glyph_index(c) != 0 {
-                    cjk.rasterize(c, self.font_size)
+            // CJK range characters: use CJK font for actual CJK ideographs/kana
+            // (U+3000+), but for symbol ranges (geometric shapes, enclosed
+            // alphanumerics, etc.) only prefer CJK font when cjk_width is enabled.
+            // Otherwise, use primary font if it has a glyph (avoids squishing
+            // wide CJK glyphs into narrow cells).
+            let is_true_cjk = c >= '\u{3000}';
+            let prefer_cjk = is_true_cjk || self.cjk_width;
+
+            if prefer_cjk {
+                if let Some(ref cjk) = self.cjk_font {
+                    if cjk.lookup_glyph_index(c) != 0 {
+                        cjk.rasterize(c, self.font_size)
+                    } else if !primary_missing {
+                        (metrics, bitmap)
+                    } else if let Some(ref fb) = self.fallback_font {
+                        if fb.lookup_glyph_index(c) != 0 {
+                            fb.rasterize(c, self.font_size)
+                        } else {
+                            (metrics, bitmap)
+                        }
+                    } else {
+                        (metrics, bitmap)
+                    }
                 } else if !primary_missing {
-                    (metrics, bitmap) // primary has it, CJK doesn't
+                    (metrics, bitmap)
                 } else if let Some(ref fb) = self.fallback_font {
                     if fb.lookup_glyph_index(c) != 0 {
                         fb.rasterize(c, self.font_size)
@@ -476,15 +527,24 @@ impl Atlas {
                     (metrics, bitmap)
                 }
             } else if !primary_missing {
+                // Non-CJK locale: primary font has a glyph, use it.
                 (metrics, bitmap)
-            } else if let Some(ref fb) = self.fallback_font {
-                if fb.lookup_glyph_index(c) != 0 {
-                    fb.rasterize(c, self.font_size)
-                } else {
-                    (metrics, bitmap)
-                }
             } else {
-                (metrics, bitmap)
+                // Primary missing, try CJK font, then other fallbacks.
+                let mut result = None;
+                if let Some(ref cjk) = self.cjk_font {
+                    if cjk.lookup_glyph_index(c) != 0 {
+                        result = Some(cjk.rasterize(c, self.font_size));
+                    }
+                }
+                if result.is_none() {
+                    if let Some(ref fb) = self.fallback_font {
+                        if fb.lookup_glyph_index(c) != 0 {
+                            result = Some(fb.rasterize(c, self.font_size));
+                        }
+                    }
+                }
+                result.unwrap_or((metrics, bitmap))
             }
         } else if primary_missing && Self::needs_fallback_check(c) {
             // Non-CJK fallback: try Nerd Font first, then symbols font.
@@ -526,43 +586,87 @@ impl Atlas {
         let glyph_w = metrics.width as u32;
         let glyph_h = metrics.height as u32;
 
-        // Handle zero-size glyphs (space, control chars) — still reserve a
-        // cell-sized slot so background rendering works correctly.
-        if glyph_w == 0 || glyph_h == 0 {
-            let info = self.pack_cell_bitmap(&vec![0u8; (entry_w * entry_h) as usize], entry_w, entry_h);
-            self.glyphs.insert(c, info);
-            return info;
+        // Handle missing glyphs: try Core Text fallback before giving up.
+        // A glyph is considered missing if it has zero size OR if it has
+        // non-zero dimensions but all pixels are blank (empty rendering).
+        let nonzero_count = bitmap.iter().filter(|&&b| b > 0).count();
+        let glyph_empty = (glyph_w == 0 || glyph_h == 0) || nonzero_count == 0;
+
+        // Log non-ASCII glyphs for debugging rendering issues.
+        if c as u32 > 0x7F {
+            log::debug!(
+                "glyph U+{:04X} '{}': after_fallback {}x{} nonzero={} empty={}",
+                c as u32, c, glyph_w, glyph_h, nonzero_count, glyph_empty,
+            );
+        }
+
+        if glyph_empty {
+            if c > ' ' && !c.is_control() {
+                // Non-trivial character that fontdue couldn't render.
+                // Try Core Text as a last-resort fallback.
+                if let Some(info) = self.try_core_text_fallback(c, entry_w, entry_h) {
+                    self.glyphs.insert(c, info);
+                    return info;
+                }
+                log::debug!("glyph U+{:04X} '{}': Core Text fallback also failed", c as u32, c);
+            }
+            if glyph_w == 0 || glyph_h == 0 {
+                let info = self.pack_cell_bitmap(&vec![0u8; (entry_w * entry_h) as usize], entry_w, entry_h);
+                self.glyphs.insert(c, info);
+                return info;
+            }
         }
 
         let mut cell_bitmap = vec![0u8; (entry_w * entry_h) as usize];
 
-        // If glyph is wider than cell, squish horizontally only (keep full height).
-        let (src_bitmap, src_w) = if glyph_w > entry_w {
-            let mut squished = vec![0u8; (entry_w * glyph_h) as usize];
-            for row in 0..glyph_h {
-                for col in 0..entry_w {
-                    let src_col = (col as f32 * glyph_w as f32 / entry_w as f32) as u32;
-                    let si = (row * glyph_w + src_col.min(glyph_w - 1)) as usize;
-                    let di = (row * entry_w + col) as usize;
-                    if si < bitmap.len() && di < squished.len() {
-                        squished[di] = bitmap[si];
+        // If glyph is wider than cell or taller than cell, scale uniformly
+        // to fit while preserving aspect ratio, then center the result.
+        let (src_bitmap, src_w, src_h) = if glyph_w > entry_w || glyph_h > entry_h {
+            let scale_x = entry_w as f32 / glyph_w as f32;
+            let scale_y = entry_h as f32 / glyph_h as f32;
+            let scale = scale_x.min(scale_y); // uniform scale: fit within cell
+            let scaled_w = (glyph_w as f32 * scale).ceil() as u32;
+            let scaled_h = (glyph_h as f32 * scale).ceil() as u32;
+            let scaled_w = scaled_w.min(entry_w).max(1);
+            let scaled_h = scaled_h.min(entry_h).max(1);
+
+            let mut scaled = vec![0u8; (scaled_w * scaled_h) as usize];
+            for row in 0..scaled_h {
+                for col in 0..scaled_w {
+                    let src_col = (col as f32 / scale).min((glyph_w - 1) as f32) as u32;
+                    let src_row = (row as f32 / scale).min((glyph_h - 1) as f32) as u32;
+                    let si = (src_row * glyph_w + src_col) as usize;
+                    let di = (row * scaled_w + col) as usize;
+                    if si < bitmap.len() && di < scaled.len() {
+                        scaled[di] = bitmap[si];
                     }
                 }
             }
-            (squished, entry_w)
+            (scaled, scaled_w, scaled_h)
         } else {
-            (bitmap, glyph_w)
+            (bitmap, glyph_w, glyph_h)
         };
 
+        // Center the scaled glyph within the cell.
         let offset_x = if src_w < entry_w {
-            metrics.xmin.max(0) as u32
+            if glyph_w > entry_w {
+                // Was scaled down: center horizontally.
+                (entry_w - src_w) / 2
+            } else {
+                metrics.xmin.max(0) as u32
+            }
         } else {
             0
         };
-        let glyph_top_from_baseline = glyph_h as f32 + metrics.ymin as f32;
-        let offset_y = (self.ascent - glyph_top_from_baseline).max(0.0) as u32;
+        let offset_y = if glyph_w > entry_w || glyph_h > entry_h {
+            // Was scaled: center vertically in cell.
+            (entry_h.saturating_sub(src_h)) / 2
+        } else {
+            let glyph_top_from_baseline = src_h as f32 + metrics.ymin as f32;
+            (self.ascent - glyph_top_from_baseline).max(0.0) as u32
+        };
 
-        for row in 0..glyph_h.min(entry_h) {
+        for row in 0..src_h.min(entry_h) {
             for col in 0..src_w.min(entry_w) {
                 let dst_x = offset_x + col;
                 let dst_y = offset_y + row;
@@ -800,6 +904,188 @@ impl Atlas {
         log::info!("no symbols fallback font found, Braille/symbol characters may not render");
         None
     }
+
+    /// Last-resort fallback: rasterize a text character using Core Text.
+    ///
+    /// This catches any character that fontdue and all fallback fonts fail to
+    /// render (e.g. ❯ U+276F, certain dingbats, rare symbols).  Core Text
+    /// handles font cascading automatically and can render virtually any
+    /// character that the system has a font for.
+    #[cfg(target_os = "macos")]
+    fn try_core_text_fallback(&mut self, c: char, entry_w: u32, entry_h: u32) -> Option<GlyphInfo> {
+        use core_foundation::base::TCFType;
+        use core_graphics::base::{kCGBitmapByteOrder32Big, kCGImageAlphaPremultipliedLast};
+        use core_graphics::color_space::CGColorSpace;
+        use core_graphics::context::CGContext;
+        use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+        use core_text::font as ct_font;
+        use foreign_types::ForeignType;
+
+        // Use the same font size as the atlas.
+        let size = self.font_size as f64;
+
+        // Try multiple fonts to find one that has this glyph.
+        let font_names = [".AppleSystemUIFont", "Menlo", "LastResort"];
+        let mut ct_found = None;
+        let mut glyphs = [0u16; 2];
+        let mut utf16_buf = [0u16; 2];
+        let utf16 = c.encode_utf16(&mut utf16_buf);
+        let utf16_len = utf16.len();
+
+        for name in &font_names {
+            if let Ok(f) = ct_font::new_from_name(name, size) {
+                let mut g = [0u16; 2];
+                let found = unsafe {
+                    f.get_glyphs_for_characters(
+                        utf16_buf.as_ptr(),
+                        g.as_mut_ptr(),
+                        utf16_len as core_foundation::base::CFIndex,
+                    )
+                };
+                if found && g[0] != 0 {
+                    glyphs = g;
+                    ct_found = Some(f);
+                    break;
+                }
+            }
+        }
+        let ct = ct_found?;
+
+        // Render into an RGBA bitmap, then extract grayscale from alpha.
+        let bmp_w = entry_w;
+        let bmp_h = entry_h;
+        let color_space = CGColorSpace::create_device_rgb();
+        let mut ctx = CGContext::create_bitmap_context(
+            None,
+            bmp_w as usize,
+            bmp_h as usize,
+            8,
+            bmp_w as usize * 4,
+            &color_space,
+            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big,
+        );
+
+        // Clear to transparent.
+        ctx.set_rgb_fill_color(0.0, 0.0, 0.0, 0.0);
+        ctx.fill_rect(CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(bmp_w as f64, bmp_h as f64),
+        ));
+
+        // Draw white text on transparent background.
+        ctx.set_rgb_fill_color(1.0, 1.0, 1.0, 1.0);
+
+        // Build CTLine for text rendering.
+        use core_foundation::attributed_string::CFMutableAttributedString;
+        use core_foundation::string::CFString;
+
+        extern "C" {
+            fn CTLineCreateWithAttributedString(
+                attr_string: core_foundation::base::CFTypeRef,
+            ) -> *mut std::ffi::c_void;
+            fn CTLineDraw(
+                line: *const std::ffi::c_void,
+                context: *mut core_graphics::sys::CGContext,
+            );
+            fn CFRelease(cf: *const std::ffi::c_void);
+            static kCTFontAttributeName: core_foundation::base::CFTypeRef;
+            fn CFAttributedStringSetAttribute(
+                aStr: *mut std::ffi::c_void,
+                range: core_foundation_sys::base::CFRange,
+                attrName: core_foundation::base::CFTypeRef,
+                value: core_foundation::base::CFTypeRef,
+            );
+        }
+
+        let s = CFString::new(&c.to_string());
+        let mut attr_str = CFMutableAttributedString::new();
+        attr_str.replace_str(&s, core_foundation_sys::base::CFRange { location: 0, length: 0 });
+
+        let range = core_foundation_sys::base::CFRange { location: 0, length: attr_str.char_len() };
+        unsafe {
+            CFAttributedStringSetAttribute(
+                attr_str.as_CFTypeRef() as *mut _,
+                range,
+                kCTFontAttributeName,
+                ct.as_CFTypeRef(),
+            );
+        }
+
+        let line = unsafe { CTLineCreateWithAttributedString(attr_str.as_CFTypeRef()) };
+        if line.is_null() {
+            return None;
+        }
+
+        // Position text: baseline centered in cell.
+        let ascent = ct.ascent();
+        let descent = ct.descent();
+        let text_h = ascent + descent.abs();
+        let baseline_y = ((bmp_h as f64 - text_h) / 2.0 + descent.abs()).max(0.0);
+
+        // Get advance width for centering.
+        extern "C" {
+            fn CTFontGetAdvancesForGlyphs(
+                font: *const std::ffi::c_void,
+                orientation: u32,
+                glyphs: *const u16,
+                advances: *mut CGSize,
+                count: core_foundation::base::CFIndex,
+            ) -> f64;
+        }
+        let mut advance_size = CGSize::new(0.0, 0.0);
+        unsafe {
+            CTFontGetAdvancesForGlyphs(
+                ct.as_CFTypeRef() as *const _,
+                0,
+                &glyphs[0],
+                &mut advance_size,
+                1,
+            );
+        }
+        let advance_w = advance_size.width.max(1.0);
+        let text_x = ((bmp_w as f64 - advance_w) / 2.0).max(0.0);
+
+        ctx.set_text_position(text_x, baseline_y);
+
+        unsafe {
+            CTLineDraw(line, ctx.as_ptr());
+            CFRelease(line);
+        }
+
+        // Extract grayscale from the RGBA bitmap (use white channel intensity).
+        let cg_data = ctx.data();
+        let total_bytes = (bmp_w * bmp_h * 4) as usize;
+        if total_bytes > cg_data.len() {
+            return None;
+        }
+
+        // CG renders bottom-up; flip to top-down for our atlas.
+        let mut gray = vec![0u8; (bmp_w * bmp_h) as usize];
+        for row in 0..bmp_h {
+            let src_row = bmp_h - 1 - row; // flip
+            for col in 0..bmp_w {
+                let src_idx = ((src_row * bmp_w + col) * 4) as usize;
+                // Use the red channel (white text → R=G=B=alpha).
+                let alpha = cg_data[src_idx + 3];
+                let di = (row * bmp_w + col) as usize;
+                gray[di] = alpha;
+            }
+        }
+
+        // Check we got any visible pixels.
+        if gray.iter().all(|&v| v == 0) {
+            return None;
+        }
+
+        let info = self.pack_cell_bitmap(&gray, bmp_w, bmp_h);
+        log::debug!("Core Text fallback rendered U+{:04X} '{}'", c as u32, c);
+        Some(info)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn try_core_text_fallback(&mut self, _c: char, _entry_w: u32, _entry_h: u32) -> Option<GlyphInfo> {
+        None
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -959,6 +1245,55 @@ mod tests {
         assert!(Atlas::needs_fallback_check('\u{25CF}')); // ● black circle
         assert!(Atlas::needs_fallback_check('\u{2190}')); // ← left arrow
         assert!(Atlas::needs_fallback_check('\u{2588}')); // █ full block (already handled)
+    }
+
+    #[test]
+    fn test_problem_chars_rendering() {
+        if let Some(mut atlas) = try_create_atlas() {
+            let chars = [
+                ('\u{276F}', "❯ Heavy Right-Pointing Angle"),
+                ('\u{25EF}', "◯ Large Circle"),
+                ('\u{2461}', "② Circled Digit Two"),
+                ('\u{2713}', "✓ Check Mark"),
+                ('\u{25B6}', "▶ Right Triangle"),
+            ];
+            for (c, name) in &chars {
+                // Check primary font
+                let (m, bmp) = atlas.font.rasterize(*c, atlas.font_size);
+                let glyph_idx = atlas.font.lookup_glyph_index(*c);
+                let nonzero_primary = bmp.iter().filter(|&&b| b > 0).count();
+                eprintln!(
+                    "{} U+{:04X} {:40} primary: glyph_idx={} {}x{} nonzero={}",
+                    c, *c as u32, name, glyph_idx, m.width, m.height, nonzero_primary
+                );
+                // Check symbols font
+                if let Some(ref sym) = atlas.symbols_font {
+                    let sym_idx = sym.lookup_glyph_index(*c);
+                    if sym_idx != 0 {
+                        let (sm, sbmp) = sym.rasterize(*c, atlas.font_size);
+                        let nonzero_sym = sbmp.iter().filter(|&&b| b > 0).count();
+                        eprintln!("  symbols: glyph_idx={} {}x{} nonzero={}", sym_idx, sm.width, sm.height, nonzero_sym);
+                    } else {
+                        eprintln!("  symbols: not found");
+                    }
+                }
+                // Check CJK font
+                if let Some(ref cjk) = atlas.cjk_font {
+                    let cjk_idx = cjk.lookup_glyph_index(*c);
+                    if cjk_idx != 0 {
+                        let (cm, cbmp) = cjk.rasterize(*c, atlas.font_size);
+                        let nonzero_cjk = cbmp.iter().filter(|&&b| b > 0).count();
+                        eprintln!("  cjk:     glyph_idx={} {}x{} nonzero={}", cjk_idx, cm.width, cm.height, nonzero_cjk);
+                    } else {
+                        eprintln!("  cjk:     not found");
+                    }
+                }
+                // Now get the final glyph through the normal pipeline
+                let glyph = atlas.get_glyph(*c);
+                eprintln!("  final:   atlas_w={} atlas_h={}", glyph.atlas_w, glyph.atlas_h);
+                eprintln!();
+            }
+        }
     }
 
     #[test]

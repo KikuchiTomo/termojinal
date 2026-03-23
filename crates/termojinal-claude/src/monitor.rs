@@ -154,8 +154,8 @@ impl ClaudeSessionMonitor {
                                     continue;
                                 };
 
-                            // Determine state from JSONL mtime.
-                            let state = detect_session_state(&session_id, &cwd);
+                            // Determine state from JSONL mtime + process liveness.
+                            let state = detect_session_state(&session_id, &cwd, claude_pid);
 
                             // Read subagents.
                             let subagents = read_subagents(&session_id, &cwd);
@@ -276,22 +276,30 @@ fn read_task_title(session_id: &str, cwd: &str) -> String {
     String::new()
 }
 
-/// Detect session state from JSONL file modification time.
-fn detect_session_state(session_id: &str, cwd: &str) -> SessionState {
+/// Detect session state from JSONL file modification time and process liveness.
+///
+/// If the claude process is still alive (kill -0 succeeds), the state will
+/// never drop below `Idle` — even if the JSONL hasn't been modified for a
+/// long time (e.g. while Claude is thinking or executing a tool).
+fn detect_session_state(session_id: &str, cwd: &str, claude_pid: i32) -> SessionState {
+    let process_alive = unsafe { libc::kill(claude_pid, 0) } == 0;
+
     let Some(path) = session_jsonl_path(session_id, cwd) else {
-        return SessionState::Done;
+        return if process_alive { SessionState::Idle } else { SessionState::Done };
     };
     let Ok(metadata) = std::fs::metadata(&path) else {
-        return SessionState::Done;
+        return if process_alive { SessionState::Idle } else { SessionState::Done };
     };
     let Ok(modified) = metadata.modified() else {
-        return SessionState::Done;
+        return if process_alive { SessionState::Idle } else { SessionState::Done };
     };
     let elapsed = SystemTime::now().duration_since(modified).unwrap_or(Duration::from_secs(999));
     if elapsed.as_secs() < 10 {
         SessionState::Running
-    } else if elapsed.as_secs() < 60 {
-        SessionState::Idle
+    } else if process_alive {
+        // Process is alive but JSONL hasn't been updated recently —
+        // Claude is likely thinking or executing a tool.
+        SessionState::Running
     } else {
         SessionState::Done
     }

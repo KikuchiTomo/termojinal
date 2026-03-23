@@ -259,6 +259,7 @@ impl ImageRenderer {
         surface_height: f32,
         grid_offset_px: (f32, f32),
         viewport: Option<(u32, u32, u32, u32)>,
+        scroll_offset: usize,
     ) {
         for placement in placements {
             let gpu_img = match self.gpu_images.get(&placement.image_id) {
@@ -266,9 +267,19 @@ impl ImageRenderer {
                 None => continue,
             };
 
-            // Calculate quad position in NDC.
+            // Adjust row for scrollback viewing offset.
+            // When scroll_offset > 0 the user is looking at history, so
+            // images should shift down (visually further back in time).
+            let display_row = placement.row + scroll_offset as isize;
+
+            // Skip images entirely above or below the visible area.
+            if display_row + placement.cell_rows as isize <= 0 {
+                continue;
+            }
+
+            // Calculate quad position in pixels.
             let px_x = grid_offset_px.0 + placement.col as f32 * cell_width_px;
-            let px_y = grid_offset_px.1 + placement.row as f32 * cell_height_px;
+            let px_y = grid_offset_px.1 + display_row as f32 * cell_height_px;
             let px_w = placement.cell_cols as f32 * cell_width_px;
             let px_h = placement.cell_rows as f32 * cell_height_px;
 

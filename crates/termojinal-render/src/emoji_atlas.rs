@@ -83,9 +83,11 @@ impl EmojiAtlas {
     }
 
     /// Rasterize an emoji character using Core Text and pack it into the atlas.
+    /// Falls back to the system font if Apple Color Emoji doesn't have the glyph.
     #[cfg(target_os = "macos")]
     fn rasterize_emoji(&mut self, c: char) -> Option<GlyphInfo> {
-        let (rgba, bmp_w, bmp_h) = rasterize_emoji_ct(c, self.font_size, self.cell_w, self.cell_h)?;
+        let (rgba, bmp_w, bmp_h) = rasterize_emoji_ct(c, self.font_size, self.cell_w, self.cell_h)
+            .or_else(|| rasterize_text_ct(c, self.font_size, self.cell_w, self.cell_h))?;
 
         // Pack at the actual bitmap size (may be larger than cell for quality).
         let entry_w = bmp_w;
@@ -353,6 +355,195 @@ fn rasterize_emoji_ct(
     Some((rgba, bmp_w, bmp_h))
 }
 
+/// Rasterize a text character using Core Text with the system font.
+///
+/// This is the fallback for non-emoji characters (e.g. ❯, ◯) that fontdue
+/// can't render.  Uses the system font cascade via `.AppleSystemUIFont` so
+/// virtually any Unicode character the OS supports can be rendered.
+///
+/// Returns an RGBA bitmap sized to fit within a single cell (1x cell_w).
+#[cfg(target_os = "macos")]
+fn rasterize_text_ct(
+    c: char,
+    font_size: f32,
+    cell_w: u32,
+    cell_h: u32,
+) -> Option<(Vec<u8>, u32, u32)> {
+    use core_foundation::base::TCFType;
+    use core_graphics::base::{kCGBitmapByteOrder32Big, kCGImageAlphaPremultipliedLast};
+    use core_graphics::color_space::CGColorSpace;
+    use core_graphics::context::CGContext;
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    use core_text::font as ct_font;
+    use foreign_types::ForeignType;
+
+    let size = font_size as f64;
+    // Try multiple fonts to find one that has this glyph.
+    // .AppleSystemUIFont (SF Pro) doesn't have Dingbats/symbols;
+    // Menlo and LastResort cover more Unicode ranges.
+    let font_names = [".AppleSystemUIFont", "Menlo", "LastResort"];
+    let mut ct = None;
+    let mut glyphs = [0u16; 2];
+    let mut utf16_buf = [0u16; 2];
+    let utf16 = c.encode_utf16(&mut utf16_buf);
+    let utf16_len = utf16.len();
+
+    for name in &font_names {
+        if let Ok(f) = ct_font::new_from_name(name, size) {
+            let mut g = [0u16; 2];
+            let found = unsafe {
+                f.get_glyphs_for_characters(
+                    utf16_buf.as_ptr(),
+                    g.as_mut_ptr(),
+                    utf16_len as core_foundation::base::CFIndex,
+                )
+            };
+            if found && g[0] != 0 {
+                glyphs = g;
+                ct = Some(f);
+                break;
+            }
+        }
+    }
+    let ct = ct?;
+
+    let bmp_w = cell_w;
+    let bmp_h = cell_h;
+
+    let color_space = CGColorSpace::create_device_rgb();
+    let mut ctx = CGContext::create_bitmap_context(
+        None,
+        bmp_w as usize,
+        bmp_h as usize,
+        8,
+        bmp_w as usize * 4,
+        &color_space,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big,
+    );
+
+    // Clear to transparent.
+    ctx.set_rgb_fill_color(0.0, 0.0, 0.0, 0.0);
+    ctx.fill_rect(CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(bmp_w as f64, bmp_h as f64),
+    ));
+
+    // Draw white text so the shader can colorize it via the foreground color.
+    // Core Text uses kCTForegroundColorFromContextAttributeName by default
+    // when no explicit foreground color is set on the attributed string.
+    ctx.set_rgb_fill_color(1.0, 1.0, 1.0, 1.0);
+
+    // Build CTLine.
+    use core_foundation::attributed_string::CFMutableAttributedString;
+    use core_foundation::string::CFString;
+
+    extern "C" {
+        fn CTLineCreateWithAttributedString(
+            attr_string: core_foundation::base::CFTypeRef,
+        ) -> *mut std::ffi::c_void;
+        fn CTLineDraw(
+            line: *const std::ffi::c_void,
+            context: *mut core_graphics::sys::CGContext,
+        );
+        fn CFRelease(cf: *const std::ffi::c_void);
+        static kCTFontAttributeName: core_foundation::base::CFTypeRef;
+        static kCTForegroundColorFromContextAttributeName: core_foundation::base::CFTypeRef;
+        fn CFAttributedStringSetAttribute(
+            aStr: *mut std::ffi::c_void,
+            range: core_foundation_sys::base::CFRange,
+            attrName: core_foundation::base::CFTypeRef,
+            value: core_foundation::base::CFTypeRef,
+        );
+    }
+
+    let s = CFString::new(&c.to_string());
+    let mut attr_str = CFMutableAttributedString::new();
+    attr_str.replace_str(&s, core_foundation_sys::base::CFRange { location: 0, length: 0 });
+
+    let range = core_foundation_sys::base::CFRange { location: 0, length: attr_str.char_len() };
+    unsafe {
+        CFAttributedStringSetAttribute(
+            attr_str.as_CFTypeRef() as *mut _,
+            range,
+            kCTFontAttributeName,
+            ct.as_CFTypeRef(),
+        );
+        // Tell Core Text to use the CG context's fill color as the text color.
+        let cf_true = core_foundation::boolean::CFBoolean::true_value();
+        CFAttributedStringSetAttribute(
+            attr_str.as_CFTypeRef() as *mut _,
+            range,
+            kCTForegroundColorFromContextAttributeName,
+            cf_true.as_CFTypeRef(),
+        );
+    }
+
+    let line = unsafe { CTLineCreateWithAttributedString(attr_str.as_CFTypeRef()) };
+    if line.is_null() {
+        return None;
+    }
+
+    // Position text centered in cell.
+    let ascent = ct.ascent();
+    let descent = ct.descent();
+    let text_h = ascent + descent.abs();
+
+    extern "C" {
+        fn CTFontGetAdvancesForGlyphs(
+            font: *const std::ffi::c_void,
+            orientation: u32,
+            glyphs: *const u16,
+            advances: *mut CGSize,
+            count: core_foundation::base::CFIndex,
+        ) -> f64;
+    }
+    let mut advance_size = CGSize::new(0.0, 0.0);
+    unsafe {
+        CTFontGetAdvancesForGlyphs(
+            ct.as_CFTypeRef() as *const _,
+            0,
+            &glyphs[0],
+            &mut advance_size,
+            1,
+        );
+    }
+    let advance_w = advance_size.width.max(1.0);
+    let text_x = ((bmp_w as f64 - advance_w) / 2.0).max(0.0);
+    let baseline_y = ((bmp_h as f64 - text_h) / 2.0 + descent.abs()).max(0.0);
+
+    ctx.set_text_position(text_x, baseline_y);
+
+    unsafe {
+        CTLineDraw(line, ctx.as_ptr());
+        CFRelease(line);
+    }
+
+    // Extract RGBA data with vertical flip (CG is bottom-up).
+    let cg_data = ctx.data();
+    let pixel_count = (bmp_w * bmp_h) as usize;
+    let total_bytes = pixel_count * 4;
+    if total_bytes > cg_data.len() {
+        return None;
+    }
+
+    let mut rgba = vec![0u8; total_bytes];
+    for row in 0..bmp_h {
+        let src_row = bmp_h - 1 - row;
+        let src_off = (src_row * bmp_w * 4) as usize;
+        let dst_off = (row * bmp_w * 4) as usize;
+        let len = (bmp_w * 4) as usize;
+        rgba[dst_off..dst_off + len].copy_from_slice(&cg_data[src_off..src_off + len]);
+    }
+
+    // Verify we got visible pixels.
+    if rgba.iter().skip(3).step_by(4).all(|&a| a == 0) {
+        return None;
+    }
+
+    log::debug!("rasterize_text_ct: rendered U+{:04X} '{}' {}x{}", c as u32, c, bmp_w, bmp_h);
+    Some((rgba, bmp_w, bmp_h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +611,70 @@ mod tests {
             let _ = atlas.get_glyph(c);
         }
         assert!(atlas.glyph_count() >= 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_rasterize_text_ct_heavy_angle() {
+        use core_foundation::base::TCFType;
+        use core_text::font as ct_font;
+
+        let c = '\u{276F}';
+        let size = 11.0_f64;
+
+        // Step 1: check if system font has the glyph
+        let ct = ct_font::new_from_name(".AppleSystemUIFont", size).unwrap();
+        let mut utf16_buf = [0u16; 2];
+        let utf16 = c.encode_utf16(&mut utf16_buf);
+        let utf16_len = utf16.len();
+        let mut glyphs = [0u16; 2];
+        let found = unsafe {
+            ct.get_glyphs_for_characters(
+                utf16_buf.as_ptr(),
+                glyphs.as_mut_ptr(),
+                utf16_len as core_foundation::base::CFIndex,
+            )
+        };
+        eprintln!("AppleSystemUIFont: found={}, glyph_id={}", found, glyphs[0]);
+
+        // Try other fonts
+        for name in &["Menlo", "SF Mono", "Helvetica", "Arial", "LastResort"] {
+            if let Ok(f) = ct_font::new_from_name(name, size) {
+                let mut g2 = [0u16; 2];
+                let ok = unsafe {
+                    f.get_glyphs_for_characters(utf16_buf.as_ptr(), g2.as_mut_ptr(), utf16_len as core_foundation::base::CFIndex)
+                };
+                eprintln!("  {}: found={}, glyph_id={}", name, ok, g2[0]);
+            } else {
+                eprintln!("  {}: font not found", name);
+            }
+        }
+
+        // Step 2: try rasterize_text_ct
+        let result = super::rasterize_text_ct(c, 11.0, 10, 16);
+        if let Some((rgba, w, h)) = &result {
+            let nonzero_a: usize = rgba.iter().skip(3).step_by(4).filter(|&&a| a > 0).count();
+            eprintln!("rasterize_text_ct('❯'): {}x{}, nonzero_alpha={}", w, h, nonzero_a);
+        } else {
+            eprintln!("rasterize_text_ct('❯'): returned None");
+        }
+    }
+
+    /// Diagnostic test: check is_emoji for problem characters.
+    #[test]
+    fn test_is_emoji_problem_chars() {
+        let cases = [
+            ('\u{25EF}', "◯ Large Circle"),
+            ('\u{2461}', "② Circled Digit Two"),
+            ('\u{276F}', "❯ Heavy Right-Pointing Angle"),
+            ('\u{26A1}', "⚡ High Voltage"),
+            ('\u{2713}', "✓ Check Mark"),
+            ('\u{23F3}', "⏳ Hourglass"),
+            ('\u{25B6}', "▶ Right Triangle"),
+        ];
+        for (c, name) in &cases {
+            let result = is_emoji(*c);
+            eprintln!("is_emoji({}) U+{:04X} {:40} => {}", c, *c as u32, name, result);
+        }
     }
 }

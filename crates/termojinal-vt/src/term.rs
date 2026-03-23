@@ -4,7 +4,7 @@ use crate::cell::{Attrs, Cell, Pen};
 use crate::color::{Color, NamedColor};
 use crate::grid::Grid;
 use crate::image::{
-    self, ApcExtractor, ImageStore, KittyAccumulator,
+    self, ApcExtractor, ImageStore, Iterm2Accumulator, KittyAccumulator,
 };
 use crate::scrollback::ScrollbackBuffer;
 use base64::Engine as _;
@@ -241,6 +241,8 @@ pub struct Terminal {
     apc_extractor: ApcExtractor,
     /// Kitty Graphics chunked transfer accumulator.
     kitty_accumulator: KittyAccumulator,
+    /// iTerm2 multipart image transfer accumulator.
+    iterm2_accumulator: Iterm2Accumulator,
     /// DCS data accumulation buffer (for Sixel).
     dcs_data: Vec<u8>,
     /// Current DCS accumulation mode.
@@ -316,6 +318,7 @@ impl Terminal {
             image_store: ImageStore::new(),
             apc_extractor: ApcExtractor::new(),
             kitty_accumulator: KittyAccumulator::new(),
+            iterm2_accumulator: Iterm2Accumulator::new(),
             dcs_data: Vec::new(),
             dcs_mode: DcsMode::None,
             command_history: VecDeque::new(),
@@ -724,7 +727,15 @@ impl Terminal {
         if let Some((cmd, decoded)) = self.kitty_accumulator.feed(header, b64_data) {
             let col = self.cursor_col;
             let row = self.cursor_row;
+            let before = self.image_store.placements().len();
             image::process_kitty_command(&cmd, &decoded, &mut self.image_store, col, row);
+            // Advance cursor past the image if a new placement was added.
+            if self.image_store.placements().len() > before {
+                self.image_store.cap_placement_size(self.cols, self.rows);
+                let cell_rows = self.image_store.placements().last()
+                    .map(|p| p.cell_rows).unwrap_or(1);
+                self.advance_cursor_past_image(cell_rows);
+            }
         }
     }
 
@@ -745,6 +756,8 @@ impl Terminal {
                 let row = self.grid().row_cells(0);
                 self.scrollback.push(row);
                 self.total_scrolled_lines += 1;
+                // Scroll image placements up so they track the grid content.
+                self.image_store.scroll_up(1);
             }
             let top = self.scroll_top;
             let bottom = self.scroll_bottom;
@@ -763,6 +776,19 @@ impl Terminal {
             self.grid_mut().scroll_down_with_bg(top, bottom, 1, bg);
         } else {
             self.cursor_row = self.cursor_row.saturating_sub(1);
+        }
+    }
+
+    /// Advance the cursor past an inline image.
+    ///
+    /// Moves the cursor to column 0 and down by `cell_rows` lines, performing
+    /// newline scrolls as needed so the image occupies space in the terminal
+    /// grid and subsequent text flows below it.
+    fn advance_cursor_past_image(&mut self, cell_rows: usize) {
+        self.cursor_col = 0;
+        self.wrap_pending = false;
+        for _ in 0..cell_rows {
+            self.newline();
         }
     }
 
@@ -1333,6 +1359,8 @@ impl vte::Perform for Terminal {
                         self.scrollback.push(row);
                     }
                     self.total_scrolled_lines += n.min(bottom + 1);
+                    // Scroll image placements so they track the grid content.
+                    self.image_store.scroll_up(n);
                 }
                 self.grid_mut().scroll_up_with_bg(top, bottom, n, bg);
             }
@@ -1717,22 +1745,63 @@ impl vte::Perform for Terminal {
                 }
             }
             // OSC 1337 — iTerm2 proprietary sequences (inline images, etc.)
+            //
+            // vte splits OSC payloads at ';', so an iTerm2 sequence like:
+            //   OSC 1337 ; File=inline=1;size=123:BASE64 ST
+            // arrives as params = ["1337", "File=inline=1", "size=123:BASE64"].
+            // We must rejoin params[1..] with ';' to reconstruct the full payload.
             "1337" => {
-                if let Some(payload_bytes) = params.get(1) {
-                    if let Ok(payload) = std::str::from_utf8(payload_bytes) {
-                        if payload.starts_with("File=") {
-                            let col = self.cursor_col;
-                            let row = self.cursor_row;
-                            image::parse_iterm2_image(
-                                payload,
-                                &mut self.image_store,
-                                col,
-                                row,
-                            );
-                        } else {
-                            log::trace!("OSC 1337: unhandled sub-command: {}", &payload[..payload.len().min(30)]);
-                        }
+                if params.len() < 2 {
+                    return;
+                }
+                // Rejoin all params after "1337" to reconstruct the original payload.
+                let payload = params[1..]
+                    .iter()
+                    .filter_map(|p| std::str::from_utf8(p).ok())
+                    .collect::<Vec<_>>()
+                    .join(";");
+
+                if payload.starts_with("File=") {
+                    // Legacy single-sequence inline image.
+                    let col = self.cursor_col;
+                    let row = self.cursor_row;
+                    let before = self.image_store.placements().len();
+                    image::parse_iterm2_image(
+                        &payload,
+                        &mut self.image_store,
+                        col,
+                        row,
+                    );
+                    // Advance cursor past the image so text flows below it.
+                    if self.image_store.placements().len() > before {
+                        self.image_store.cap_placement_size(self.cols, self.rows);
+                        let cell_rows = self.image_store.placements().last()
+                            .map(|p| p.cell_rows).unwrap_or(1);
+                        self.advance_cursor_past_image(cell_rows);
                     }
+                } else if payload.starts_with("MultipartFile=") {
+                    // Multipart transfer: begin (metadata, no pixel data).
+                    self.iterm2_accumulator.begin(&payload);
+                } else if payload.starts_with("FilePart=") {
+                    // Multipart transfer: data chunk.
+                    self.iterm2_accumulator.add_part(&payload);
+                } else if payload == "FileEnd" {
+                    // Multipart transfer: finalize.
+                    let col = self.cursor_col;
+                    let row = self.cursor_row;
+                    let placed = self.iterm2_accumulator.finish(
+                        &mut self.image_store,
+                        col,
+                        row,
+                    );
+                    if placed {
+                        self.image_store.cap_placement_size(self.cols, self.rows);
+                        let cell_rows = self.image_store.placements().last()
+                            .map(|p| p.cell_rows).unwrap_or(1);
+                        self.advance_cursor_past_image(cell_rows);
+                    }
+                } else {
+                    log::trace!("OSC 1337: unhandled sub-command: {}", &payload[..payload.len().min(30)]);
                 }
             }
             _ => {
@@ -1778,7 +1847,14 @@ impl vte::Perform for Terminal {
                 let data = std::mem::take(&mut self.dcs_data);
                 let col = self.cursor_col;
                 let row = self.cursor_row;
+                let before = self.image_store.placements().len();
                 image::process_sixel(&data, &mut self.image_store, col, row);
+                if self.image_store.placements().len() > before {
+                    self.image_store.cap_placement_size(self.cols, self.rows);
+                    let cell_rows = self.image_store.placements().last()
+                        .map(|p| p.cell_rows).unwrap_or(1);
+                    self.advance_cursor_past_image(cell_rows);
+                }
             }
             DcsMode::None => {
                 log::trace!("DCS unhook");
