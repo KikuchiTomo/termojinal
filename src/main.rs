@@ -2071,7 +2071,7 @@ fn palette_open_in_editor(
     let time_travel_cfg = Some(&state.config.time_travel);
 
     match spawn_pane(pane_id, cols, rows, proxy, pty_buffers, Some(tab_cwd), time_travel_cfg, cjk_width) {
-        Ok(mut pane) => {
+        Ok(pane) => {
             let cmd = format!("{} {}\n", editor, shell_escape(path));
             let _ = pane.pty.write(cmd.as_bytes());
             let layout = LayoutTree::new(pane_id);
