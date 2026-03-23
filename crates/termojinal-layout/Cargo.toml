@@ -1,6 +1,6 @@
 [package]
 name = "termojinal-layout"
-version = "0.7.0-beta"
+version = "0.8.0-beta"
 edition.workspace = true
 description = "Immutable split pane tree for termojinal"
 
