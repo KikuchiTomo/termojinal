@@ -8,7 +8,7 @@ description = "VT parser and cell grid for termojinal"
 vte = "0.13"
 log = "0.4"
 bitflags = "2"
-unicode-width = "0.2"
+unicode-width = { version = "0.2", features = ["cjk"] }
 base64 = "0.22"
 memmap2 = "0.9"
 uuid = { version = "1", features = ["v4"] }

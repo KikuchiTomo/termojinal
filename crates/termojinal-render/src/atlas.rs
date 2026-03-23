@@ -64,6 +64,8 @@ pub struct Atlas {
     pack_x: u32,
     pack_y: u32,
     pack_row_height: u32,
+    /// Whether to use CJK-aware character width calculation.
+    pub cjk_width: bool,
 }
 
 impl Atlas {
@@ -132,6 +134,7 @@ impl Atlas {
             pack_x: 1,
             pack_y: 1,
             pack_row_height: 0,
+            cjk_width: false,
         };
 
         // Pre-rasterize ASCII printable characters.
@@ -370,23 +373,39 @@ impl Atlas {
     }
 
     /// Returns true if the character is in a range that may need a fallback font:
-    /// Private Use Area (Nerd Font icons), box-drawing, block elements, or CJK.
+    /// Private Use Area (Nerd Font icons), box-drawing, block elements, CJK,
+    /// geometric shapes, miscellaneous symbols, dingbats, and other symbol blocks
+    /// commonly used in terminal output.
     fn needs_fallback_check(c: char) -> bool {
         matches!(c,
             '\u{E000}'..='\u{F8FF}'   // BMP Private Use Area (Nerd Font icons)
             | '\u{F0000}'..='\u{FFFFF}' // Supplementary PUA-A
             | '\u{2500}'..='\u{257F}'  // Box-drawing characters
             | '\u{2580}'..='\u{259F}'  // Block elements
+            | '\u{25A0}'..='\u{25FF}'  // Geometric Shapes (■□▲△○●◆◇◯ etc.)
+            | '\u{2600}'..='\u{26FF}'  // Miscellaneous Symbols (☀☁☂★☆♠♣♥♦ etc.)
+            | '\u{2700}'..='\u{27BF}'  // Dingbats (✓✗✘✚✜ etc.)
+            | '\u{2190}'..='\u{21FF}'  // Arrows (←↑→↓⇐⇑⇒⇓ etc.)
+            | '\u{2200}'..='\u{22FF}'  // Mathematical Operators
+            | '\u{2300}'..='\u{23FF}'  // Miscellaneous Technical (⌘⌥⌫ etc.)
+            | '\u{2460}'..='\u{24FF}'  // Enclosed Alphanumerics (①② etc.)
             | '\u{3000}'..='\u{9FFF}'  // CJK Unified Ideographs + Hiragana/Katakana
             | '\u{F900}'..='\u{FAFF}'  // CJK Compatibility Ideographs
             | '\u{AC00}'..='\u{D7AF}'  // Hangul
             | '\u{FF00}'..='\u{FFEF}'  // Halfwidth and Fullwidth Forms (！？ etc.)
             | '\u{FE30}'..='\u{FE4F}'  // CJK Compatibility Forms
             | '\u{FE50}'..='\u{FE6F}'  // Small Form Variants
+            | '\u{20000}'..='\u{2A6DF}' // CJK Unified Ideographs Extension B
+            | '\u{2A700}'..='\u{2B73F}' // CJK Unified Ideographs Extension C
+            | '\u{1F000}'..='\u{1F02F}' // Mahjong Tiles
+            | '\u{1F030}'..='\u{1F09F}' // Domino Tiles
         )
     }
 
     /// Returns true if the character is in CJK ranges (needs CJK-specific fallback).
+    /// This includes not only CJK ideographs and kana, but also symbol ranges
+    /// that are commonly rendered with CJK fonts (geometric shapes, enclosed
+    /// alphanumerics, etc.) which have East Asian Ambiguous width.
     fn is_cjk(c: char) -> bool {
         matches!(c,
             '\u{3000}'..='\u{9FFF}'  // CJK Unified Ideographs + Hiragana/Katakana
@@ -395,6 +414,11 @@ impl Atlas {
             | '\u{FF00}'..='\u{FFEF}'  // Halfwidth and Fullwidth Forms (！？ etc.)
             | '\u{FE30}'..='\u{FE4F}'  // CJK Compatibility Forms
             | '\u{FE50}'..='\u{FE6F}'  // Small Form Variants
+            | '\u{25A0}'..='\u{25FF}'  // Geometric Shapes (■□▲△○●◆◇◯ etc.)
+            | '\u{2600}'..='\u{26FF}'  // Miscellaneous Symbols (commonly in CJK fonts)
+            | '\u{2460}'..='\u{24FF}'  // Enclosed Alphanumerics (①②③ etc.)
+            | '\u{20000}'..='\u{2A6DF}' // CJK Unified Ideographs Extension B
+            | '\u{2A700}'..='\u{2B73F}' // CJK Unified Ideographs Extension C
         )
     }
 
@@ -414,7 +438,7 @@ impl Atlas {
         let glyph_h = metrics.height as u32;
 
         // Determine the display width: CJK/wide characters span 2 cells.
-        let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u32;
+        let char_width = termojinal_vt::char_width(c, self.cjk_width) as u32;
         let entry_w = self.cell_w * char_width;
         let entry_h = self.cell_h;
 

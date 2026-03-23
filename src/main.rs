@@ -1417,7 +1417,8 @@ fn dir_tree_open_in_editor(
     let ch = (phys_h - state.config.tab_bar.height).max(1.0);
     let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
 
-    match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
+    let cjk_width = state.renderer.cjk_width;
+    match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), cjk_width) {
         Ok(pane) => {
             // Immediately write the editor command to the PTY so it starts
             // before the user sees the tab (prevents flicker).
@@ -2023,6 +2024,7 @@ fn spawn_pane(
     buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
     cwd: Option<String>,
     time_travel_config: Option<&crate::config::TimeTravelConfig>,
+    cjk_width: bool,
 ) -> Result<Pane, termojinal_pty::PtyError> {
     let config = PtyConfig {
         size: PtySize { cols, rows },
@@ -2033,6 +2035,7 @@ fn spawn_pane(
     log::info!("pane {id}: shell={}, pid={}", config.shell, pty.pid());
 
     let mut terminal = Terminal::new(cols as usize, rows as usize);
+    terminal.set_cjk_width(cjk_width);
     if let Some(tt) = time_travel_config {
         terminal.set_command_history_enabled(tt.command_history);
         terminal.set_max_command_history(tt.max_command_history);
@@ -2434,6 +2437,13 @@ impl ApplicationHandler<UserEvent> for App {
         renderer.scrollbar_thumb_opacity = cfg.pane.scrollbar_thumb_opacity;
         renderer.scrollbar_track_opacity = cfg.pane.scrollbar_track_opacity;
 
+        // Resolve CJK ambiguous width setting from config and propagate to
+        // renderer and atlas so that character widths are consistent everywhere.
+        let cjk_width = crate::config::resolve_ambiguous_width(&cfg.font.ambiguous_width);
+        log::info!("CJK ambiguous width: {cjk_width} (setting={:?})", cfg.font.ambiguous_width);
+        renderer.cjk_width = cjk_width;
+        renderer.atlas_set_cjk_width(cjk_width);
+
         let size = window.inner_size();
         let phys_w = size.width as f32;
         let phys_h = size.height as f32;
@@ -2460,7 +2470,7 @@ impl ApplicationHandler<UserEvent> for App {
         let layout = LayoutTree::new(initial_id);
 
         let startup_cwd = resolve_startup_cwd(&cfg);
-        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers, startup_cwd, Some(&cfg.time_travel)) {
+        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers, startup_cwd, Some(&cfg.time_travel), cjk_width) {
             Ok(p) => p,
             Err(e) => {
                 log::error!("failed to spawn initial pane: {e}");
@@ -4290,7 +4300,7 @@ fn dispatch_action(
             if let Some(rect) = new_rect {
                 let (cols, rows) =
                     state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
+                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -4320,7 +4330,7 @@ fn dispatch_action(
             if let Some(rect) = new_rect {
                 let (cols, rows) =
                     state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
+                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -4378,7 +4388,7 @@ fn dispatch_action(
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = (phys_h - state.config.tab_bar.height).max(1.0);
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
+            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -4420,7 +4430,7 @@ fn dispatch_action(
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = phys_h.max(1.0); // Single tab, no tab bar
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel)) {
+            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -6370,9 +6380,11 @@ fn build_status_context(state: &mut AppState) -> StatusContext {
 }
 
 /// Calculate the display width of a string in cell units (accounting for wide chars).
-fn str_display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthChar;
-    s.chars().map(|c| UnicodeWidthChar::width(c).unwrap_or(1)).sum()
+///
+/// When `cjk` is true, Unicode East Asian Ambiguous width characters are treated
+/// as 2-cell wide. This should match the renderer's and terminal's width calculation.
+fn str_display_width(s: &str, cjk: bool) -> usize {
+    s.chars().map(|c| termojinal_vt::char_width(c, cjk)).sum()
 }
 
 /// Render the bottom status bar.
@@ -6426,13 +6438,14 @@ fn render_status_bar(
 
     // --- Expand all segments and compute widths ---
     // Segment width = text width + padding on each side.
+    let cjk = state.renderer.cjk_width;
     let expand_segs = |segs: &[config::StatusSegment]| -> Vec<(String, [f32; 4], [f32; 4], f32, f32)> {
         segs.iter().filter_map(|seg| {
             let text = expand_status_variables(&seg.content, &ctx);
             if segment_is_empty(&text) { return None; }
             let fg = parse_hex_color(&seg.fg).unwrap_or([0.8, 0.8, 0.8, 1.0]);
             let bg = parse_hex_color(&seg.bg).unwrap_or(status_bg);
-            let text_w = (str_display_width(&text) as f32 * cell_w).ceil();
+            let text_w = (str_display_width(&text, cjk) as f32 * cell_w).ceil();
             let seg_w = text_w + seg_pad * 2.0;
             Some((text, fg, bg, seg_w, text_w))
         }).collect()

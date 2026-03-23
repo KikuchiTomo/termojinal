@@ -6,8 +6,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use unicode_width::UnicodeWidthChar;
-
 use crate::atlas::{Atlas, CellSize, FontConfig};
 use crate::blur_renderer::BlurRenderer;
 use crate::color_convert::{self, ThemePalette};
@@ -153,6 +151,8 @@ pub struct Renderer {
     pub blur_renderer: BlurRenderer,
     /// The surface texture format (retained for recreating pipelines on format change).
     surface_format: wgpu::TextureFormat,
+    /// Whether to use CJK-aware character width calculation.
+    pub cjk_width: bool,
 }
 
 impl Renderer {
@@ -560,6 +560,7 @@ impl Renderer {
             rounded_rect_renderer,
             blur_renderer,
             surface_format,
+            cjk_width: false,
         })
     }
 
@@ -1215,10 +1216,10 @@ impl Renderer {
         let mut preedit_instances = Vec::new();
 
         for ch in text.chars() {
-            let char_width = ch.width().unwrap_or(1);
+            let cw = termojinal_vt::char_width(ch, self.cjk_width);
             let glyph = self.atlas.get_glyph(ch);
 
-            let width_scale = if char_width > 1 { char_width as f32 } else { 1.0 };
+            let width_scale = if cw > 1 { cw as f32 } else { 1.0 };
             preedit_instances.push(CellInstance {
                 grid_pos: [(cursor_col + col_offset) as f32, cursor_row as f32],
                 atlas_uv: [glyph.atlas_x, glyph.atlas_y, glyph.atlas_w, glyph.atlas_h],
@@ -1229,7 +1230,7 @@ impl Renderer {
                 _pad: [0; 2],
             });
 
-            col_offset += char_width;
+            col_offset += cw;
         }
 
         if preedit_instances.is_empty() {
@@ -1604,8 +1605,8 @@ impl Renderer {
         let mut col = 0usize;
         for c in text.chars() {
             let glyph = self.atlas.get_glyph(c);
-            let char_width = UnicodeWidthChar::width(c).unwrap_or(1);
-            let width_scale = if char_width > 1 { char_width as f32 } else { 1.0 };
+            let cw = termojinal_vt::char_width(c, self.cjk_width);
+            let width_scale = if cw > 1 { cw as f32 } else { 1.0 };
             instances.push(CellInstance {
                 grid_pos: [col as f32, 0.0],
                 atlas_uv: [
@@ -1620,7 +1621,7 @@ impl Renderer {
                 cell_width_scale: width_scale,
                 _pad: [0; 2],
             });
-            col += char_width;
+            col += cw;
         }
 
         if instances.is_empty() {
@@ -1733,7 +1734,9 @@ impl Renderer {
             size: size * self.scale_factor,
             ..self.font_config.clone()
         };
-        self.atlas = Atlas::new(&scaled_config)?;
+        let mut new_atlas = Atlas::new(&scaled_config)?;
+        new_atlas.cjk_width = self.cjk_width;
+        self.atlas = new_atlas;
 
         // Recreate atlas texture with the new atlas dimensions.
         self.atlas_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1865,6 +1868,11 @@ impl Renderer {
     /// Get the cell size in pixels.
     pub fn cell_size(&self) -> CellSize {
         self.atlas.cell_size
+    }
+
+    /// Set CJK ambiguous width mode on the atlas.
+    pub fn atlas_set_cjk_width(&mut self, cjk: bool) {
+        self.atlas.cjk_width = cjk;
     }
 
     /// Calculate grid dimensions with padding (for single-pane / full-surface).

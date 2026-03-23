@@ -260,6 +260,23 @@ pub struct Terminal {
     max_command_history: usize,
     /// Temporary storage for command text extracted at OSC 133 C, used at D.
     pending_command_text: Option<String>,
+    /// Whether to use CJK-aware character width calculation.
+    /// When true, Unicode East Asian Ambiguous width characters (e.g., ○●■□▲△◆◇★☆◯)
+    /// are treated as 2-cell wide instead of 1-cell wide.
+    pub cjk_width: bool,
+}
+
+/// Calculate the display width of a character, respecting CJK ambiguous width.
+///
+/// When `cjk` is true, characters with East Asian Width "Ambiguous" are treated
+/// as 2-cell wide (standard CJK terminal behavior). Otherwise they are 1-cell wide.
+#[inline]
+pub fn char_width(c: char, cjk: bool) -> usize {
+    if cjk {
+        UnicodeWidthChar::width_cjk(c).unwrap_or(1)
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(1)
+    }
 }
 
 impl Terminal {
@@ -308,7 +325,13 @@ impl Terminal {
             command_history_enabled: true,
             max_command_history: 10_000,
             pending_command_text: None,
+            cjk_width: false,
         }
+    }
+
+    /// Set whether to use CJK-aware character width calculation.
+    pub fn set_cjk_width(&mut self, cjk: bool) {
+        self.cjk_width = cjk;
     }
 
     /// Get the active grid.
@@ -1007,7 +1030,7 @@ impl vte::Perform for Terminal {
             return;
         }
 
-        let char_width = UnicodeWidthChar::width(c).unwrap_or(1);
+        let char_width = char_width(c, self.cjk_width);
 
         if self.wrap_pending {
             self.wrap_pending = false;
@@ -2113,5 +2136,96 @@ mod tests {
         feed_str(&mut term, &mut parser, "\x1b]52;c;!!!invalid!!!\x1b\\");
 
         assert!(term.clipboard_event.is_none());
+    }
+
+    #[test]
+    fn test_char_width_basic() {
+        // ASCII characters are always 1-cell wide.
+        assert_eq!(char_width('A', false), 1);
+        assert_eq!(char_width('A', true), 1);
+
+        // CJK ideographs are always 2-cell wide.
+        assert_eq!(char_width('あ', false), 2);
+        assert_eq!(char_width('あ', true), 2);
+        assert_eq!(char_width('漢', false), 2);
+        assert_eq!(char_width('漢', true), 2);
+
+        // Fullwidth forms are always 2-cell wide.
+        assert_eq!(char_width('！', false), 2);
+        assert_eq!(char_width('！', true), 2);
+    }
+
+    #[test]
+    fn test_char_width_ambiguous() {
+        // U+25EF LARGE CIRCLE — East Asian Width: Ambiguous.
+        // Narrow in Western locales, wide in CJK locales.
+        assert_eq!(char_width('\u{25EF}', false), 1);
+        assert_eq!(char_width('\u{25EF}', true), 2);
+
+        // Other common ambiguous-width characters:
+        // ○ U+25CB WHITE CIRCLE
+        assert_eq!(char_width('\u{25CB}', false), 1);
+        assert_eq!(char_width('\u{25CB}', true), 2);
+
+        // ● U+25CF BLACK CIRCLE
+        assert_eq!(char_width('\u{25CF}', false), 1);
+        assert_eq!(char_width('\u{25CF}', true), 2);
+
+        // ■ U+25A0 BLACK SQUARE
+        assert_eq!(char_width('\u{25A0}', false), 1);
+        assert_eq!(char_width('\u{25A0}', true), 2);
+
+        // △ U+25B3 WHITE UP-POINTING TRIANGLE
+        assert_eq!(char_width('\u{25B3}', false), 1);
+        assert_eq!(char_width('\u{25B3}', true), 2);
+
+        // ★ U+2605 BLACK STAR
+        assert_eq!(char_width('\u{2605}', false), 1);
+        assert_eq!(char_width('\u{2605}', true), 2);
+
+        // ① U+2460 CIRCLED DIGIT ONE
+        assert_eq!(char_width('\u{2460}', false), 1);
+        assert_eq!(char_width('\u{2460}', true), 2);
+    }
+
+    #[test]
+    fn test_cjk_width_terminal_print() {
+        // Test that ◯ (U+25EF) is stored as width-2 when cjk_width is enabled.
+        let mut term = Terminal::new(80, 24);
+        term.set_cjk_width(true);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\u{25EF}");
+
+        // The character should be stored in cell (0, 0) with width 2.
+        let cell = term.grid().cell(0, 0);
+        assert_eq!(cell.c, '\u{25EF}');
+        assert_eq!(cell.width, 2);
+
+        // Cell (1, 0) should be a continuation cell (width 0, NUL char).
+        let cont = term.grid().cell(1, 0);
+        assert_eq!(cont.c, '\0');
+        assert_eq!(cont.width, 0);
+
+        // Cursor should be at column 2 (after the 2-cell wide character).
+        assert_eq!(term.cursor_col, 2);
+    }
+
+    #[test]
+    fn test_narrow_width_terminal_print() {
+        // Test that ◯ (U+25EF) is stored as width-1 when cjk_width is disabled.
+        let mut term = Terminal::new(80, 24);
+        term.set_cjk_width(false);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "\u{25EF}");
+
+        // The character should be stored in cell (0, 0) with width 1.
+        let cell = term.grid().cell(0, 0);
+        assert_eq!(cell.c, '\u{25EF}');
+        assert_eq!(cell.width, 1);
+
+        // Cursor should be at column 1.
+        assert_eq!(term.cursor_col, 1);
     }
 }

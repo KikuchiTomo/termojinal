@@ -13,7 +13,7 @@ fontdue = "0.9"
 log = "0.4"
 thiserror = "2"
 bytemuck = { version = "1", features = ["derive"] }
-unicode-width = "0.2"
+unicode-width = { version = "0.2", features = ["cjk"] }
 unic-emoji-char = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]

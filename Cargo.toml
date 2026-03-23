@@ -54,7 +54,7 @@ dirs = "6"
 gethostname = "0.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
 raw-window-handle = "0.6"
-unicode-width = "0.2"
+unicode-width = { version = "0.2", features = ["cjk"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

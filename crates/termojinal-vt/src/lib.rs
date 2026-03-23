@@ -21,6 +21,6 @@ pub use image::{
 };
 pub use scrollback::ScrollbackBuffer;
 pub use term::{
-    ClipboardEvent, CommandRecord, CursorShape, Modes, MouseFormat, MouseMode, NamedSnapshot,
-    OscState, Terminal, TerminalSnapshot,
+    char_width, ClipboardEvent, CommandRecord, CursorShape, Modes, MouseFormat, MouseMode,
+    NamedSnapshot, OscState, Terminal, TerminalSnapshot,
 };

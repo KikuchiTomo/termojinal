@@ -487,6 +487,57 @@ impl Default for ThemeSection {
 // [font]
 // ---------------------------------------------------------------------------
 
+/// How to handle Unicode East Asian Ambiguous width characters.
+///
+/// Characters like ○●■□▲△◆◇★☆◯ have "Ambiguous" East Asian Width.
+/// In CJK locales, these are traditionally displayed as 2-cell wide characters.
+/// In Western locales, they are 1-cell wide.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AmbiguousWidth {
+    /// Auto-detect from system locale: use wide in CJK locales (ja, ko, zh),
+    /// narrow otherwise.
+    Auto,
+    /// Always treat ambiguous characters as 1-cell wide (Western behavior).
+    Narrow,
+    /// Always treat ambiguous characters as 2-cell wide (CJK behavior).
+    Wide,
+}
+
+impl Default for AmbiguousWidth {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Detect whether the current locale is CJK (Japanese, Korean, or Chinese).
+///
+/// Checks the LANG, LC_ALL, and LC_CTYPE environment variables for CJK locale
+/// identifiers (ja, ko, zh).
+pub fn detect_cjk_locale() -> bool {
+    for var in &["LC_ALL", "LC_CTYPE", "LANG"] {
+        if let Ok(val) = std::env::var(var) {
+            let val_lower = val.to_lowercase();
+            if val_lower.starts_with("ja")
+                || val_lower.starts_with("ko")
+                || val_lower.starts_with("zh")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the ambiguous width setting to a boolean (true = use wide/CJK widths).
+pub fn resolve_ambiguous_width(setting: &AmbiguousWidth) -> bool {
+    match setting {
+        AmbiguousWidth::Wide => true,
+        AmbiguousWidth::Narrow => false,
+        AmbiguousWidth::Auto => detect_cjk_locale(),
+    }
+}
+
 /// Font configuration section (`[font]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FontSection {
@@ -500,6 +551,12 @@ pub struct FontSection {
     pub max_size: f32,
     #[serde(default = "default_font_size_step")]
     pub size_step: f32,
+    /// How to handle Unicode East Asian Ambiguous width characters.
+    /// "auto" (default): detect from system locale.
+    /// "wide": always treat as 2-cell wide (CJK behavior).
+    /// "narrow": always treat as 1-cell wide (Western behavior).
+    #[serde(default)]
+    pub ambiguous_width: AmbiguousWidth,
 }
 
 fn default_font_family() -> String { "monospace".into() }
@@ -516,6 +573,7 @@ impl Default for FontSection {
             line_height: default_line_height(),
             max_size: default_max_font_size(),
             size_step: default_font_size_step(),
+            ambiguous_width: AmbiguousWidth::default(),
         }
     }
 }
