@@ -1050,6 +1050,19 @@ struct TabDrag {
 }
 
 // ---------------------------------------------------------------------------
+// Scrollbar drag state
+// ---------------------------------------------------------------------------
+
+struct ScrollbarDrag {
+    /// The pane whose scrollbar is being dragged.
+    pane_id: PaneId,
+    /// Offset in pixels from the top of the thumb to the mouse position at drag start.
+    grab_offset_px: f32,
+    /// The pane rect (viewport) at drag start, for coordinate conversion.
+    pane_rect: termojinal_layout::Rect,
+}
+
+// ---------------------------------------------------------------------------
 // Pane — holds per-pane terminal + PTY state
 // ---------------------------------------------------------------------------
 
@@ -1685,6 +1698,7 @@ struct AppState {
     modifiers: ModifiersState,
     cursor_pos: (f64, f64),
     drag_resize: Option<DragResize>,
+    scrollbar_drag: Option<ScrollbarDrag>,
     next_pane_id: PaneId,
     sidebar_visible: bool,
     sidebar_width: f32,
@@ -2517,6 +2531,7 @@ impl ApplicationHandler<UserEvent> for App {
             modifiers: ModifiersState::empty(),
             cursor_pos: (0.0, 0.0),
             drag_resize: None,
+            scrollbar_drag: None,
             next_pane_id: 1, // 0 is already used
             sidebar_visible: true,
             sidebar_width: cfg.sidebar.width,
@@ -3162,6 +3177,36 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
+                // --- Scrollbar drag active: update scroll position ---
+                if let Some(ref sb_drag) = state.scrollbar_drag {
+                    let pane_id = sb_drag.pane_id;
+                    let grab_offset = sb_drag.grab_offset_px;
+                    let pane_rect = sb_drag.pane_rect;
+                    let local_y = (position.y as f32) - pane_rect.y;
+                    // First, compute geometry immutably.
+                    let new_scroll = {
+                        let tab = active_tab(state);
+                        tab.panes.get(&pane_id).and_then(|pane| {
+                            state.renderer.scrollbar_geometry(&pane.terminal).map(|geo| {
+                                let desired_thumb_top = local_y - grab_offset;
+                                let total_lines = geo.scrollback_len + geo.rows;
+                                let frac = (desired_thumb_top / geo.total_height).clamp(0.0, 1.0);
+                                let new_offset = geo.scrollback_len as f32 - frac * total_lines as f32;
+                                (new_offset.round() as isize).clamp(0, geo.scrollback_len as isize) as usize
+                            })
+                        })
+                    };
+                    // Then, apply the scroll offset mutably.
+                    if let Some(offset) = new_scroll {
+                        let tab = active_tab_mut(state);
+                        if let Some(pane) = tab.panes.get_mut(&pane_id) {
+                            pane.terminal.set_scroll_offset(offset);
+                        }
+                    }
+                    state.window.request_redraw();
+                    return;
+                }
+
                 // --- Tab drag active: check for reordering (Feature 4) ---
                 if state.tab_drag.is_some() {
                     let drag_idx = state.tab_drag.as_ref().unwrap().tab_idx;
@@ -3266,7 +3311,29 @@ impl ApplicationHandler<UserEvent> for App {
                             let cursor = tab_bar_cursor(state, mx, my);
                             state.window.set_cursor(cursor);
                         } else {
-                            state.window.set_cursor(CursorIcon::Text);
+                            // Check if cursor is over a scrollbar in any pane.
+                            let mut on_scrollbar = false;
+                            for (pid, rect) in &pane_rects {
+                                if mx >= rect.x && mx < rect.x + rect.w
+                                    && my >= rect.y && my < rect.y + rect.h
+                                {
+                                    let tab = active_tab(state);
+                                    if let Some(pane) = tab.panes.get(pid) {
+                                        if let Some(geo) = state.renderer.scrollbar_geometry(&pane.terminal) {
+                                            let local_x = mx - rect.x;
+                                            if local_x >= geo.track_x {
+                                                on_scrollbar = true;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            if on_scrollbar {
+                                state.window.set_cursor(CursorIcon::Default);
+                            } else {
+                                state.window.set_cursor(CursorIcon::Text);
+                            }
                         }
                     }
 
@@ -3323,11 +3390,16 @@ impl ApplicationHandler<UserEvent> for App {
                 button,
                 ..
             } => 'mouse_input: {
-                // --- Handle drag-resize / sidebar-drag / tab-drag release ---
+                // --- Handle drag-resize / sidebar-drag / tab-drag / scrollbar-drag release ---
                 if btn_state == ElementState::Released && button == MouseButton::Left {
                     if state.sidebar_drag {
                         state.sidebar_drag = false;
                         state.window.set_cursor(CursorIcon::Default);
+                        break 'mouse_input;
+                    }
+                    if state.scrollbar_drag.is_some() {
+                        state.scrollbar_drag = None;
+                        state.window.request_redraw();
                         break 'mouse_input;
                     }
                     if state.tab_drag.is_some() {
@@ -3449,6 +3521,59 @@ impl ApplicationHandler<UserEvent> for App {
                             last_pos,
                         });
                         // Don't fall through to focus-change or selection.
+                        break 'mouse_input;
+                    }
+                }
+
+                // --- Priority 1.2: Check if clicking on a scrollbar → start drag or page scroll ---
+                if btn_state == ElementState::Pressed && button == MouseButton::Left {
+                    let pane_rects = active_pane_rects(state);
+                    let cx = state.cursor_pos.0 as f32;
+                    let cy = state.cursor_pos.1 as f32;
+                    let mut handled = false;
+                    for (pid, rect) in &pane_rects {
+                        if cx >= rect.x && cx < rect.x + rect.w
+                            && cy >= rect.y && cy < rect.y + rect.h
+                        {
+                            let tab = active_tab(state);
+                            if let Some(pane) = tab.panes.get(pid) {
+                                if let Some(geo) = state.renderer.scrollbar_geometry(&pane.terminal) {
+                                    let local_x = cx - rect.x;
+                                    let local_y = cy - rect.y;
+                                    if local_x >= geo.track_x {
+                                        // Click is in the scrollbar area.
+                                        if local_y >= geo.thumb_top && local_y < geo.thumb_bottom {
+                                            // Clicked on the thumb — start dragging.
+                                            state.scrollbar_drag = Some(ScrollbarDrag {
+                                                pane_id: *pid,
+                                                grab_offset_px: local_y - geo.thumb_top,
+                                                pane_rect: *rect,
+                                            });
+                                        } else {
+                                            // Clicked above or below the thumb — page scroll.
+                                            let page_lines = geo.rows.saturating_sub(1).max(1);
+                                            let tab = active_tab_mut(state);
+                                            if let Some(pane) = tab.panes.get_mut(pid) {
+                                                let current = pane.terminal.scroll_offset() as isize;
+                                                let new_offset = if local_y < geo.thumb_top {
+                                                    // Clicked above thumb — scroll up (increase offset).
+                                                    current + page_lines as isize
+                                                } else {
+                                                    // Clicked below thumb — scroll down (decrease offset).
+                                                    current - page_lines as isize
+                                                };
+                                                pane.terminal.set_scroll_offset(new_offset.max(0) as usize);
+                                            }
+                                        }
+                                        handled = true;
+                                        state.window.request_redraw();
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if handled {
                         break 'mouse_input;
                     }
                 }

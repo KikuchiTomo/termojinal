@@ -30,5 +30,5 @@ pub use atlas::{CellSize, FontConfig};
 pub use blur_renderer::BlurRenderer;
 pub use color_convert::ThemePalette;
 pub use image_render::ImageRenderer;
-pub use renderer::{RenderError, Renderer};
+pub use renderer::{RenderError, Renderer, ScrollbarGeometry};
 pub use rounded_rect_renderer::{RoundedRect, RoundedRectRenderer};

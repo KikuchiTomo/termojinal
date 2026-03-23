@@ -68,6 +68,25 @@ struct Uniforms {
     cursor_extra: [f32; 4],
 }
 
+/// Scrollbar geometry in pixel coordinates relative to the pane origin.
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollbarGeometry {
+    /// X position of the scrollbar track in pixels from the pane left edge.
+    pub track_x: f32,
+    /// Width of the scrollbar track in pixels.
+    pub track_width: f32,
+    /// Y position of the top of the thumb in pixels from the pane top.
+    pub thumb_top: f32,
+    /// Y position of the bottom of the thumb in pixels from the pane top.
+    pub thumb_bottom: f32,
+    /// Total height of the scrollbar track in pixels.
+    pub total_height: f32,
+    /// Number of visible rows.
+    pub rows: usize,
+    /// Number of scrollback lines.
+    pub scrollback_len: usize,
+}
+
 /// Flag indicating this cell has an underline (matches Attrs::UNDERLINE bit).
 const FLAG_UNDERLINE: u32 = 1 << 3;
 
@@ -138,6 +157,8 @@ pub struct Renderer {
     pub scrollbar_thumb_opacity: f32,
     /// Scrollbar track opacity.
     pub scrollbar_track_opacity: f32,
+    /// Fixed scrollbar width in physical pixels.
+    pub scrollbar_width_px: f32,
     /// Theme palette for ANSI 16-color overrides and default fg/bg.
     pub theme_palette: ThemePalette,
 
@@ -553,6 +574,7 @@ impl Renderer {
             preedit_bg: [0.15, 0.15, 0.20, 1.0],
             scrollbar_thumb_opacity: 0.5,
             scrollbar_track_opacity: 0.1,
+            scrollbar_width_px: 8.0,
             theme_palette: ThemePalette::default(),
             pane_caches: HashMap::new(),
             current_pane_key: 0,
@@ -722,8 +744,11 @@ impl Renderer {
         let thumb_bottom =
             ((thumb_top_f + thumb_height_f).ceil() as usize).min(rows);
 
+        // Fixed-pixel scrollbar width converted to grid units.
+        let cell_w = self.atlas.cell_size.width;
+        let scrollbar_grid_w = (self.scrollbar_width_px / cell_w).max(0.05);
         // Place scrollbar at the right edge of the last column (inside clip area).
-        let scrollbar_x = (cols as f32) - 0.2;
+        let scrollbar_x = (cols as f32) - scrollbar_grid_w;
 
         let mut instances = Vec::with_capacity(rows);
         for r in 0..rows {
@@ -749,6 +774,53 @@ impl Renderer {
             });
         }
         instances
+    }
+
+    /// Compute scrollbar geometry in pixel coordinates relative to the pane.
+    ///
+    /// Returns `None` if there is no scrollback content.
+    /// Returns `Some((track_x, track_width, thumb_top_px, thumb_bottom_px, total_height_px))`
+    /// where all values are in physical pixels relative to the pane origin.
+    pub fn scrollbar_geometry(
+        &self,
+        terminal: &termojinal_vt::Terminal,
+    ) -> Option<ScrollbarGeometry> {
+        let grid = terminal.grid();
+        let cols = grid.cols();
+        let rows = grid.rows();
+        let scroll_offset = terminal.scroll_offset();
+        let scrollback_len = terminal.scrollback_len();
+
+        if scrollback_len == 0 {
+            return None;
+        }
+
+        let cell_w = self.atlas.cell_size.width;
+        let cell_h = self.atlas.cell_size.height;
+
+        let scrollbar_grid_w = (self.scrollbar_width_px / cell_w).max(0.05);
+        let track_x_px = (cols as f32 - scrollbar_grid_w) * cell_w;
+        let track_width_px = self.scrollbar_width_px;
+        let total_height_px = rows as f32 * cell_h;
+
+        let total_lines = scrollback_len + rows;
+        let thumb_height_f =
+            (rows as f64 / total_lines as f64 * rows as f64).max(1.0);
+        let thumb_top_f =
+            (scrollback_len - scroll_offset) as f64 / total_lines as f64 * rows as f64;
+
+        let thumb_top_px = thumb_top_f as f32 * cell_h;
+        let thumb_bottom_px = ((thumb_top_f + thumb_height_f) as f32 * cell_h).min(total_height_px);
+
+        Some(ScrollbarGeometry {
+            track_x: track_x_px,
+            track_width: track_width_px,
+            thumb_top: thumb_top_px,
+            thumb_bottom: thumb_bottom_px,
+            total_height: total_height_px,
+            rows,
+            scrollback_len,
+        })
     }
 
     /// Build or incrementally update instance data. Returns the total instance count.
