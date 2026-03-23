@@ -194,21 +194,31 @@ pub fn detect_shell() -> String {
 }
 
 /// Build the default environment for a PTY session.
+///
+/// Inherits all environment variables from the parent process so that
+/// SSH agent (SSH_AUTH_SOCK, SSH_AGENT_PID), Claude Code authentication,
+/// and other credentials are available in split panes and new workspaces.
+/// Terminal-specific variables are then overridden with values appropriate
+/// for a termojinal PTY.
 pub fn default_env() -> HashMap<String, String> {
-    let mut env = HashMap::new();
+    // Start with the full parent environment so that SSH agent forwarding,
+    // auth tokens, and tool-specific variables are inherited.
+    let mut env: HashMap<String, String> = std::env::vars().collect();
 
-    // Propagate essential environment variables from the parent.
-    let propagate = [
-        "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
-        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+    // Remove variables that are per-session or would be stale/incorrect
+    // in a child PTY.
+    let exclude = [
+        "TERM_SESSION_ID",   // macOS per-terminal-session identifier
+        "WINDOWID",          // X11 window id, not valid for child PTYs
+        "SECURITYSESSIONID", // macOS security session, inherited automatically by the kernel
+        "OLDPWD",            // stale previous working directory
+        "_",                 // last command, not meaningful for new shell
     ];
-    for key in propagate {
-        if let Ok(val) = std::env::var(key) {
-            env.insert(key.to_string(), val);
-        }
+    for key in exclude {
+        env.remove(key);
     }
 
-    // Set terminal-specific variables.
+    // Override terminal-specific variables.
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     // Identify as termojinal so tools can detect us.
@@ -242,6 +252,56 @@ mod tests {
         let env = default_env();
         assert_eq!(env.get("TERM").unwrap(), "xterm-256color");
         assert_eq!(env.get("COLORTERM").unwrap(), "truecolor");
+    }
+
+    #[test]
+    fn test_default_env_inherits_parent_vars() {
+        // Set a test variable in the parent environment.
+        std::env::set_var("TERMOJINAL_TEST_INHERIT", "inherited_value");
+        let env = default_env();
+        assert_eq!(
+            env.get("TERMOJINAL_TEST_INHERIT").unwrap(),
+            "inherited_value",
+            "default_env should inherit arbitrary parent environment variables"
+        );
+        std::env::remove_var("TERMOJINAL_TEST_INHERIT");
+    }
+
+    #[test]
+    fn test_default_env_inherits_ssh_vars() {
+        // Simulate SSH agent variables being present in the parent.
+        std::env::set_var("SSH_AUTH_SOCK", "/tmp/test-ssh-sock");
+        std::env::set_var("SSH_AGENT_PID", "12345");
+        let env = default_env();
+        assert_eq!(
+            env.get("SSH_AUTH_SOCK").unwrap(),
+            "/tmp/test-ssh-sock",
+            "SSH_AUTH_SOCK must be inherited for SSH agent forwarding"
+        );
+        assert_eq!(
+            env.get("SSH_AGENT_PID").unwrap(),
+            "12345",
+            "SSH_AGENT_PID must be inherited for SSH agent forwarding"
+        );
+        std::env::remove_var("SSH_AUTH_SOCK");
+        std::env::remove_var("SSH_AGENT_PID");
+    }
+
+    #[test]
+    fn test_default_env_excludes_stale_vars() {
+        std::env::set_var("TERM_SESSION_ID", "stale-session");
+        std::env::set_var("OLDPWD", "/old/path");
+        let env = default_env();
+        assert!(
+            env.get("TERM_SESSION_ID").is_none(),
+            "TERM_SESSION_ID should be excluded"
+        );
+        assert!(
+            env.get("OLDPWD").is_none(),
+            "OLDPWD should be excluded"
+        );
+        std::env::remove_var("TERM_SESSION_ID");
+        std::env::remove_var("OLDPWD");
     }
 
     #[test]
