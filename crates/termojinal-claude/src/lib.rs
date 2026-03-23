@@ -10,6 +10,7 @@
 use serde::Deserialize;
 
 pub mod detector;
+pub mod monitor;
 pub mod request;
 pub mod rules;
 

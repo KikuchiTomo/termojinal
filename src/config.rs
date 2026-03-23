@@ -152,6 +152,9 @@ impl Default for TreeRootMode {
 /// Directory tree configuration section (`[directory_tree]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct DirectoryTreeConfig {
+    /// Show the directory tree on startup (default: false).
+    #[serde(default)]
+    pub enabled: bool,
     /// How to determine the tree root directory.
     #[serde(default)]
     pub root_mode: TreeRootMode,
@@ -194,6 +197,7 @@ fn default_tree_double_click_ms() -> u64 { 400 }
 impl Default for DirectoryTreeConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             root_mode: TreeRootMode::default(),
             dir_fg: default_tree_dir_fg(),
             file_fg: default_tree_file_fg(),
@@ -216,6 +220,7 @@ impl Default for DirectoryTreeConfig {
 /// Controls command history tracking, navigation, timeline UI,
 /// session persistence, and named snapshots.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct TimeTravelConfig {
     /// Enable command history recording (OSC 133 based).
     #[serde(default = "default_true")]

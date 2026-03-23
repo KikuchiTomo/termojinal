@@ -6,6 +6,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 /// Client that talks to the termojinal GUI process over its Unix socket.
 pub struct AppClient {
@@ -31,6 +32,10 @@ impl AppClient {
     pub fn send_raw(&self, request_json: &str) -> Result<String, String> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .map_err(|e| format!("failed to connect to termojinal: {e}"))?;
+
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .map_err(|e| format!("failed to set read timeout: {e}"))?;
 
         let mut msg = request_json.to_string();
         if !msg.ends_with('\n') {

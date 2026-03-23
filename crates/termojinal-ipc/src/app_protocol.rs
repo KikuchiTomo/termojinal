@@ -149,6 +149,10 @@ pub enum AppIpcRequest {
         /// Short summary of current activity.
         #[serde(default)]
         summary: Option<String>,
+        /// Stable task title for this agent session (e.g. Claude Code task name).
+        /// Once set, should not be overwritten by pane/workspace switches.
+        #[serde(default)]
+        title: Option<String>,
     },
 
     // --- Legacy ---
@@ -685,6 +689,7 @@ mod tests {
                 subagent_count: Some(3),
                 state: Some("running".to_string()),
                 summary: Some("building project".to_string()),
+                title: Some("Fix auth bug".to_string()),
             },
             AppIpcRequest::UpdateAgentStatus {
                 session_id: None,
@@ -692,6 +697,7 @@ mod tests {
                 subagent_count: None,
                 state: None,
                 summary: None,
+                title: None,
             },
             // Legacy
             AppIpcRequest::ToggleQuickTerminal,
@@ -830,6 +836,7 @@ mod tests {
                     subagent_count: None,
                     state: None,
                     summary: None,
+                    title: None,
                 },
                 "update_agent_status",
             ),

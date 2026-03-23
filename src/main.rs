@@ -498,14 +498,152 @@ impl SearchState {
 // Workspace info for rich sidebar (Feature 3)
 // ---------------------------------------------------------------------------
 
+/// Request for the background workspace refresher thread.
+#[derive(Clone)]
+struct WorkspaceRefreshRequest {
+    /// Workspace index.
+    wi: usize,
+    /// Resolved CWD (from OSC 7 or empty).
+    osc_cwd: String,
+    /// PTY PID for lsof fallback + port detection.
+    pty_pid: Option<i32>,
+}
+
+/// Background thread that refreshes workspace info (git, lsof, daemon)
+/// without blocking the render thread.
+struct AsyncWorkspaceRefresher {
+    /// Latest results per workspace index, read by the render thread.
+    results: Arc<Mutex<Vec<WorkspaceInfo>>>,
+    /// Pending requests (replaced atomically by the render thread).
+    requests: Arc<Mutex<Vec<WorkspaceRefreshRequest>>>,
+    /// Latest daemon sessions result.
+    daemon_sessions: Arc<Mutex<Vec<DaemonSessionInfo>>>,
+    /// Signal the background thread to wake up.
+    notify: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl AsyncWorkspaceRefresher {
+    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+        let results: Arc<Mutex<Vec<WorkspaceInfo>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests: Arc<Mutex<Vec<WorkspaceRefreshRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let daemon_sessions: Arc<Mutex<Vec<DaemonSessionInfo>>> = Arc::new(Mutex::new(Vec::new()));
+        let notify = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+
+        let res = Arc::clone(&results);
+        let req = Arc::clone(&requests);
+        let ds = Arc::clone(&daemon_sessions);
+        let wake = Arc::clone(&notify);
+        std::thread::Builder::new()
+            .name("workspace-refresher".into())
+            .spawn(move || {
+                let mut last_daemon_refresh = std::time::Instant::now();
+                loop {
+                    // Wait up to 3 seconds, or wake immediately if nudged.
+                    {
+                        let (lock, cvar) = &*wake;
+                        let mut nudged = lock.lock().unwrap();
+                        if !*nudged {
+                            let (mut g, _) = cvar.wait_timeout(
+                                nudged,
+                                std::time::Duration::from_secs(3),
+                            ).unwrap();
+                            *g = false;
+                        } else {
+                            *nudged = false;
+                        }
+                    }
+
+                    // Grab pending requests.
+                    let pending: Vec<WorkspaceRefreshRequest> = {
+                        let mut r = req.lock().unwrap();
+                        std::mem::take(&mut *r)
+                    };
+
+                    if !pending.is_empty() {
+                        // Process each workspace request.
+                        let mut new_results = {
+                            res.lock().unwrap().clone()
+                        };
+                        // Ensure capacity.
+                        while new_results.len() <= pending.iter().map(|r| r.wi).max().unwrap_or(0) {
+                            new_results.push(WorkspaceInfo::new());
+                        }
+
+                        let mut changed = false;
+                        for request in &pending {
+                            let wi = request.wi;
+                            // Resolve CWD with lsof fallback.
+                            let cwd = if !request.osc_cwd.is_empty() {
+                                request.osc_cwd.clone()
+                            } else if let Some(pid) = request.pty_pid {
+                                get_child_cwd(pid).unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+
+                            let old_name = new_results[wi].name.clone();
+                            let old_branch = new_results[wi].git_branch.clone();
+                            refresh_workspace_info(&mut new_results[wi], &cwd, request.pty_pid);
+                            if new_results[wi].name != old_name || new_results[wi].git_branch != old_branch {
+                                changed = true;
+                            }
+                        }
+
+                        *res.lock().unwrap() = new_results;
+                        if changed {
+                            let _ = proxy.send_event(UserEvent::StatusUpdate);
+                        }
+                    }
+
+                    // Refresh daemon sessions every 10 seconds.
+                    if last_daemon_refresh.elapsed().as_secs() >= 10 {
+                        let sessions = query_daemon_sessions();
+                        *ds.lock().unwrap() = sessions;
+                        last_daemon_refresh = std::time::Instant::now();
+                        let _ = proxy.send_event(UserEvent::StatusUpdate);
+                    }
+                }
+            })
+            .expect("failed to spawn workspace refresher thread");
+
+        Self { results, requests, daemon_sessions, notify }
+    }
+
+    /// Submit refresh requests (called from render thread — non-blocking).
+    fn submit(&self, requests: Vec<WorkspaceRefreshRequest>) {
+        if let Ok(mut r) = self.requests.try_lock() {
+            *r = requests;
+        }
+        // Wake the background thread.
+        let (lock, cvar) = &*self.notify;
+        if let Ok(mut nudged) = lock.try_lock() {
+            *nudged = true;
+            cvar.notify_one();
+        }
+    }
+
+    /// Get latest workspace infos (called from render thread — non-blocking).
+    fn get_results(&self) -> Vec<WorkspaceInfo> {
+        self.results.try_lock().map(|r| r.clone()).unwrap_or_default()
+    }
+
+    /// Get latest daemon sessions (called from render thread — non-blocking).
+    fn get_daemon_sessions(&self) -> Vec<DaemonSessionInfo> {
+        self.daemon_sessions.try_lock().map(|r| r.clone()).unwrap_or_default()
+    }
+}
+
+#[derive(Clone)]
 struct WorkspaceInfo {
     name: String,
+    /// Resolved CWD (from OSC 7 or lsof fallback). Cached so render code
+    /// doesn't need to call lsof on every frame.
+    cwd: String,
     git_branch: Option<String>,
     git_dirty: usize,
     git_untracked: usize,
     git_ahead: usize,
     git_behind: usize,
-    #[allow(dead_code)]
     ports: Vec<u16>,
     last_updated: Instant,
     has_unread: bool,
@@ -515,6 +653,7 @@ impl WorkspaceInfo {
     fn new() -> Self {
         Self {
             name: String::new(),
+            cwd: String::new(),
             git_branch: None,
             git_dirty: 0,
             git_untracked: 0,
@@ -552,6 +691,9 @@ struct AgentSessionInfo {
     session_id: Option<String>,
     /// The pane where this agent session is running.
     pane_id: Option<PaneId>,
+    /// Stable title for this agent session (e.g. Claude Code task name).
+    /// Set once via IPC and NOT overwritten by pane/workspace switches.
+    title: Option<String>,
     subagent_count: usize,
     subagents: Vec<SubAgentInfo>,
     summary: String,
@@ -565,6 +707,7 @@ impl Default for AgentSessionInfo {
             active: false,
             session_id: None,
             pane_id: None,
+            title: None,
             subagent_count: 0,
             subagents: Vec::new(),
             summary: String::new(),
@@ -584,8 +727,9 @@ const WORKSPACE_COLORS: [[f32; 4]; 6] = [
     [0.36, 0.84, 0.77, 1.0],  // teal
 ];
 
-/// Refresh workspace info by running git commands.
-fn refresh_workspace_info(info: &mut WorkspaceInfo, cwd: &str) {
+/// Refresh workspace info by running git commands and detecting ports.
+fn refresh_workspace_info(info: &mut WorkspaceInfo, cwd: &str, pty_pid: Option<i32>) {
+    info.cwd = cwd.to_string();
     if cwd.is_empty() {
         info.name = String::new();
         info.git_branch = None;
@@ -651,7 +795,81 @@ fn refresh_workspace_info(info: &mut WorkspaceInfo, cwd: &str) {
         }
     }
 
+    // Detect listening ports from focused pane's PTY process.
+    if let Some(pid) = pty_pid {
+        info.ports = detect_listening_ports(pid);
+    } else {
+        info.ports.clear();
+    }
+
     info.last_updated = Instant::now();
+}
+
+/// Detect TCP listening ports for a given PID and its children.
+/// Uses `lsof -iTCP -sTCP:LISTEN -n -P -a -p <pid>` on macOS.
+fn detect_listening_ports(pid: i32) -> Vec<u16> {
+    let pid_str = pid.to_string();
+    let Ok(output) = std::process::Command::new("lsof")
+        .args(["-iTCP", "-sTCP:LISTEN", "-n", "-P", "-a", "-p", &pid_str])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut ports: Vec<u16> = Vec::new();
+    for line in text.lines().skip(1) {
+        // NAME column is last, format like "*:3000" or "127.0.0.1:8080"
+        if let Some(name) = line.split_whitespace().last() {
+            if let Some(port_str) = name.rsplit(':').next() {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    if !ports.contains(&port) {
+                        ports.push(port);
+                    }
+                }
+            }
+        }
+    }
+    ports.sort();
+    ports
+}
+
+/// Query the session daemon for all tracked sessions.
+/// Returns an empty Vec on connection failure (daemon not running, etc.).
+fn query_daemon_sessions() -> Vec<DaemonSessionInfo> {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+
+    let sock_path = daemon_socket_path();
+    let Ok(mut stream) = UnixStream::connect(&sock_path) else {
+        return Vec::new();
+    };
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+    let req = serde_json::json!({"type": "list_session_details"});
+    let msg = format!("{}\n", req);
+    if stream.write_all(msg.as_bytes()).is_err() {
+        return Vec::new();
+    }
+    let mut line = String::new();
+    if std::io::BufReader::new(&stream).read_line(&mut line).is_err() {
+        return Vec::new();
+    }
+    let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line) else {
+        return Vec::new();
+    };
+    let Some(sessions) = resp.get("data").and_then(|d| d.get("sessions")).and_then(|s| s.as_array()) else {
+        return Vec::new();
+    };
+    sessions.iter().filter_map(|s| {
+        let id = s.get("id")?.as_str()?.to_string();
+        let shell = s.get("shell").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let pid = s.get("pid").and_then(|v| v.as_i64()).map(|p| p as i32);
+        let pane_id = s.get("pane_id").and_then(|v| v.as_u64());
+        Some(DaemonSessionInfo { id, shell, cwd, pid, pane_id })
+    }).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,6 +1371,10 @@ struct DirectoryTreeState {
     last_click_index: Option<usize>,
     /// Pending "open in editor" request (set by click handler, consumed by event loop).
     pending_open_in_editor: bool,
+    /// Whether find (prefix search) mode is active.
+    find_active: bool,
+    /// Current find query string.
+    find_query: String,
 }
 
 impl DirectoryTreeState {
@@ -1167,6 +1389,8 @@ impl DirectoryTreeState {
             last_click_time: None,
             last_click_index: None,
             pending_open_in_editor: false,
+            find_active: false,
+            find_query: String::new(),
         }
     }
 }
@@ -1248,6 +1472,31 @@ fn load_tree_root(tree: &mut DirectoryTreeState, root: &str) {
 }
 
 /// Toggle expand/collapse of a directory entry at the given index.
+/// Find the first entry whose name starts with `tree.find_query` (case-insensitive)
+/// and move selection to it. Searches from current position forward, wrapping around.
+fn dir_tree_find_match(tree: &mut DirectoryTreeState) {
+    if tree.find_query.is_empty() || tree.entries.is_empty() {
+        return;
+    }
+    let query = tree.find_query.to_lowercase();
+    let n = tree.entries.len();
+    // Search forward from current position.
+    for offset in 0..n {
+        let idx = (tree.selected + offset) % n;
+        if tree.entries[idx].name.to_lowercase().starts_with(&query) {
+            tree.selected = idx;
+            // Ensure visible.
+            let max_visible = 20; // approximate, matches config default
+            if tree.selected < tree.scroll_offset {
+                tree.scroll_offset = tree.selected;
+            } else if tree.selected >= tree.scroll_offset + max_visible {
+                tree.scroll_offset = tree.selected.saturating_sub(max_visible / 2);
+            }
+            return;
+        }
+    }
+}
+
 fn toggle_tree_entry(tree: &mut DirectoryTreeState, index: usize) {
     if index >= tree.entries.len() || !tree.entries[index].is_dir {
         return;
@@ -1389,7 +1638,9 @@ fn dir_tree_cd(state: &mut AppState) {
     if !path.is_empty() {
         let focused_id = active_tab(state).layout.focused();
         if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
-            let cmd = format!("cd {}\n", shell_escape(&path));
+            // Send Ctrl+U first to clear any partial input on the command line,
+            // then the cd command. Prevents "fcd" or "cdcd" artifacts.
+            let cmd = format!("\x15cd {}\n", shell_escape(&path));
             let _ = pane.pty.write(cmd.as_bytes());
         }
     }
@@ -1730,6 +1981,10 @@ struct AppState {
     pane_git_cache: PaneGitCache,
     /// Background thread that collects git/SSH/CWD info without blocking render.
     status_collector: AsyncStatusCollector,
+    /// Background thread that refreshes workspace info (git, ports, daemon sessions).
+    workspace_refresher: AsyncWorkspaceRefresher,
+    /// Background thread that detects and monitors Claude Code sessions.
+    claude_monitor: termojinal_claude::monitor::ClaudeSessionMonitor,
     /// Current display scale factor (e.g. 2.0 for Retina, 1.0 for FHD).
     scale_factor: f64,
     /// Allow Flow UI state for AI agent permission management.
@@ -1765,6 +2020,19 @@ struct AppState {
     timeline_pane_id: Option<PaneId>,
     /// Whether the sessions summary panel in the sidebar is collapsed.
     sessions_collapsed: bool,
+    /// Cached session list from the daemon (refreshed by background thread).
+    daemon_sessions: Vec<DaemonSessionInfo>,
+}
+
+/// Terminal session info fetched from the daemon.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct DaemonSessionInfo {
+    id: String,
+    shell: String,
+    cwd: String,
+    pid: Option<i32>,
+    pane_id: Option<u64>,
 }
 
 /// Update session_to_workspace mapping after a workspace at `removed_idx` is removed.
@@ -1776,6 +2044,32 @@ fn cleanup_session_to_workspace(state: &mut AppState, removed_idx: usize) {
             *idx -= 1;
         }
     }
+}
+
+/// Remove `session_to_workspace` entries whose agent session is no longer active
+/// and was last updated more than 1 hour ago, preventing unbounded map growth.
+fn cleanup_stale_session_mappings(state: &mut AppState) {
+    let one_hour = std::time::Duration::from_secs(3600);
+    state.session_to_workspace.retain(|session_id, &mut idx| {
+        if idx >= state.agent_infos.len() {
+            // Index out of range — stale entry.
+            return false;
+        }
+        let agent = &state.agent_infos[idx];
+        if agent.active {
+            return true;
+        }
+        // Inactive agent: keep only if the session_id still matches and was
+        // updated recently (within 1 hour).
+        let id_matches = agent
+            .session_id
+            .as_deref()
+            .map_or(false, |sid| sid == session_id);
+        if !id_matches {
+            return false;
+        }
+        agent.last_updated.elapsed() < one_hour
+    });
 }
 
 /// Helper to access the active workspace immutably.
@@ -1803,6 +2097,10 @@ fn active_tab_mut(state: &mut AppState) -> &mut Tab {
 
 /// Whether the tab bar should be visible for the active workspace.
 fn tab_bar_visible(state: &AppState) -> bool {
+    // Quick Terminal mode can suppress the tab bar.
+    if state.quick_terminal.visible && !state.config.quick_terminal.show_tab_bar {
+        return false;
+    }
     let ws = active_ws(state);
     state.config.tab_bar.always_show || ws.tabs.len() > 1
 }
@@ -1881,6 +2179,10 @@ fn effective_status_bar_height(state: &AppState) -> f32 {
     if !state.config.status_bar.enabled {
         return 0.0;
     }
+    // Quick Terminal mode can suppress the status bar.
+    if state.quick_terminal.visible && !state.config.quick_terminal.show_status_bar {
+        return 0.0;
+    }
     let cell_h = state.renderer.cell_size().height;
     let bar_pad = 4.0_f32;
     state.config.status_bar.height.max(cell_h + bar_pad * 2.0)
@@ -1937,6 +2239,17 @@ impl App {
 // ---------------------------------------------------------------------------
 // Directory resolution helpers
 // ---------------------------------------------------------------------------
+
+/// Clear IME preedit on the focused pane of the active tab.
+/// Must be called before switching workspace/tab/pane so that the
+/// in-progress composition is discarded cleanly.
+fn clear_focused_preedit(state: &mut AppState) {
+    let tab = active_tab_mut(state);
+    let focused_id = tab.layout.focused();
+    if let Some(pane) = tab.panes.get_mut(&focused_id) {
+        pane.preedit = None;
+    }
+}
 
 /// Get the working directory of the focused pane in the active tab.
 fn focused_pane_cwd(state: &AppState) -> Option<String> {
@@ -1999,13 +2312,35 @@ fn resolve_new_pane_cwd(state: &AppState) -> Option<String> {
 
 /// Determine the working directory for the initial pane on startup.
 fn resolve_startup_cwd(config: &config::TermojinalConfig) -> Option<String> {
+    // If the user set startup.directory, honour it regardless of mode
+    // (except Restore, which explicitly overrides with last session CWD).
+    if !config.startup.directory.is_empty()
+        && !matches!(config.startup.mode, config::StartupMode::Restore)
+    {
+        if let Some(dir) = validate_dir(&config.startup.directory) {
+            return Some(dir);
+        }
+        log::warn!(
+            "startup.directory {:?} is not a valid directory, falling back",
+            config.startup.directory
+        );
+    }
+
     match config.startup.mode {
-        config::StartupMode::Default => None,
-        config::StartupMode::Fixed => {
-            validate_dir(&config.startup.directory)
+        config::StartupMode::Default | config::StartupMode::Fixed => {
+            // Use $HOME so the terminal doesn't inherit the
+            // (often meaningless) parent-process CWD (e.g. "/" from Finder).
+            std::env::var("HOME").ok().or_else(|| {
+                dirs::home_dir().map(|p| p.to_string_lossy().to_string())
+            })
         }
         config::StartupMode::Restore => {
-            load_last_cwd()
+            load_last_cwd().or_else(|| {
+                // If no saved CWD, fall back to $HOME.
+                std::env::var("HOME").ok().or_else(|| {
+                    dirs::home_dir().map(|p| p.to_string_lossy().to_string())
+                })
+            })
         }
     }
 }
@@ -2570,6 +2905,8 @@ impl ApplicationHandler<UserEvent> for App {
             status_cache: StatusCache::new(),
             pane_git_cache: PaneGitCache::new(),
             status_collector: AsyncStatusCollector::new(self.proxy.clone()),
+            workspace_refresher: AsyncWorkspaceRefresher::new(self.proxy.clone()),
+            claude_monitor: termojinal_claude::monitor::ClaudeSessionMonitor::new(),
             scale_factor: initial_scale_factor,
             allow_flow: allow_flow::AllowFlowUI::new(cfg.allow_flow.clone()),
             pending_ipc_responses: HashMap::new(),
@@ -2586,6 +2923,7 @@ impl ApplicationHandler<UserEvent> for App {
             timeline_scroll_offset: 0,
             timeline_pane_id: None,
             sessions_collapsed: false,
+            daemon_sessions: Vec::new(),
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -2845,64 +3183,117 @@ impl ApplicationHandler<UserEvent> for App {
                         && state.dir_trees[wi].focused;
                     if tree_has_focus {
                         let is_ctrl = state.modifiers.control_key();
-                        let handled = match &event.logical_key {
-                            // Move down: Arrow Down, Ctrl+N
+                        let tree = &mut state.dir_trees[wi];
+
+                        // --- Find mode: typing narrows to matching entry ---
+                        if tree.find_active {
+                            match &event.logical_key {
+                                Key::Named(NamedKey::Escape) => {
+                                    tree.find_query.clear();
+                                    tree.find_active = false;
+                                    state.window.request_redraw();
+                                }
+                                Key::Named(NamedKey::Enter) => {
+                                    // Accept current match, exit find mode.
+                                    tree.find_query.clear();
+                                    tree.find_active = false;
+                                    state.window.request_redraw();
+                                }
+                                Key::Named(NamedKey::Backspace) => {
+                                    tree.find_query.pop();
+                                    dir_tree_find_match(tree);
+                                    state.window.request_redraw();
+                                }
+                                Key::Character(c) if !is_ctrl => {
+                                    tree.find_query.push_str(c.as_str());
+                                    dir_tree_find_match(tree);
+                                    state.window.request_redraw();
+                                }
+                                _ => {}
+                            }
+                            return; // Consume ALL keys in find mode.
+                        }
+
+                        match &event.logical_key {
+                            // Move down: Arrow Down, j, Ctrl+N
                             Key::Named(NamedKey::ArrowDown) => {
                                 dir_tree_move_down(state);
-                                true
+                            }
+                            Key::Character(c) if c.as_str() == "j" && !is_ctrl => {
+                                dir_tree_move_down(state);
                             }
                             Key::Character(c) if is_ctrl && (c.as_str() == "n" || c.as_str() == "\x0e") => {
                                 dir_tree_move_down(state);
-                                true
                             }
-                            // Move up: Arrow Up, Ctrl+P
+                            // Move up: Arrow Up, k, Ctrl+P
                             Key::Named(NamedKey::ArrowUp) => {
                                 dir_tree_move_up(state);
-                                true
+                            }
+                            Key::Character(c) if c.as_str() == "k" && !is_ctrl => {
+                                dir_tree_move_up(state);
                             }
                             Key::Character(c) if is_ctrl && (c.as_str() == "p" || c.as_str() == "\x10") => {
                                 dir_tree_move_up(state);
-                                true
                             }
-                            // Expand: Arrow Right, Ctrl+F
-                            Key::Named(NamedKey::ArrowRight) => {
+                            // Expand: Arrow Right, l, Ctrl+F
+                            Key::Named(NamedKey::ArrowRight) | Key::Character(_)
+                                if matches!(&event.logical_key, Key::Named(NamedKey::ArrowRight))
+                                   || (matches!(&event.logical_key, Key::Character(c) if c.as_str() == "l" && !is_ctrl)) => {
                                 dir_tree_expand(state);
-                                true
                             }
                             Key::Character(c) if is_ctrl && (c.as_str() == "f" || c.as_str() == "\x06") => {
                                 dir_tree_expand(state);
-                                true
                             }
-                            // Collapse: Arrow Left, Ctrl+B
+                            // Collapse: Arrow Left, h, Ctrl+B
                             Key::Named(NamedKey::ArrowLeft) => {
                                 dir_tree_collapse(state);
-                                true
+                            }
+                            Key::Character(c) if c.as_str() == "h" && !is_ctrl => {
+                                dir_tree_collapse(state);
                             }
                             Key::Character(c) if is_ctrl && (c.as_str() == "b" || c.as_str() == "\x02") => {
                                 dir_tree_collapse(state);
-                                true
                             }
-                            // Enter: cd to selected directory
+                            // Enter: toggle expand/collapse (directories) or open (files)
                             Key::Named(NamedKey::Enter) => {
+                                let wi2 = state.active_workspace;
+                                if wi2 < state.dir_trees.len() {
+                                    let sel = state.dir_trees[wi2].selected;
+                                    if sel < state.dir_trees[wi2].entries.len() && state.dir_trees[wi2].entries[sel].is_dir {
+                                        toggle_tree_entry(&mut state.dir_trees[wi2], sel);
+                                    } else {
+                                        dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
+                                    }
+                                }
+                                state.window.request_redraw();
+                            }
+                            // e: cd to selected directory
+                            Key::Character(c) if c.as_str() == "e" && !is_ctrl => {
                                 dir_tree_cd(state);
-                                true
                             }
                             // v: open selected file in new tab with $EDITOR or nvim
                             Key::Character(c) if c.as_str() == "v" && !is_ctrl => {
                                 dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
-                                true
+                            }
+                            // f: enter find mode (prefix search)
+                            Key::Character(c) if c.as_str() == "f" && !is_ctrl => {
+                                let wi2 = state.active_workspace;
+                                if wi2 < state.dir_trees.len() {
+                                    state.dir_trees[wi2].find_active = true;
+                                    state.dir_trees[wi2].find_query.clear();
+                                    state.window.request_redraw();
+                                }
                             }
                             // Escape: unfocus tree (return focus to terminal)
                             Key::Named(NamedKey::Escape) => {
                                 state.dir_trees[wi].focused = false;
                                 state.window.request_redraw();
-                                true
                             }
-                            _ => false,
+                            _ => {
+                                // Tree has focus: consume ALL keys to prevent leaking to PTY.
+                            }
                         };
-                        if handled {
-                            return;
-                        }
+                        return; // Always return when tree has focus.
                     }
                 }
 
@@ -3840,6 +4231,36 @@ impl ApplicationHandler<UserEvent> for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                // --- File tree mouse scroll ---
+                // If cursor is over sidebar and directory tree is visible, scroll the tree.
+                let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                if state.cursor_pos.0 < sidebar_w as f64 {
+                    let wi = state.active_workspace;
+                    if wi < state.dir_trees.len() && state.dir_trees[wi].visible && !state.dir_trees[wi].entries.is_empty() {
+                        let cell_h_f = state.renderer.cell_size().height as f64;
+                        let scroll_lines = match delta {
+                            winit::event::MouseScrollDelta::LineDelta(_, y) => y as i32,
+                            winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                                (pos.y / cell_h_f).round() as i32
+                            }
+                        };
+                        if scroll_lines != 0 {
+                            let tree = &mut state.dir_trees[wi];
+                            let max_visible = state.config.directory_tree.max_visible_lines.max(1);
+                            if scroll_lines > 0 {
+                                // Scroll up.
+                                tree.scroll_offset = tree.scroll_offset.saturating_sub(scroll_lines as usize);
+                            } else {
+                                // Scroll down.
+                                let max_offset = tree.entries.len().saturating_sub(max_visible);
+                                tree.scroll_offset = (tree.scroll_offset + scroll_lines.unsigned_abs() as usize).min(max_offset);
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                    }
+                }
+
                 let focused_id = active_tab(state).layout.focused();
                 let cell_size = state.renderer.cell_size();
                 let cell_h = cell_size.height as f64;
@@ -4166,6 +4587,22 @@ impl ApplicationHandler<UserEvent> for App {
                                 // Last workspace — quit.
                                 event_loop.exit();
                             } else {
+                                // Clean up PTY buffers and daemon registrations for all
+                                // remaining panes in the workspace being removed.
+                                {
+                                    let ws = &state.workspaces[ws_idx];
+                                    let pane_ids: Vec<PaneId> = ws.tabs.iter()
+                                        .flat_map(|t| t.panes.keys().copied())
+                                        .collect();
+                                    if let Ok(mut bufs) = self.pty_buffers.lock() {
+                                        for pid in &pane_ids {
+                                            bufs.remove(pid);
+                                        }
+                                    }
+                                    for pid in &pane_ids {
+                                        unregister_pane_from_daemon(*pid);
+                                    }
+                                }
                                 state.workspaces.remove(ws_idx);
                                 if ws_idx < state.workspace_infos.len() {
                                     state.workspace_infos.remove(ws_idx);
@@ -4557,6 +4994,7 @@ fn dispatch_action(
             true
         }
         Action::NextPane => {
+            clear_focused_preedit(state);
             let tab = active_tab_mut(state);
             tab.layout = tab.layout.navigate(Direction::Next);
             let fmt = state.config.tab_bar.format.clone();
@@ -4569,6 +5007,7 @@ fn dispatch_action(
             true
         }
         Action::PrevPane => {
+            clear_focused_preedit(state);
             let tab = active_tab_mut(state);
             tab.layout = tab.layout.navigate(Direction::Prev);
             let fmt = state.config.tab_bar.format.clone();
@@ -4655,7 +5094,11 @@ fn dispatch_action(
                     };
                     state.workspaces.push(ws);
                     state.agent_infos.push(AgentSessionInfo::default());
-                    state.dir_trees.push(DirectoryTreeState::new());
+                    let mut new_tree = DirectoryTreeState::new();
+                    if state.config.directory_tree.enabled {
+                        new_tree.visible = true;
+                    }
+                    state.dir_trees.push(new_tree);
                     state.active_workspace = state.workspaces.len() - 1;
                     resize_all_panes(state);
                     update_window_title(state);
@@ -4668,6 +5111,7 @@ fn dispatch_action(
             true
         }
         Action::NextTab => {
+            clear_focused_preedit(state);
             let ws = active_ws_mut(state);
             if ws.active_tab + 1 < ws.tabs.len() {
                 ws.active_tab += 1;
@@ -4678,6 +5122,7 @@ fn dispatch_action(
             true
         }
         Action::PrevTab => {
+            clear_focused_preedit(state);
             let ws = active_ws_mut(state);
             if ws.active_tab > 0 {
                 ws.active_tab -= 1;
@@ -4688,6 +5133,7 @@ fn dispatch_action(
             true
         }
         Action::Workspace(n) => {
+            clear_focused_preedit(state);
             let idx = (*n as usize).saturating_sub(1);
             if idx < state.workspaces.len() {
                 state.active_workspace = idx;
@@ -4813,9 +5259,16 @@ fn dispatch_action(
                     let ws = &state.workspaces[wi];
                     let tab = &ws.tabs[ws.active_tab];
                     let fid = tab.layout.focused();
-                    tab.panes.get(&fid)
+                    let osc_cwd = tab.panes.get(&fid)
                         .map(|p| p.terminal.osc.cwd.clone())
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    if osc_cwd.is_empty() {
+                        // OSC 7 CWD not yet reported — fall back to $HOME or
+                        // startup directory so the tree has something to show.
+                        std::env::var("HOME").unwrap_or_default()
+                    } else {
+                        osc_cwd
+                    }
                 };
                 let root = resolve_tree_root(&cwd, &state.config.directory_tree.root_mode);
                 if state.dir_trees[wi].entries.is_empty() || state.dir_trees[wi].root_path != root {
@@ -4829,6 +5282,7 @@ fn dispatch_action(
             true
         }
         Action::NextWorkspace => {
+            clear_focused_preedit(state);
             if state.active_workspace + 1 < state.workspaces.len() {
                 state.active_workspace += 1;
                 resize_all_panes(state);
@@ -4838,6 +5292,7 @@ fn dispatch_action(
             true
         }
         Action::PrevWorkspace => {
+            clear_focused_preedit(state);
             if state.active_workspace > 0 {
                 state.active_workspace -= 1;
                 resize_all_panes(state);
@@ -5099,6 +5554,22 @@ fn close_focused_pane(
                     event_loop.exit();
                 } else {
                     let removed_idx = state.active_workspace;
+                    // Clean up PTY buffers and daemon registrations for all
+                    // remaining panes in the workspace being removed.
+                    {
+                        let ws = &state.workspaces[removed_idx];
+                        let pane_ids: Vec<PaneId> = ws.tabs.iter()
+                            .flat_map(|t| t.panes.keys().copied())
+                            .collect();
+                        if let Ok(mut bufs) = buffers.lock() {
+                            for pid in &pane_ids {
+                                bufs.remove(pid);
+                            }
+                        }
+                        for pid in &pane_ids {
+                            unregister_pane_from_daemon(*pid);
+                        }
+                    }
                     state.workspaces.remove(removed_idx);
                     if removed_idx < state.workspace_infos.len() {
                         state.workspace_infos.remove(removed_idx);
@@ -5272,14 +5743,11 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
         // Name line
         let mut entry_h = cell_h;
         // CWD line
-        let ws_cwd = {
-            let ws = &state.workspaces[i];
-            let tab = &ws.tabs[ws.active_tab];
-            let fid = tab.layout.focused();
-            tab.panes.get(&fid)
-                .map(|p| p.terminal.osc.cwd.clone())
-                .unwrap_or_default()
-        };
+        // Use the cached CWD (resolved from OSC 7 or lsof fallback)
+        // instead of reading osc.cwd directly, which may be empty.
+        let ws_cwd = state.workspace_infos.get(i)
+            .map(|inf| inf.cwd.clone())
+            .unwrap_or_default();
         if !ws_cwd.is_empty() {
             entry_h += info_line_gap + cell_h;
         }
@@ -5579,18 +6047,19 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
         let fg = if is_active { active_fg } else { inactive_fg };
         let bg = if is_active { active_tab_bg } else { tab_bar_bg };
 
-        // Indicator dot for active tab.
+        // Indicator dot for active tab (procedural circle to avoid CJK-width squishing).
         let dot_offset = if is_active {
-            let dot_str = "\u{25CF} "; // ● with space
-            state.renderer.render_text(
-                view,
-                dot_str,
-                tab_x + tab_pad_x,
-                text_y.max(0.0),
-                accent_color,
-                bg,
-            );
-            cell_w * 2.0 // dot + space width
+            let dot_d = cell_h * 0.40;
+            let dot_r = dot_d / 2.0;
+            let dot_cx = tab_x + tab_pad_x + cell_w * 0.5;
+            let dot_cy = text_y.max(0.0) + cell_h * 0.5;
+            state.renderer.submit_rounded_rects(view, &[RoundedRect {
+                rect: [dot_cx - dot_r, dot_cy - dot_r, dot_d, dot_d],
+                color: accent_color,
+                border_color: [0.0; 4],
+                params: [dot_r, 0.0, 0.0, 0.0],
+            }]);
+            cell_w * 1.5 // dot + gap
         } else {
             0.0
         };
@@ -5699,27 +6168,176 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     }
     // Keep dir_trees in sync.
     while state.dir_trees.len() < state.workspaces.len() {
-        state.dir_trees.push(DirectoryTreeState::new());
+        let mut tree = DirectoryTreeState::new();
+        // Apply config: auto-show tree when directory_tree.enabled = true.
+        if state.config.directory_tree.enabled {
+            tree.visible = true;
+        }
+        state.dir_trees.push(tree);
+    }
+    // Ensure trees with enabled=true get loaded if entries are still empty.
+    if state.config.directory_tree.enabled {
+        for wi in 0..state.workspaces.len() {
+            if wi >= state.dir_trees.len() { break; }
+            if state.dir_trees[wi].visible && state.dir_trees[wi].entries.is_empty() {
+                let cwd = {
+                    let ws = &state.workspaces[wi];
+                    let tab = &ws.tabs[ws.active_tab];
+                    let fid = tab.layout.focused();
+                    let osc_cwd = tab.panes.get(&fid)
+                        .map(|p| p.terminal.osc.cwd.clone())
+                        .unwrap_or_default();
+                    if osc_cwd.is_empty() {
+                        std::env::var("HOME").unwrap_or_default()
+                    } else {
+                        osc_cwd
+                    }
+                };
+                if !cwd.is_empty() {
+                    let root = resolve_tree_root(&cwd, &state.config.directory_tree.root_mode);
+                    load_tree_root(&mut state.dir_trees[wi], &root);
+                }
+            }
+        }
     }
 
-    // Refresh all workspaces (active every 5s, inactive every 30s).
-    for wi in 0..state.workspaces.len() {
-        if wi >= state.workspace_infos.len() {
-            break;
+    // --- Submit workspace refresh requests to background thread (NON-BLOCKING) ---
+    // Collect requests for workspaces that need refreshing, then hand them off
+    // to the background thread so git/lsof/daemon queries don't freeze the UI.
+    {
+        let mut refresh_requests: Vec<WorkspaceRefreshRequest> = Vec::new();
+        for wi in 0..state.workspaces.len() {
+            if wi >= state.workspace_infos.len() {
+                break;
+            }
+            let elapsed = state.workspace_infos[wi].last_updated.elapsed();
+            let is_active = wi == state.active_workspace;
+            let refresh_interval = if is_active { 5 } else { 30 };
+            if elapsed.as_secs() >= refresh_interval || state.workspace_infos[wi].name.is_empty() {
+                let (osc_cwd, pty_pid) = {
+                    let ws = &state.workspaces[wi];
+                    let tab = &ws.tabs[ws.active_tab];
+                    let focused_id = tab.layout.focused();
+                    let pane = tab.panes.get(&focused_id);
+                    let c = pane.map(|p| p.terminal.osc.cwd.clone()).unwrap_or_default();
+                    let pid = pane.map(|p| p.pty.pid().as_raw());
+                    (c, pid)
+                };
+                // Mark as "pending" so we don't re-submit every frame.
+                state.workspace_infos[wi].last_updated = Instant::now();
+                refresh_requests.push(WorkspaceRefreshRequest {
+                    wi,
+                    osc_cwd,
+                    pty_pid,
+                });
+            }
         }
-        let elapsed = state.workspace_infos[wi].last_updated.elapsed();
-        let refresh_interval = if wi == state.active_workspace { 5 } else { 30 };
-        if elapsed.as_secs() >= refresh_interval || state.workspace_infos[wi].name.is_empty() {
-            let cwd = {
-                let ws = &state.workspaces[wi];
-                let tab = &ws.tabs[ws.active_tab];
-                let focused_id = tab.layout.focused();
-                tab.panes
-                    .get(&focused_id)
-                    .map(|p| p.terminal.osc.cwd.clone())
-                    .unwrap_or_default()
-            };
-            refresh_workspace_info(&mut state.workspace_infos[wi], &cwd);
+        if !refresh_requests.is_empty() {
+            state.workspace_refresher.submit(refresh_requests);
+        }
+    }
+
+    // --- Read latest results from background thread (NON-BLOCKING) ---
+    {
+        let bg_results = state.workspace_refresher.get_results();
+        for (wi, info) in bg_results.into_iter().enumerate() {
+            if wi < state.workspace_infos.len() {
+                // Preserve has_unread flag (set by PTY output, not by background thread).
+                let has_unread = state.workspace_infos[wi].has_unread;
+                state.workspace_infos[wi] = info;
+                state.workspace_infos[wi].has_unread = has_unread;
+            }
+        }
+        state.daemon_sessions = state.workspace_refresher.get_daemon_sessions();
+    }
+
+    // --- Claude Code session monitor: submit pane PIDs and read results ---
+    {
+        use termojinal_claude::monitor::PaneInfo;
+        let mut pane_infos: Vec<PaneInfo> = Vec::new();
+        for (wi, ws) in state.workspaces.iter().enumerate() {
+            for tab in &ws.tabs {
+                for (&pane_id, pane) in &tab.panes {
+                    pane_infos.push(PaneInfo {
+                        pane_id,
+                        workspace_idx: wi,
+                        pty_pid: pane.pty.pid().as_raw(),
+                    });
+                }
+            }
+        }
+        state.claude_monitor.submit_panes(pane_infos);
+
+        // Update agent_infos from monitor results.
+        let claude_sessions = state.claude_monitor.get_sessions();
+        for cs in &claude_sessions {
+            let wi = cs.workspace_idx;
+            while state.agent_infos.len() <= wi {
+                state.agent_infos.push(AgentSessionInfo::default());
+            }
+            let agent = &mut state.agent_infos[wi];
+            // Only update from monitor if NOT currently in a PermissionRequest wait
+            // (PermissionRequest has higher priority — set by IPC handler).
+            let is_perm_wait = agent.active
+                && matches!(agent.state, AgentState::WaitingForPermission)
+                && state.allow_flow.has_pending_for_workspace(wi);
+            if !is_perm_wait {
+                agent.active = true;
+                agent.pane_id = Some(cs.pane_id);
+                agent.session_id = Some(cs.session_id.clone());
+                if agent.title.is_none() || agent.title.as_deref() == Some("") {
+                    agent.title = Some(cs.title.clone());
+                }
+                // Always update title if it was auto-detected (not IPC-set).
+                if !cs.title.is_empty() {
+                    agent.title = Some(cs.title.clone());
+                }
+                agent.state = match cs.state {
+                    termojinal_claude::monitor::SessionState::Running => AgentState::Running,
+                    termojinal_claude::monitor::SessionState::Idle => AgentState::Idle,
+                    termojinal_claude::monitor::SessionState::Done => AgentState::Inactive,
+                    termojinal_claude::monitor::SessionState::WaitingForPermission => AgentState::WaitingForPermission,
+                };
+                agent.subagent_count = cs.subagents.len();
+                agent.subagents = cs.subagents.iter().map(|sa| SubAgentInfo {
+                    title: if sa.description.is_empty() { sa.agent_type.clone() } else { sa.description.clone() },
+                    state: match sa.state {
+                        termojinal_claude::monitor::SessionState::Running => AgentState::Running,
+                        _ => AgentState::Inactive,
+                    },
+                }).collect();
+                agent.last_updated = Instant::now();
+            }
+        }
+        // Mark agents as inactive if monitor no longer sees them.
+        for wi in 0..state.agent_infos.len() {
+            let still_active = claude_sessions.iter().any(|cs| cs.workspace_idx == wi);
+            if !still_active && state.agent_infos[wi].active {
+                // Only mark inactive if it was monitor-tracked (has session_id).
+                if state.agent_infos[wi].session_id.is_some() {
+                    let is_perm_wait = matches!(state.agent_infos[wi].state, AgentState::WaitingForPermission)
+                        && state.allow_flow.has_pending_for_workspace(wi);
+                    if !is_perm_wait {
+                        state.agent_infos[wi].state = AgentState::Inactive;
+                        state.agent_infos[wi].active = false;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Periodically prune stale session_to_workspace entries ---
+    // Runs at most once per minute to avoid per-frame HashMap iteration.
+    {
+        static LAST_CLEANUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let prev = LAST_CLEANUP.load(std::sync::atomic::Ordering::Relaxed);
+        if now_secs.saturating_sub(prev) >= 60 {
+            LAST_CLEANUP.store(now_secs, std::sync::atomic::Ordering::Relaxed);
+            cleanup_stale_session_mappings(state);
         }
     }
 
@@ -5742,14 +6360,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         let ws_color = WORKSPACE_COLORS[i % WORKSPACE_COLORS.len()];
 
         // Get additional workspace info: cwd and pane count.
-        let ws_cwd = {
-            let ws = &state.workspaces[i];
-            let tab = &ws.tabs[ws.active_tab];
-            let fid = tab.layout.focused();
-            tab.panes.get(&fid)
-                .map(|p| p.terminal.osc.cwd.clone())
-                .unwrap_or_default()
-        };
+        // Use the cached CWD (resolved from OSC 7 or lsof fallback)
+        // instead of reading osc.cwd directly, which may be empty.
+        let ws_cwd = state.workspace_infos.get(i)
+            .map(|inf| inf.cwd.clone())
+            .unwrap_or_default();
         let ws_pane_count: usize = state.workspaces[i].tabs.iter()
             .map(|t| t.panes.len())
             .sum();
@@ -5849,9 +6464,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             }
         }
 
-        // --- Workspace indicator dot ---
-        // Active: filled colored circle ●, Inactive: outline circle ○
-        let dot_char = if has_agent { "\u{25CF}" } else if is_active { "\u{25CF}" } else { "\u{25CB}" }; // ● or ○
+        // --- Workspace indicator dot (procedural circle via RoundedRect) ---
+        // Using RoundedRect avoids CJK-width issues that squish text-based ● / ○.
         let mut dot_color = if is_active {
             ws_color
         } else if info.map_or(false, |inf| inf.has_unread) {
@@ -5874,21 +6488,33 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 _ => agent_active_color,
             };
         }
-        state.renderer.render_text(view, dot_char, side_pad, entry_y, dot_color, bg);
+        // Draw the dot as a perfect circle using the rounded-rect renderer.
+        let dot_diameter = cell_h * 0.50;
+        let dot_radius = dot_diameter / 2.0;
+        let dot_cx = side_pad + cell_w * 0.5; // center in ~1-cell area
+        let dot_cy = entry_y + cell_h * 0.5;
+        let filled = is_active || has_agent;
+        state.renderer.submit_rounded_rects(view, &[RoundedRect {
+            rect: [dot_cx - dot_radius, dot_cy - dot_radius, dot_diameter, dot_diameter],
+            color: if filled { dot_color } else { [0.0, 0.0, 0.0, 0.0] },
+            border_color: if filled { [0.0; 4] } else { dot_color },
+            params: [dot_radius, if filled { 0.0 } else { 1.5 }, 0.0, 0.0],
+        }]);
 
-        // --- Notification dot for unread activity (small bright dot next to circle) ---
+        // --- Notification dot for unread activity (small bright dot above-right) ---
         if !is_active {
             if let Some(inf) = info {
                 if inf.has_unread {
-                    // Render a small bright dot indicator after the workspace dot
-                    state.renderer.render_text(
-                        view,
-                        "\u{2022}", // •
-                        side_pad + cell_w * 1.2,
-                        entry_y - cell_h * 0.3,
-                        notification_dot,
-                        bg,
-                    );
+                    let notif_d = cell_h * 0.22;
+                    let notif_r = notif_d / 2.0;
+                    let notif_x = dot_cx + dot_radius * 0.5;
+                    let notif_y = dot_cy - dot_radius * 0.7;
+                    state.renderer.submit_rounded_rects(view, &[RoundedRect {
+                        rect: [notif_x - notif_r, notif_y - notif_r, notif_d, notif_d],
+                        color: notification_dot,
+                        border_color: [0.0; 4],
+                        params: [notif_r, 0.0, 0.0, 0.0],
+                    }]);
                 }
             }
         }
@@ -6144,13 +6770,15 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 line_y += cell_h;
             }
 
-            // Bottom hint line.
-            let hint = if tree.focused {
-                "\u{2191}\u{2193}nav  \u{21B5}cd  v:open  esc:close"
+            // Bottom hint line / find mode indicator.
+            let (hint, hint_fg_col) = if tree.find_active {
+                let q = format!("find: {}\u{2588}", tree.find_query); // █ cursor
+                (q, [0.70, 0.80, 1.0, 1.0])
+            } else if tree.focused {
+                ("j/k:nav  \u{21B5}:open  e:cd  f:find  v:edit  esc:close".to_string(), [0.40, 0.45, 0.55, 0.8])
             } else {
-                "Cmd+Shift+E to focus"
+                ("Cmd+Shift+E to focus".to_string(), [0.40, 0.45, 0.55, 0.8])
             };
-            let hint_fg_col = [0.40, 0.45, 0.55, 0.8];
             let hint_display: String = hint.chars().take(max_chars.saturating_sub(1)).collect();
             state.renderer.render_text(view, &hint_display, info_indent, line_y, hint_fg_col, bg);
             let _ = line_y;
@@ -6216,7 +6844,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         if !agent.active {
             continue;
         }
-        let title = {
+        // Use the stable IPC-provided title if available, so that
+        // switching panes/tabs within the workspace does not change the
+        // session title shown in the sidebar.
+        let title = if let Some(ref t) = agent.title {
+            t.clone()
+        } else {
             let ws_info = state.workspace_infos.get(wi);
             let name = ws_info.map(|i| i.name.as_str()).unwrap_or("");
             if !name.is_empty() {
@@ -6256,15 +6889,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             .and_then(|i| i.git_branch.as_deref())
             .unwrap_or("")
             .to_string();
-        // Get CWD for worktree display.
-        let ws_cwd = {
-            let ws = &state.workspaces[wi];
-            let tab = &ws.tabs[ws.active_tab];
-            let fid = tab.layout.focused();
-            tab.panes.get(&fid)
-                .map(|p| p.terminal.osc.cwd.clone())
-                .unwrap_or_default()
-        };
+        // Use cached CWD from workspace info.
+        let ws_cwd = state.workspace_infos.get(wi)
+            .map(|inf| inf.cwd.clone())
+            .unwrap_or_default();
         let worktree_display = if !ws_cwd.is_empty() {
             std::path::Path::new(&ws_cwd)
                 .file_name()
@@ -6283,7 +6911,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         });
     }
 
-    if !session_entries.is_empty() {
+    let has_daemon_sessions = !state.daemon_sessions.is_empty();
+    if !session_entries.is_empty() || has_daemon_sessions {
         let session_line_h = cell_h;
         let session_gap = info_line_gap;
         let session_pad_y = 3.0;
@@ -6305,12 +6934,14 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         };
 
         // Compute total height depending on collapsed state.
+        let daemon_entry_h = session_line_h + session_pad_y * 2.0;
         let sessions_total_h = if state.sessions_collapsed {
             header_h
         } else {
             let entries_h: f32 = session_entries.iter().map(|e| compute_entry_h(e)).sum();
+            let daemon_h: f32 = state.daemon_sessions.len() as f32 * (daemon_entry_h + session_entry_gap);
             let gaps_h = (session_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
-            header_h + entries_h + gaps_h
+            header_h + entries_h + gaps_h + daemon_h
         };
 
         let sessions_start_y = phys_h - sessions_total_h - sessions_sep_h - bottom_pad;
@@ -6342,7 +6973,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let collapse_icon = if state.sessions_collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ or ▾
             let header_icon_fg = agent_active_color;
             state.renderer.render_text(view, collapse_icon, side_pad, header_y, header_icon_fg, sidebar_bg);
-            let header_text = format!("Sessions ({})", session_entries.len());
+            let total_count = session_entries.len() + state.daemon_sessions.len();
+            let header_text = format!("Sessions ({})", total_count);
             let header_fg = [active_fg[0] * 0.8, active_fg[1] * 0.8, active_fg[2] * 0.8, 0.9];
             state.renderer.render_text(view, &header_text, side_pad + cell_w * 2.0, header_y, header_fg, sidebar_bg);
 
@@ -6397,20 +7029,40 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     } else if entry.state_label == "done" {
                         dot_col = done_color;
                     }
-                    state.renderer.render_text(view, "\u{25CF}", side_pad + 2.0, content_y, dot_col, card_bg); // ●
+                    // Session dot as procedural circle (avoids CJK-width squishing).
+                    let sd = cell_h * 0.45;
+                    let sr = sd / 2.0;
+                    let scx = side_pad + 2.0 + cell_w * 0.5;
+                    let scy = content_y + cell_h * 0.5;
+                    state.renderer.submit_rounded_rects(view, &[RoundedRect {
+                        rect: [scx - sr, scy - sr, sd, sd],
+                        color: dot_col,
+                        border_color: [0.0; 4],
+                        params: [sr, 0.0, 0.0, 0.0],
+                    }]);
                     let title_display: String = entry.title.chars().take(max_chars.saturating_sub(1)).collect();
                     let title_fg = if is_active_ws { active_fg } else { inactive_fg };
                     state.renderer.render_text(view, &title_display, text_left, content_y, title_fg, card_bg);
 
-                    // --- Line 2: Status + (worktree, branch) ---
+                    // --- Line 2: Status dot + (worktree, branch) ---
                     let line2_y = content_y + session_line_h + session_gap;
-                    let (state_icon, state_color) = match entry.state_label {
-                        "running" => ("\u{25B6}", agent_active_color),   // ▶
-                        "wait you" => ("\u{23F3}", agent_idle_color),    // ⏳
-                        "done" => ("\u{2713}", done_color),              // ✓
-                        _ => ("\u{25CB}", dim_fg),                       // ○
+                    let state_color = match entry.state_label {
+                        "running" => agent_active_color,
+                        "wait you" => agent_idle_color,
+                        "done" => done_color,
+                        _ => dim_fg,
                     };
-                    state.renderer.render_text(view, state_icon, info_indent, line2_y, state_color, card_bg);
+                    // Small status dot (procedural circle).
+                    let sd2 = cell_h * 0.30;
+                    let sr2 = sd2 / 2.0;
+                    let scx2 = info_indent + cell_w * 0.5;
+                    let scy2 = line2_y + cell_h * 0.5;
+                    state.renderer.submit_rounded_rects(view, &[RoundedRect {
+                        rect: [scx2 - sr2, scy2 - sr2, sd2, sd2],
+                        color: state_color,
+                        border_color: [0.0; 4],
+                        params: [sr2, 0.0, 0.0, 0.0],
+                    }]);
                     let label_fg = [state_color[0] * 0.85, state_color[1] * 0.85, state_color[2] * 0.85, state_color[3]];
                     // Build status + location string.
                     let location_info = if !entry.branch.is_empty() {
@@ -6438,6 +7090,47 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     }
 
                     sy += entry_h + session_entry_gap;
+                }
+
+                // --- Daemon-tracked terminal sessions (below agent sessions) ---
+                if has_daemon_sessions {
+                    for ds in &state.daemon_sessions {
+                        if sy + session_line_h * 2.0 + session_pad_y * 2.0 > phys_h - bottom_pad {
+                            break;
+                        }
+                        let ds_h = session_line_h + session_pad_y * 2.0;
+                        // Simple card background.
+                        let card_bg = [sidebar_bg[0] + 0.015, sidebar_bg[1] + 0.015, sidebar_bg[2] + 0.02, 1.0];
+                        let accent_w: u32 = 3;
+                        let card_x: u32 = accent_w;
+                        let card_w = (sidebar_w as u32).saturating_sub(accent_w);
+                        state.renderer.submit_separator(view, card_x, sy as u32, card_w, ds_h as u32, card_bg);
+                        state.renderer.submit_separator(
+                            view, 0, sy as u32, accent_w, ds_h as u32,
+                            [dim_fg[0], dim_fg[1], dim_fg[2], 0.4],
+                        );
+                        // Shell basename + PID + CWD short.
+                        let shell_name = std::path::Path::new(&ds.shell)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&ds.shell);
+                        let pid_str = ds.pid.map(|p| format!(" ({})", p)).unwrap_or_default();
+                        let cwd_short = if let Ok(home) = std::env::var("HOME") {
+                            if ds.cwd.starts_with(&home) {
+                                format!("~{}", &ds.cwd[home.len()..])
+                            } else {
+                                ds.cwd.clone()
+                            }
+                        } else {
+                            ds.cwd.clone()
+                        };
+                        let label = format!("{}{} {}", shell_name, pid_str, cwd_short);
+                        let label_display: String = label.chars().take(max_chars).collect();
+                        state.renderer.render_text(
+                            view, &label_display, text_left, sy + session_pad_y, dim_fg, card_bg,
+                        );
+                        sy += ds_h + session_entry_gap;
+                    }
                 }
             }
         }
@@ -6681,7 +7374,7 @@ fn render_status_bar(
     let text_y = (bar_y + (bar_h - cell_h) / 2.0 + optical_offset).floor();
 
     // Segment horizontal padding (each side).
-    let seg_pad = cell_w;
+    let seg_pad = if cfg.padding_x > 0.0 { cfg.padding_x } else { cell_w };
 
     // --- Expand all segments and compute widths ---
     // Segment width = text width + padding on each side.
@@ -6762,8 +7455,10 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
         state.renderer.submit_separator(&view, content_x, content_y, content_w, content_h, term_bg);
     }
 
-    // Render sidebar if visible.
-    if state.sidebar_visible {
+    // Render sidebar if visible (suppressed in Quick Terminal when configured).
+    let sidebar_shown = state.sidebar_visible
+        && !(state.quick_terminal.visible && !state.config.quick_terminal.show_sidebar);
+    if sidebar_shown {
         render_sidebar(state, &view, phys_h);
     }
 
@@ -7467,6 +8162,7 @@ fn render_command_timeline(
     let cell_h = cell_size.height;
 
     // W3: Extract only the lightweight data needed for rendering (no full clone).
+    #[allow(dead_code)]
     struct TimelineEntry {
         command_text: String,
         timestamp: chrono::DateTime<chrono::Utc>,
@@ -8332,6 +9028,22 @@ fn handle_app_ipc_request(
 
         AppIpcRequest::CloseWorkspace { index } => {
             if *index < state.workspaces.len() && state.workspaces.len() > 1 {
+                // Clean up PTY buffers and daemon registrations for all
+                // panes in the workspace being removed.
+                {
+                    let ws = &state.workspaces[*index];
+                    let pane_ids: Vec<PaneId> = ws.tabs.iter()
+                        .flat_map(|t| t.panes.keys().copied())
+                        .collect();
+                    if let Ok(mut bufs) = buffers.lock() {
+                        for pid in &pane_ids {
+                            bufs.remove(pid);
+                        }
+                    }
+                    for pid in &pane_ids {
+                        unregister_pane_from_daemon(*pid);
+                    }
+                }
                 state.workspaces.remove(*index);
                 if *index < state.workspace_infos.len() {
                     state.workspace_infos.remove(*index);
@@ -8680,6 +9392,7 @@ fn handle_app_ipc_request(
             subagent_count,
             state: agent_state_str,
             summary,
+            title,
         } => {
             let ws_idx = session_id
                 .as_ref()
@@ -8709,6 +9422,9 @@ fn handle_app_ipc_request(
             }
             if let Some(s) = summary {
                 agent.summary = s.clone();
+            }
+            if let Some(t) = title {
+                agent.title = Some(t.clone());
             }
             agent.last_updated = std::time::Instant::now();
 
@@ -8896,12 +9612,23 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
                         } else {
                             std::time::Duration::from_secs(5)
                         };
-                        if let Ok(response) = rx.recv_timeout(timeout) {
-                            let json_str =
-                                serde_json::to_string(&response).unwrap_or_default();
-                            let _ = stream.write_all(json_str.as_bytes());
-                            let _ = stream.write_all(b"\n");
-                            let _ = stream.flush();
+                        match rx.recv_timeout(timeout) {
+                            Ok(response) => {
+                                let json_str =
+                                    serde_json::to_string(&response).unwrap_or_default();
+                                let _ = stream.write_all(json_str.as_bytes());
+                                let _ = stream.write_all(b"\n");
+                                let _ = stream.flush();
+                            }
+                            Err(_) => {
+                                let timeout_resp =
+                                    AppIpcResponse::err("request timed out");
+                                let json_str =
+                                    serde_json::to_string(&timeout_resp).unwrap_or_default();
+                                let _ = stream.write_all(json_str.as_bytes());
+                                let _ = stream.write_all(b"\n");
+                                let _ = stream.flush();
+                            }
                         }
                     } else {
                         // Legacy text protocol

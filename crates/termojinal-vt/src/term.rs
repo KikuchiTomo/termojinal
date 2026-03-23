@@ -659,6 +659,10 @@ impl Terminal {
         self.rows = rows;
         self.scroll_top = 0;
         self.scroll_bottom = rows.saturating_sub(1);
+        // Ensure scroll region is valid after resize.
+        if self.scroll_top >= self.scroll_bottom && rows > 1 {
+            self.scroll_bottom = rows - 1;
+        }
         self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
         self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
         self.wrap_pending = false;
@@ -1399,6 +1403,11 @@ impl vte::Perform for Terminal {
                 let bottom = param(1, self.rows as u16) as usize;
                 self.scroll_top = top.saturating_sub(1);
                 self.scroll_bottom = (bottom.saturating_sub(1)).min(self.rows - 1);
+                if self.scroll_top >= self.scroll_bottom {
+                    // Invalid region (top >= bottom); reset to full screen.
+                    self.scroll_top = 0;
+                    self.scroll_bottom = self.rows.saturating_sub(1);
+                }
                 self.cursor_col = 0;
                 self.cursor_row = 0;
                 self.wrap_pending = false;

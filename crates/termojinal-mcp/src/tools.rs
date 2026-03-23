@@ -247,6 +247,25 @@ pub fn list_tools() -> Vec<Tool> {
                 "required": ["workspace"]
             }),
         },
+        Tool {
+            name: "update_agent_status".into(),
+            description: "Report Claude Code session status to the sidebar (title, state, subagents)".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Claude Code session ID" },
+                    "pane_id": { "type": "integer", "description": "Pane where agent is running" },
+                    "state": {
+                        "type": "string",
+                        "enum": ["running", "idle", "waiting", "inactive"],
+                        "description": "Agent state"
+                    },
+                    "title": { "type": "string", "description": "Task title / description" },
+                    "summary": { "type": "string", "description": "Current activity summary" },
+                    "subagent_count": { "type": "integer", "description": "Number of active subagents" }
+                }
+            }),
+        },
     ]
 }
 
@@ -344,6 +363,15 @@ pub fn handle_tool(client: &AppClient, tool_name: &str, args: &serde_json::Value
         "approve_all" => json!({
             "type": "approve_all",
             "workspace": args["workspace"],
+        }),
+        "update_agent_status" => json!({
+            "type": "update_agent_status",
+            "session_id": args.get("session_id"),
+            "pane_id": args.get("pane_id"),
+            "state": args.get("state"),
+            "title": args.get("title"),
+            "summary": args.get("summary"),
+            "subagent_count": args.get("subagent_count"),
         }),
         _ => return ToolResult::error(format!("unknown tool: {tool_name}")),
     };
