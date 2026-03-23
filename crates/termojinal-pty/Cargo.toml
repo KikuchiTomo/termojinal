@@ -1,6 +1,6 @@
 [package]
 name = "termojinal-pty"
-version = "0.1.0"
+version = "0.6.2-beta"
 edition.workspace = true
 description = "PTY fork/exec management for termojinal"
 

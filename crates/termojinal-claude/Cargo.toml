@@ -1,6 +1,6 @@
 [package]
 name = "termojinal-claude"
-version = "0.1.0"
+version = "0.6.2-beta"
 edition.workspace = true
 description = "Allow Flow engine for AI agent coordination in termojinal"
 
