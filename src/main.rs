@@ -541,10 +541,17 @@ enum AgentState {
 }
 
 #[derive(Debug, Clone)]
+struct SubAgentInfo {
+    title: String,
+    state: AgentState,
+}
+
+#[derive(Debug, Clone)]
 struct AgentSessionInfo {
     active: bool,
     session_id: Option<String>,
     subagent_count: usize,
+    subagents: Vec<SubAgentInfo>,
     summary: String,
     state: AgentState,
     last_updated: std::time::Instant,
@@ -556,6 +563,7 @@ impl Default for AgentSessionInfo {
             active: false,
             session_id: None,
             subagent_count: 0,
+            subagents: Vec::new(),
             summary: String::new(),
             state: AgentState::Inactive,
             last_updated: std::time::Instant::now(),
@@ -1752,6 +1760,8 @@ struct AppState {
     timeline_scroll_offset: usize,
     /// S4: Pane ID the timeline was opened for (prevents switching on pane focus change).
     timeline_pane_id: Option<PaneId>,
+    /// Whether the sessions summary panel in the sidebar is collapsed.
+    sessions_collapsed: bool,
 }
 
 /// Update session_to_workspace mapping after a workspace at `removed_idx` is removed.
@@ -2572,6 +2582,7 @@ impl ApplicationHandler<UserEvent> for App {
             timeline_selected: 0,
             timeline_scroll_offset: 0,
             timeline_pane_id: None,
+            sessions_collapsed: false,
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -5334,52 +5345,82 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
     let phys_h = state.window.inner_size().height as f32;
 
     // Collect active agent sessions (same logic as render_sidebar).
-    let mut session_ws_indices: Vec<usize> = Vec::new();
+    struct ClickSessionEntry {
+        wi: usize,
+        running_sub_count: usize,
+    }
+    let mut session_click_entries: Vec<ClickSessionEntry> = Vec::new();
     for wi in 0..state.workspaces.len() {
         if wi >= state.agent_infos.len() {
             break;
         }
         if state.agent_infos[wi].active {
-            session_ws_indices.push(wi);
+            let running_sub_count = state.agent_infos[wi].subagents.iter()
+                .filter(|s| matches!(s.state, AgentState::Running))
+                .count();
+            session_click_entries.push(ClickSessionEntry { wi, running_sub_count });
         }
     }
 
-    if !session_ws_indices.is_empty() {
+    if !session_click_entries.is_empty() {
         let session_line_h = cell_h;
         let session_gap = info_line_gap;
-        let session_pad_y = 4.0;
-        let per_session_h = session_line_h * 3.0 + session_gap * 2.0 + session_pad_y * 2.0;
-        let header_h = session_line_h + session_gap * 2.0;
-        let session_entry_gap = 6.0;
-        let sessions_total_h = header_h
-            + session_ws_indices.len() as f32 * per_session_h
-            + (session_ws_indices.len().saturating_sub(1)) as f32 * session_entry_gap;
+        let session_pad_y = 3.0;
+        let header_h = session_line_h + session_gap;
+        let session_entry_gap = 4.0;
         let sessions_sep_h = 1.0 + 10.0 * 2.0;
         let bottom_pad = 8.0;
+
+        // Calculate per-entry height (must match render logic).
+        let compute_click_entry_h = |entry: &ClickSessionEntry| -> f32 {
+            let base_lines = 2.0;
+            let sub_lines = entry.running_sub_count as f32;
+            (base_lines + sub_lines) * session_line_h
+                + (base_lines + sub_lines - 1.0).max(0.0) * session_gap
+                + session_pad_y * 2.0
+        };
+
+        let sessions_total_h = if state.sessions_collapsed {
+            header_h
+        } else {
+            let entries_h: f32 = session_click_entries.iter().map(|e| compute_click_entry_h(e)).sum();
+            let gaps_h = (session_click_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
+            header_h + entries_h + gaps_h
+        };
 
         let sessions_start_y = phys_h - sessions_total_h - sessions_sep_h - bottom_pad;
         let new_ws_y_end = entry_y + cell_h;
         let min_start_y = new_ws_y_end + 16.0;
 
         if sessions_start_y >= min_start_y && cy >= sessions_start_y {
-            let mut sy = sessions_start_y + sessions_sep_h + header_h;
+            // Check if click is on the header line (toggle collapse).
+            let header_y = sessions_start_y + sessions_sep_h;
+            if cy >= header_y && cy < header_y + header_h {
+                state.sessions_collapsed = !state.sessions_collapsed;
+                state.window.request_redraw();
+                return None;
+            }
 
-            for &wi in &session_ws_indices {
-                let session_end = sy + per_session_h + session_entry_gap;
-                if cy >= sy && cy < session_end {
-                    // Switch to the workspace containing this session.
-                    if state.active_workspace != wi {
-                        state.active_workspace = wi;
-                        if wi < state.workspace_infos.len() {
-                            state.workspace_infos[wi].has_unread = false;
+            // If not collapsed, check individual session entries.
+            if !state.sessions_collapsed {
+                let mut sy = header_y + header_h;
+                for entry in &session_click_entries {
+                    let entry_h = compute_click_entry_h(entry);
+                    let session_end = sy + entry_h + session_entry_gap;
+                    if cy >= sy && cy < session_end {
+                        if state.active_workspace != entry.wi {
+                            state.active_workspace = entry.wi;
+                            if entry.wi < state.workspace_infos.len() {
+                                state.workspace_infos[entry.wi].has_unread = false;
+                            }
+                            resize_all_panes(state);
+                            update_window_title(state);
+                            state.window.request_redraw();
                         }
-                        resize_all_panes(state);
-                        update_window_title(state);
-                        state.window.request_redraw();
+                        return None;
                     }
-                    return None;
+                    sy = session_end;
                 }
-                sy = session_end;
             }
         }
     }
@@ -5973,21 +6014,28 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let agent = &state.agent_infos[i];
             line_y += info_line_gap;
             // Compact agent status: icon + short state label.
+            // Use correct status detection: check for actual pending requests.
+            let has_pending_inline = state.allow_flow.has_pending_for_workspace(i);
             let (agent_icon, state_label) = match agent.state {
                 AgentState::Running => ("\u{26A1}", "running"),    // ⚡ running
-                AgentState::WaitingForPermission => ("\u{23F3}", "waiting"), // ⏳ waiting
-                AgentState::Idle => ("\u{25CB}", "idle"),          // ○ idle
-                AgentState::Inactive => ("\u{25CB}", "idle"),      // ○ idle
+                AgentState::WaitingForPermission => {
+                    if has_pending_inline { ("\u{23F3}", "wait you") } else { ("\u{26A1}", "running") } // ⏳ / ⚡
+                }
+                AgentState::Idle | AgentState::Inactive => {
+                    if has_pending_inline { ("\u{23F3}", "wait you") } else { ("\u{2713}", "done") } // ⏳ / ✓
+                }
             };
+            let done_inline_color: [f32; 4] = [0.45, 0.75, 0.45, 1.0];
             let agent_line = if agent.subagent_count > 0 {
                 format!("{} {} (+{})", agent_icon, state_label, agent.subagent_count)
             } else {
                 format!("{} {}", agent_icon, state_label)
             };
-            let agent_fg = match agent.state {
-                AgentState::Running => agent_active_color,
-                AgentState::Idle | AgentState::Inactive => dim_fg,
-                AgentState::WaitingForPermission => agent_idle_color,
+            let agent_fg = match state_label {
+                "running" => agent_active_color,
+                "wait you" => agent_idle_color,
+                "done" => done_inline_color,
+                _ => dim_fg,
             };
             let info_indent = text_left + cell_w * 0.5;
             let agent_display: String = agent_line.chars().take(max_chars).collect();
@@ -6131,7 +6179,17 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
 
     // --- Sessions Summary (bottom of sidebar) ---
     // Collect all active agent sessions across workspaces.
-    let mut session_entries: Vec<(usize, String, &str, usize)> = Vec::new();
+    // Each entry: (workspace_idx, title, state_label, running_subagents)
+    struct SessionEntry {
+        wi: usize,
+        title: String,
+        state_label: &'static str,
+        running_subagents: Vec<String>, // titles of running subagents only
+        worktree_display: String,       // e.g. "jterm" (last component of worktree path)
+        branch: String,                 // git branch name
+    }
+    let mut session_entries: Vec<SessionEntry> = Vec::new();
+    let done_color: [f32; 4] = [0.45, 0.75, 0.45, 1.0]; // green for "done"
     for wi in 0..state.workspaces.len() {
         if wi >= state.agent_infos.len() {
             break;
@@ -6155,28 +6213,87 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 }
             }
         };
-        let state_label = match agent.state {
+        // Fix status detection:
+        // - "running"  : agent is actively working
+        // - "wait you" : a permission approval or question is pending
+        // - "done"     : agent has finished (idle/inactive, no pending requests)
+        let has_pending = state.allow_flow.has_pending_for_workspace(wi);
+        let state_label: &'static str = match agent.state {
             AgentState::Running => "running",
-            AgentState::WaitingForPermission => "wait user action",
-            AgentState::Idle => "pause",
-            AgentState::Inactive => "pause",
+            AgentState::WaitingForPermission => {
+                if has_pending { "wait you" } else { "running" }
+            }
+            AgentState::Idle | AgentState::Inactive => {
+                if has_pending { "wait you" } else { "done" }
+            }
         };
-        session_entries.push((wi, title, state_label, agent.subagent_count));
+        // Collect only running subagents (done ones are hidden).
+        let running_subagents: Vec<String> = agent.subagents.iter()
+            .filter(|s| matches!(s.state, AgentState::Running))
+            .map(|s| s.title.clone())
+            .collect();
+        // Get worktree and branch from workspace info.
+        let ws_info = state.workspace_infos.get(wi);
+        let branch = ws_info
+            .and_then(|i| i.git_branch.as_deref())
+            .unwrap_or("")
+            .to_string();
+        // Get CWD for worktree display.
+        let ws_cwd = {
+            let ws = &state.workspaces[wi];
+            let tab = &ws.tabs[ws.active_tab];
+            let fid = tab.layout.focused();
+            tab.panes.get(&fid)
+                .map(|p| p.terminal.osc.cwd.clone())
+                .unwrap_or_default()
+        };
+        let worktree_display = if !ws_cwd.is_empty() {
+            std::path::Path::new(&ws_cwd)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        session_entries.push(SessionEntry {
+            wi,
+            title,
+            state_label,
+            running_subagents,
+            worktree_display,
+            branch,
+        });
     }
 
     if !session_entries.is_empty() {
         let session_line_h = cell_h;
         let session_gap = info_line_gap;
-        // Each session: title + state + subagent (3 lines, 2 inner gaps) + padding.
-        let session_pad_y = 4.0; // vertical padding inside each session card
-        let per_session_h = session_line_h * 3.0 + session_gap * 2.0 + session_pad_y * 2.0;
-        let header_h = session_line_h + session_gap * 2.0;
-        let session_entry_gap = 6.0; // gap between session cards
-        let sessions_total_h = header_h
-            + session_entries.len() as f32 * per_session_h
-            + (session_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
+        let session_pad_y = 3.0;
+        let header_h = session_line_h + session_gap;
         let sessions_sep_h = 1.0 + 10.0 * 2.0; // 10px padding + 1px line + 10px padding
         let bottom_pad = 8.0;
+        let session_entry_gap = 4.0;
+
+        // Calculate per-session height: compact layout
+        // Line 1: color dot + title
+        // Line 2: status + (worktree, branch)
+        // + N lines for running subagents
+        let compute_entry_h = |entry: &SessionEntry| -> f32 {
+            let base_lines = 2.0; // title + status line
+            let sub_lines = entry.running_subagents.len() as f32;
+            (base_lines + sub_lines) * session_line_h
+                + (base_lines + sub_lines - 1.0).max(0.0) * session_gap
+                + session_pad_y * 2.0
+        };
+
+        // Compute total height depending on collapsed state.
+        let sessions_total_h = if state.sessions_collapsed {
+            header_h
+        } else {
+            let entries_h: f32 = session_entries.iter().map(|e| compute_entry_h(e)).sum();
+            let gaps_h = (session_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
+            header_h + entries_h + gaps_h
+        };
 
         let sessions_start_y = phys_h - sessions_total_h - sessions_sep_h - bottom_pad;
         let min_start_y = new_ws_y + cell_h + 16.0;
@@ -6202,120 +6319,107 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 sep_lower_color,
             );
 
-            // --- Header: icon + "Sessions" + count badge ---
+            // --- Header: collapsible toggle + "Sessions" + count ---
             let header_y = sep_sess_y + sessions_sep_h;
-            // Subtle header icon.
+            let collapse_icon = if state.sessions_collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ or ▾
             let header_icon_fg = agent_active_color;
-            state.renderer.render_text(view, "\u{2630}", side_pad, header_y, header_icon_fg, sidebar_bg); // ☰
+            state.renderer.render_text(view, collapse_icon, side_pad, header_y, header_icon_fg, sidebar_bg);
             let header_text = format!("Sessions ({})", session_entries.len());
             let header_fg = [active_fg[0] * 0.8, active_fg[1] * 0.8, active_fg[2] * 0.8, 0.9];
             state.renderer.render_text(view, &header_text, side_pad + cell_w * 2.0, header_y, header_fg, sidebar_bg);
 
-            let mut sy = header_y + header_h;
-            let info_indent = text_left + cell_w * 0.5;
+            // If collapsed, stop here — no session entries drawn.
+            if !state.sessions_collapsed {
+                let mut sy = header_y + header_h;
+                let info_indent = text_left + cell_w * 0.5;
 
-            for (idx, (wi, title, state_label, subagent_count)) in session_entries.iter().enumerate() {
-                if sy + per_session_h > phys_h - bottom_pad {
-                    break;
-                }
-
-                let is_active_ws = *wi == state.active_workspace;
-                let session_bg = if is_active_ws { active_entry_bg } else { sidebar_bg };
-
-                // --- Card background for each session entry ---
-                let card_bg = if is_active_ws {
-                    active_entry_bg
-                } else {
-                    // Subtle card background slightly lighter than sidebar.
-                    [sidebar_bg[0] + 0.02, sidebar_bg[1] + 0.02, sidebar_bg[2] + 0.025, 1.0]
-                };
-                let card_x: u32 = (side_pad * 0.5) as u32;
-                let card_w = (sidebar_w - side_pad) as u32;
-                state.renderer.submit_separator(
-                    view,
-                    card_x,
-                    sy as u32,
-                    card_w,
-                    per_session_h as u32,
-                    card_bg,
-                );
-
-                // --- Left accent bar (workspace color for active, dim for inactive) ---
-                let accent_w: u32 = 3;
-                let accent_color = if is_active_ws {
-                    WORKSPACE_COLORS[*wi % WORKSPACE_COLORS.len()]
-                } else {
-                    let ws_col = WORKSPACE_COLORS[*wi % WORKSPACE_COLORS.len()];
-                    [ws_col[0] * 0.5, ws_col[1] * 0.5, ws_col[2] * 0.5, 0.6]
-                };
-                state.renderer.submit_separator(
-                    view,
-                    card_x,
-                    sy as u32,
-                    accent_w,
-                    per_session_h as u32,
-                    accent_color,
-                );
-
-                let content_y = sy + session_pad_y;
-
-                // --- Line 1: Workspace color dot (with pulse for running) + title ---
-                let ws_col = WORKSPACE_COLORS[*wi % WORKSPACE_COLORS.len()];
-                let mut dot_col = ws_col;
-                // Pulse animation for running sessions (matches workspace dot behavior).
-                if *state_label == "running" && agent_indicator_style == "pulse" {
-                    let elapsed = state.app_start_time.elapsed().as_secs_f32();
-                    let alpha = 0.5 + 0.5 * (2.0 * std::f32::consts::PI * elapsed / agent_pulse_speed.max(0.1)).sin();
-                    dot_col = [agent_active_color[0], agent_active_color[1], agent_active_color[2], alpha];
-                } else if *state_label == "wait user action" {
-                    dot_col = agent_idle_color;
-                }
-                state.renderer.render_text(view, "\u{25CF}", side_pad + 2.0, content_y, dot_col, card_bg); // ●
-                let title_display: String = title.chars().take(max_chars.saturating_sub(1)).collect();
-                let title_fg = if is_active_ws { active_fg } else { inactive_fg };
-                state.renderer.render_text(view, &title_display, text_left, content_y, title_fg, card_bg);
-
-                // --- Line 2: State with colored icon ---
-                let line2_y = content_y + session_line_h + session_gap;
-                let (state_icon, state_color) = match *state_label {
-                    "running" => ("\u{25B6}", agent_active_color),       // ▶ purple
-                    "wait user action" => ("\u{23F3}", agent_idle_color), // ⏳ orange
-                    _ => ("\u{23F8}", dim_fg),                            // ⏸ dim
-                };
-                state.renderer.render_text(view, state_icon, info_indent, line2_y, state_color, card_bg);
-                // State label in slightly dimmer version of state color.
-                let label_fg = [state_color[0] * 0.85, state_color[1] * 0.85, state_color[2] * 0.85, state_color[3]];
-                state.renderer.render_text(view, state_label, info_indent + cell_w * 2.5, line2_y, label_fg, card_bg);
-
-                // --- Line 3: Subagent info ---
-                let line3_y = line2_y + session_line_h + session_gap;
-                if *subagent_count > 0 {
-                    let sub_icon = "\u{2514}"; // └
-                    let sub_text = format!("{} {} subagent{}", sub_icon, subagent_count,
-                        if *subagent_count > 1 { "s" } else { "" });
-                    let sub_fg = [dim_fg[0], dim_fg[1], dim_fg[2] + 0.08, dim_fg[3]]; // slightly blue tint
-                    state.renderer.render_text(view, &sub_text, info_indent, line3_y, sub_fg, card_bg);
-                } else {
-                    let sub_text = "\u{2514} solo";
-                    state.renderer.render_text(view, sub_text, info_indent, line3_y, dim_fg, card_bg);
-                }
-
-                sy += per_session_h + session_entry_gap;
-
-                // Subtle separator between session cards (not after last one).
-                if idx < session_entries.len() - 1 {
-                    let card_sep_y = (sy - session_entry_gap / 2.0) as u32;
-                    let card_sep_color = [separator_color[0], separator_color[1], separator_color[2], 0.2];
-                    if (card_sep_y as f32) + 1.0 < phys_h {
-                        state.renderer.submit_separator(
-                            view,
-                            (side_pad + dot_area) as u32,
-                            card_sep_y,
-                            (sidebar_w - side_pad * 2.0 - dot_area) as u32,
-                            1,
-                            card_sep_color,
-                        );
+                for (_idx, entry) in session_entries.iter().enumerate() {
+                    let entry_h = compute_entry_h(entry);
+                    if sy + entry_h > phys_h - bottom_pad {
+                        break;
                     }
+
+                    let is_active_ws = entry.wi == state.active_workspace;
+
+                    // --- Card background ---
+                    let card_bg = if is_active_ws {
+                        active_entry_bg
+                    } else {
+                        [sidebar_bg[0] + 0.02, sidebar_bg[1] + 0.02, sidebar_bg[2] + 0.025, 1.0]
+                    };
+                    let card_x: u32 = (side_pad * 0.5) as u32;
+                    let card_w = (sidebar_w - side_pad) as u32;
+                    state.renderer.submit_separator(
+                        view, card_x, sy as u32, card_w, entry_h as u32, card_bg,
+                    );
+
+                    // --- Left accent bar ---
+                    let accent_w: u32 = 3;
+                    let accent_color = if is_active_ws {
+                        WORKSPACE_COLORS[entry.wi % WORKSPACE_COLORS.len()]
+                    } else {
+                        let ws_col = WORKSPACE_COLORS[entry.wi % WORKSPACE_COLORS.len()];
+                        [ws_col[0] * 0.5, ws_col[1] * 0.5, ws_col[2] * 0.5, 0.6]
+                    };
+                    state.renderer.submit_separator(
+                        view, card_x, sy as u32, accent_w, entry_h as u32, accent_color,
+                    );
+
+                    let content_y = sy + session_pad_y;
+
+                    // --- Line 1: Color dot + title ---
+                    let ws_col = WORKSPACE_COLORS[entry.wi % WORKSPACE_COLORS.len()];
+                    let mut dot_col = ws_col;
+                    if entry.state_label == "running" && agent_indicator_style == "pulse" {
+                        let elapsed = state.app_start_time.elapsed().as_secs_f32();
+                        let alpha = 0.5 + 0.5 * (2.0 * std::f32::consts::PI * elapsed / agent_pulse_speed.max(0.1)).sin();
+                        dot_col = [agent_active_color[0], agent_active_color[1], agent_active_color[2], alpha];
+                    } else if entry.state_label == "wait you" {
+                        dot_col = agent_idle_color;
+                    } else if entry.state_label == "done" {
+                        dot_col = done_color;
+                    }
+                    state.renderer.render_text(view, "\u{25CF}", side_pad + 2.0, content_y, dot_col, card_bg); // ●
+                    let title_display: String = entry.title.chars().take(max_chars.saturating_sub(1)).collect();
+                    let title_fg = if is_active_ws { active_fg } else { inactive_fg };
+                    state.renderer.render_text(view, &title_display, text_left, content_y, title_fg, card_bg);
+
+                    // --- Line 2: Status + (worktree, branch) ---
+                    let line2_y = content_y + session_line_h + session_gap;
+                    let (state_icon, state_color) = match entry.state_label {
+                        "running" => ("\u{25B6}", agent_active_color),   // ▶
+                        "wait you" => ("\u{23F3}", agent_idle_color),    // ⏳
+                        "done" => ("\u{2713}", done_color),              // ✓
+                        _ => ("\u{25CB}", dim_fg),                       // ○
+                    };
+                    state.renderer.render_text(view, state_icon, info_indent, line2_y, state_color, card_bg);
+                    let label_fg = [state_color[0] * 0.85, state_color[1] * 0.85, state_color[2] * 0.85, state_color[3]];
+                    // Build status + location string.
+                    let location_info = if !entry.branch.is_empty() {
+                        if !entry.worktree_display.is_empty() {
+                            format!("{} ({}, {})", entry.state_label, entry.worktree_display, entry.branch)
+                        } else {
+                            format!("{} ({})", entry.state_label, entry.branch)
+                        }
+                    } else if !entry.worktree_display.is_empty() {
+                        format!("{} ({})", entry.state_label, entry.worktree_display)
+                    } else {
+                        entry.state_label.to_string()
+                    };
+                    let location_display: String = location_info.chars().take(max_chars.saturating_sub(3)).collect();
+                    state.renderer.render_text(view, &location_display, info_indent + cell_w * 2.5, line2_y, label_fg, card_bg);
+
+                    // --- Subagent lines (only running ones) ---
+                    let sub_indent = info_indent + cell_w * 1.5;
+                    let sub_fg = [dim_fg[0], dim_fg[1], dim_fg[2] + 0.08, dim_fg[3]];
+                    for (si, sub_title) in entry.running_subagents.iter().enumerate() {
+                        let sub_y = line2_y + (si as f32 + 1.0) * (session_line_h + session_gap);
+                        let sub_display: String = sub_title.chars().take(max_chars.saturating_sub(6)).collect();
+                        let sub_line = format!("\u{2514} {}   running", sub_display); // └ sub_title   running
+                        state.renderer.render_text(view, &sub_line, sub_indent, sub_y, sub_fg, card_bg);
+                    }
+
+                    sy += entry_h + session_entry_gap;
                 }
             }
         }
