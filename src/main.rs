@@ -3112,6 +3112,73 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
+                // Allow Flow: intercept y/n/a/Y/N/A from IME commit.
+                // When Japanese (or other) IME is active, pressing 'y' or 'n'
+                // may arrive only as Ime::Commit instead of KeyboardInput.
+                // Intercept these single-char commits before they reach the PTY.
+                if let winit::event::Ime::Commit(ref text) = ime {
+                    if state.allow_flow.first_workspace_with_pending().is_some() {
+                        let allow_flow_key = match text.as_str() {
+                            "y" | "n" | "a" | "Y" | "N" | "A" => {
+                                Some(Key::Character(text.clone().into()))
+                            }
+                            _ => None,
+                        };
+                        if let Some(key) = allow_flow_key {
+                            // Clear preedit on the focused pane since we're consuming the commit.
+                            let focused_id = active_tab(state).layout.focused();
+                            if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                                pane.preedit = None;
+                            }
+                            let active_ws = state.active_workspace;
+                            let mut pane_ptys: std::collections::HashMap<u64, *mut Pty> = std::collections::HashMap::new();
+                            for ws in &mut state.workspaces {
+                                for tab in &mut ws.tabs {
+                                    for (pid, pane) in &mut tab.panes {
+                                        pane_ptys.insert(*pid, &mut pane.pty as *mut Pty);
+                                    }
+                                }
+                            }
+                            let key_result = state.allow_flow.process_key(
+                                &key,
+                                active_ws,
+                                &mut pane_ptys,
+                            );
+                            match key_result {
+                                crate::allow_flow::AllowFlowKeyResult::NotConsumed => {}
+                                crate::allow_flow::AllowFlowKeyResult::Consumed => {
+                                    state.window.request_redraw();
+                                    return;
+                                }
+                                crate::allow_flow::AllowFlowKeyResult::Resolved(decisions) => {
+                                    for (req_id, decision) in &decisions {
+                                        if let Some((tx, _alive)) = state.pending_ipc_responses.remove(req_id) {
+                                            let decision_str = match decision {
+                                                termojinal_claude::AllowDecision::Allow => "allow",
+                                                termojinal_claude::AllowDecision::Deny => "deny",
+                                            };
+                                            let _ = tx.send(AppIpcResponse::ok(
+                                                serde_json::json!({"decision": decision_str}),
+                                            ));
+                                        }
+                                    }
+                                    for wi in 0..state.agent_infos.len() {
+                                        if state.agent_infos[wi].active
+                                            && matches!(state.agent_infos[wi].state, AgentState::WaitingForPermission)
+                                            && !state.allow_flow.has_pending_for_workspace(wi)
+                                        {
+                                            state.agent_infos[wi].state = AgentState::Running;
+                                            state.agent_infos[wi].last_updated = std::time::Instant::now();
+                                        }
+                                    }
+                                    state.window.request_redraw();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let focused_id = active_tab(state).layout.focused();
                 match ime {
                     winit::event::Ime::Enabled => {
@@ -6624,9 +6691,11 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
 
     // Render Allow Flow overlay at the bottom of the focused pane.
     // Render Allow Flow pane hint bar (thin 1-line bar at the bottom of the
-    // focused pane) when there are pending requests for the active workspace.
+    // focused pane) when there are pending requests for ANY workspace.
+    // This ensures cross-workspace approval works — the user sees the hint
+    // bar even when the pending request belongs to a different workspace.
     if state.allow_flow.pane_hint_visible
-        && state.allow_flow.has_pending_for_workspace(state.active_workspace)
+        && state.allow_flow.first_workspace_with_pending().is_some()
     {
         render_allow_flow_pane_hint(state, &view, &pane_rects, focused_id);
     }
