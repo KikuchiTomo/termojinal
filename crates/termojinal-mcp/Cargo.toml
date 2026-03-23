@@ -1,6 +1,6 @@
 [package]
 name = "termojinal-mcp"
-version = "0.6.2-beta"
+version = "0.6.3-beta"
 edition.workspace = true
 description = "MCP server for controlling termojinal from AI tools"
 

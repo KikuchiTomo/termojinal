@@ -116,7 +116,7 @@ pub struct NotificationConfig {
 }
 
 fn default_notifications_enabled() -> bool { true }
-fn default_notification_sound() -> bool { false }
+fn default_notification_sound() -> bool { true }
 
 impl Default for NotificationConfig {
     fn default() -> Self {

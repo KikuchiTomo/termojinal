@@ -440,7 +440,7 @@ Desktop notification behavior (delivered via NSNotificationCenter).
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Enable desktop notifications. |
-| `sound` | bool | `false` | Play a sound with notifications. |
+| `sound` | bool | `true` | Play a sound with notifications. |
 
 **Example:**
 

@@ -2022,6 +2022,9 @@ struct AppState {
     sessions_collapsed: bool,
     /// Cached session list from the daemon (refreshed by background thread).
     daemon_sessions: Vec<DaemonSessionInfo>,
+    /// Pending close confirmation: pane has running child process.
+    /// Stores (process_name, pane_id) to ensure the correct pane is closed.
+    pending_close_confirm: Option<(String, PaneId)>,
 }
 
 /// Terminal session info fetched from the daemon.
@@ -2924,6 +2927,7 @@ impl ApplicationHandler<UserEvent> for App {
             timeline_pane_id: None,
             sessions_collapsed: false,
             daemon_sessions: Vec::new(),
+            pending_close_confirm: None, // (proc_name, pane_id)
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -3086,6 +3090,34 @@ impl ApplicationHandler<UserEvent> for App {
                         // Any other key dismisses the about screen.
                         state.about_visible = false;
                         state.window.request_redraw();
+                    }
+                    return;
+                }
+
+                // Close confirmation dialog intercepts keyboard input.
+                if let Some((_, confirm_pane_id)) = state.pending_close_confirm.clone() {
+                    let buffers = &self.pty_buffers;
+                    match &event.logical_key {
+                        Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y" => {
+                            state.pending_close_confirm = None;
+                            // Verify the pane still exists and is focused before closing.
+                            let current_focused = active_tab(state).layout.focused();
+                            if current_focused == confirm_pane_id {
+                                close_focused_pane(state, buffers, event_loop);
+                            } else {
+                                // Pane changed — dismiss silently.
+                                state.window.request_redraw();
+                            }
+                        }
+                        Key::Character(c) if c.as_str() == "n" || c.as_str() == "N" => {
+                            state.pending_close_confirm = None;
+                            state.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                            state.pending_close_confirm = None;
+                            state.window.request_redraw();
+                        }
+                        _ => {}
                     }
                     return;
                 }
@@ -4966,6 +4998,11 @@ fn dispatch_action(
     buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
     event_loop: &ActiveEventLoop,
 ) -> bool {
+    // Dismiss close confirmation dialog when any other action is dispatched.
+    if state.pending_close_confirm.is_some() && !matches!(action, Action::CloseTab) {
+        state.pending_close_confirm = None;
+    }
+
     let focused_id = active_tab(state).layout.focused();
     match action {
         Action::SplitRight => {
@@ -5101,6 +5138,20 @@ fn dispatch_action(
             true
         }
         Action::CloseTab => {
+            // Check if there's a running child process before closing.
+            let pane_info = {
+                let tab = active_tab(state);
+                let focused_id = tab.layout.focused();
+                tab.panes.get(&focused_id).map(|p| (focused_id, p.pty.pid().as_raw()))
+            };
+            if let Some((pane_id, pid)) = pane_info {
+                if let Some(proc_name) = detect_foreground_child(pid) {
+                    // Show confirmation dialog instead of closing immediately.
+                    state.pending_close_confirm = Some((proc_name, pane_id));
+                    state.window.request_redraw();
+                    return true;
+                }
+            }
             close_focused_pane(state, buffers, event_loop);
             true
         }
@@ -6324,14 +6375,25 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 && matches!(agent.state, AgentState::WaitingForPermission)
                 && state.allow_flow.has_pending_for_workspace(wi);
             if !is_perm_wait {
+                // Detect session change: if session_id changed, clear stale
+                // title from the previous session so the new session gets its
+                // own title (from monitor or IPC).
+                let session_changed = agent.session_id.as_ref()
+                    .map(|old| old != &cs.session_id)
+                    .unwrap_or(false);
+                if session_changed {
+                    agent.title = None;
+                }
+
                 agent.active = true;
                 agent.pane_id = Some(cs.pane_id);
                 agent.session_id = Some(cs.session_id.clone());
-                if agent.title.is_none() || agent.title.as_deref() == Some("") {
-                    agent.title = Some(cs.title.clone());
-                }
-                // Always update title if it was auto-detected (not IPC-set).
-                if !cs.title.is_empty() {
+                // Only set title from monitor when no title exists yet.
+                // IPC-provided titles have higher priority and must NOT be
+                // overwritten by monitor (which reads raw JSONL first-message).
+                if (agent.title.is_none() || agent.title.as_deref() == Some(""))
+                    && !cs.title.is_empty()
+                {
                     agent.title = Some(cs.title.clone());
                 }
                 agent.state = match cs.state {
@@ -6867,12 +6929,16 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
 
     // --- Sessions Summary (bottom of sidebar) ---
     // Collect all active agent sessions across workspaces.
-    // Each entry: (workspace_idx, title, state_label, running_subagents)
+    // Each entry: (workspace_idx, title, state_label, subagents with state)
+    struct SubAgentEntry {
+        title: String,
+        state_label: &'static str,
+    }
     struct SessionEntry {
         wi: usize,
         title: String,
         state_label: &'static str,
-        running_subagents: Vec<String>, // titles of running subagents only
+        subagents: Vec<SubAgentEntry>, // all subagents with state
         worktree_display: String,       // e.g. "jterm" (last component of worktree path)
         branch: String,                 // git branch name
     }
@@ -6920,10 +6986,15 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 if has_pending { "wait you" } else { "done" }
             }
         };
-        // Collect only running subagents (done ones are hidden).
-        let running_subagents: Vec<String> = agent.subagents.iter()
-            .filter(|s| matches!(s.state, AgentState::Running))
-            .map(|s| s.title.clone())
+        // Collect ALL subagents with their state for display.
+        let subagents: Vec<SubAgentEntry> = agent.subagents.iter()
+            .map(|s| SubAgentEntry {
+                title: s.title.clone(),
+                state_label: match s.state {
+                    AgentState::Running => "Run",
+                    _ => "Done",
+                },
+            })
             .collect();
         // Get worktree and branch from workspace info.
         let ws_info = state.workspace_infos.get(wi);
@@ -6947,7 +7018,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             wi,
             title,
             state_label,
-            running_subagents,
+            subagents,
             worktree_display,
             branch,
         });
@@ -6969,7 +7040,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // + N lines for running subagents
         let compute_entry_h = |entry: &SessionEntry| -> f32 {
             let base_lines = 2.0; // title + status line
-            let sub_lines = entry.running_subagents.len() as f32;
+            let sub_lines = entry.subagents.len() as f32;
             (base_lines + sub_lines) * session_line_h
                 + (base_lines + sub_lines - 1.0).max(0.0) * session_gap
                 + session_pad_y * 2.0
@@ -7083,7 +7154,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         params: [sr, 0.0, 0.0, 0.0],
                     }]);
                     let title_display: String = entry.title.chars().take(max_chars.saturating_sub(1)).collect();
-                    let title_fg = if is_active_ws { active_fg } else { inactive_fg };
+                    // Brighter title color for better readability.
+                    let title_fg = if is_active_ws {
+                        active_fg
+                    } else {
+                        [active_fg[0] * 0.85, active_fg[1] * 0.85, active_fg[2] * 0.85, 0.95]
+                    };
                     state.renderer.render_text(view, &title_display, text_left, content_y, title_fg, card_bg);
 
                     // --- Line 2: Status dot + (worktree, branch) ---
@@ -7105,30 +7181,62 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         border_color: [0.0; 4],
                         params: [sr2, 0.0, 0.0, 0.0],
                     }]);
-                    let label_fg = [state_color[0] * 0.85, state_color[1] * 0.85, state_color[2] * 0.85, state_color[3]];
-                    // Build status + location string.
+                    // Build state icon + label.
+                    let (state_icon, state_text) = match entry.state_label {
+                        "running" => ("\u{25B6}", "Run"),    // ▶ Run
+                        "wait you" => ("\u{23F3}", "Wait"),  // ⏳ Wait
+                        "done" => ("\u{2713}", "Done"),      // ✓ Done
+                        _ => ("\u{25CF}", entry.state_label), // ● fallback
+                    };
+                    let label_fg = state_color;
+                    // Render state icon + state text.
+                    let icon_x = info_indent + cell_w * 0.5;
+                    state.renderer.render_text(view, state_icon, icon_x, line2_y, label_fg, card_bg);
+                    let state_text_x = icon_x + cell_w * 1.5;
+                    state.renderer.render_text(view, state_text, state_text_x, line2_y, label_fg, card_bg);
+                    // Build location string (worktree, branch) after state.
                     let location_info = if !entry.branch.is_empty() {
                         if !entry.worktree_display.is_empty() {
-                            format!("{} ({}, {})", entry.state_label, entry.worktree_display, entry.branch)
+                            format!("({}, {})", entry.worktree_display, entry.branch)
                         } else {
-                            format!("{} ({})", entry.state_label, entry.branch)
+                            format!("({})", entry.branch)
                         }
                     } else if !entry.worktree_display.is_empty() {
-                        format!("{} ({})", entry.state_label, entry.worktree_display)
+                        format!("({})", entry.worktree_display)
                     } else {
-                        entry.state_label.to_string()
+                        String::new()
                     };
-                    let location_display: String = location_info.chars().take(max_chars.saturating_sub(3)).collect();
-                    state.renderer.render_text(view, &location_display, info_indent + cell_w * 2.5, line2_y, label_fg, card_bg);
+                    if !location_info.is_empty() {
+                        let loc_x = state_text_x + (state_text.len() as f32 + 1.0) * cell_w;
+                        let loc_fg = [dim_fg[0], dim_fg[1], dim_fg[2], 0.8];
+                        let loc_display: String = location_info.chars().take(max_chars.saturating_sub(8)).collect();
+                        state.renderer.render_text(view, &loc_display, loc_x, line2_y, loc_fg, card_bg);
+                    }
 
-                    // --- Subagent lines (only running ones) ---
+                    // --- Subagent lines (all subagents with state) ---
                     let sub_indent = info_indent + cell_w * 1.5;
-                    let sub_fg = [dim_fg[0], dim_fg[1], dim_fg[2] + 0.08, dim_fg[3]];
-                    for (si, sub_title) in entry.running_subagents.iter().enumerate() {
+                    let sub_run_color: [f32; 4] = [0.65, 0.55, 0.98, 0.9]; // purple for running
+                    let sub_done_color: [f32; 4] = [0.45, 0.72, 0.45, 0.75]; // green for done
+                    for (si, sub) in entry.subagents.iter().enumerate() {
                         let sub_y = line2_y + (si as f32 + 1.0) * (session_line_h + session_gap);
-                        let sub_display: String = sub_title.chars().take(max_chars.saturating_sub(6)).collect();
-                        let sub_line = format!("\u{2514} {}   running", sub_display); // └ sub_title   running
-                        state.renderer.render_text(view, &sub_line, sub_indent, sub_y, sub_fg, card_bg);
+                        let is_running = sub.state_label == "Run";
+                        let sub_state_color = if is_running { sub_run_color } else { sub_done_color };
+                        let sub_icon = if is_running { "\u{25B6}" } else { "\u{2713}" }; // ▶ or ✓
+                        let sub_title_fg = if is_running {
+                            [0.82, 0.78, 0.95, 0.95] // bright for running
+                        } else {
+                            [dim_fg[0] + 0.1, dim_fg[1] + 0.1, dim_fg[2] + 0.1, 0.7]
+                        };
+                        // └ icon State Title
+                        let tree_char = "\u{2514}";
+                        state.renderer.render_text(view, tree_char, sub_indent, sub_y, [dim_fg[0], dim_fg[1], dim_fg[2], 0.5], card_bg);
+                        let icon_x = sub_indent + cell_w * 1.5;
+                        state.renderer.render_text(view, sub_icon, icon_x, sub_y, sub_state_color, card_bg);
+                        let state_x = icon_x + cell_w * 1.5;
+                        state.renderer.render_text(view, sub.state_label, state_x, sub_y, sub_state_color, card_bg);
+                        let title_x = state_x + (sub.state_label.len() as f32 + 1.0) * cell_w;
+                        let sub_display: String = sub.title.chars().take(max_chars.saturating_sub(10)).collect();
+                        state.renderer.render_text(view, &sub_display, title_x, sub_y, sub_title_fg, card_bg);
                     }
 
                     sy += entry_h + session_entry_gap;
@@ -7643,6 +7751,11 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
     // Render About overlay if visible.
     if state.about_visible {
         render_about_overlay(state, &view, phys_w, phys_h);
+    }
+
+    // Render close confirmation dialog if pending.
+    if let Some((ref proc_name, _)) = state.pending_close_confirm.clone() {
+        render_close_confirm_dialog(state, &view, phys_w, phys_h, proc_name);
     }
 
     output.present();
@@ -8371,6 +8484,56 @@ fn render_command_timeline(
     state.renderer.render_text(view, footer_text, input_x, footer_y, time_fg, box_bg);
 }
 
+/// Render a close confirmation dialog overlay.
+fn render_close_confirm_dialog(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    phys_w: f32,
+    phys_h: f32,
+    proc_name: &str,
+) {
+    let cell_w = state.renderer.cell_size().width;
+    let cell_h = state.renderer.cell_size().height;
+
+    // Dark overlay behind the dialog.
+    let overlay_color = [0.0, 0.0, 0.0, 0.55];
+    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+
+    // Dialog box dimensions.
+    let dialog_w = (cell_w * 38.0).min(phys_w * 0.8);
+    let dialog_h = cell_h * 5.0;
+    let dialog_x = (phys_w - dialog_w) / 2.0;
+    let dialog_y = (phys_h - dialog_h) / 2.0;
+
+    // Dialog background.
+    let bg = [0.12, 0.12, 0.16, 0.97];
+    let border_color = [0.35, 0.35, 0.50, 0.9];
+    state.renderer.submit_rounded_rects(view, &[RoundedRect {
+        rect: [dialog_x, dialog_y, dialog_w, dialog_h],
+        color: bg,
+        border_color,
+        params: [8.0, 1.0, 0.0, 0.0],
+    }]);
+
+    let text_x = dialog_x + cell_w * 1.5;
+    let text_fg = [0.92, 0.92, 0.96, 1.0];
+    let hint_fg = [0.60, 0.60, 0.68, 1.0];
+    let warn_fg = [0.95, 0.75, 0.30, 1.0];
+
+    // Warning icon + message.
+    let line1_y = dialog_y + cell_h * 1.0;
+    let msg = format!("\"{}\" is running in this pane.", proc_name);
+    state.renderer.render_text(view, &msg, text_x, line1_y, warn_fg, bg);
+
+    // Question.
+    let line2_y = line1_y + cell_h * 1.2;
+    state.renderer.render_text(view, "Close anyway?", text_x, line2_y, text_fg, bg);
+
+    // Key hints.
+    let line3_y = line2_y + cell_h * 1.4;
+    state.renderer.render_text(view, "Y = Close    N / Esc = Cancel", text_x, line3_y, hint_fg, bg);
+}
+
 /// Render the "About Termojinal" overlay on top of the terminal.
 fn render_about_overlay(
     state: &mut AppState,
@@ -8513,6 +8676,50 @@ fn get_child_cwd(pid: i32) -> Option<String> {
     for line in text.lines() {
         if let Some(path) = line.strip_prefix('n') {
             if path.starts_with('/') { return Some(path.to_string()); }
+        }
+    }
+    None
+}
+
+/// Detect the foreground child process name of a PTY shell.
+/// Returns the process name if a non-shell child is running (e.g. "python3",
+/// "cargo", "node"), or None if only the shell itself is running.
+fn detect_foreground_child(pty_pid: i32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["ax", "-o", "ppid=,pid=,command="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // Build child map: ppid -> [(pid, command)]
+    let mut children: HashMap<i32, Vec<(i32, String)>> = HashMap::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        let mut parts = trimmed.splitn(3, char::is_whitespace);
+        let ppid: i32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(-1);
+        let _child_pid: i32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(-1);
+        let cmd = parts.next().unwrap_or("").trim().to_string();
+        if ppid >= 0 && _child_pid >= 0 {
+            children.entry(ppid).or_default().push((_child_pid, cmd));
+        }
+    }
+
+    // Look for direct children of the PTY process.
+    let kids = children.get(&pty_pid)?;
+    // Filter out shell processes (the login shell is always there).
+    let shells = ["-zsh", "zsh", "-bash", "bash", "-fish", "fish", "-sh", "sh"];
+    for (_, cmd) in kids {
+        let basename = cmd.split_whitespace().next().unwrap_or("");
+        let basename = std::path::Path::new(basename)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(basename);
+        if !shells.contains(&basename) && !basename.is_empty() {
+            return Some(basename.to_string());
         }
     }
     None

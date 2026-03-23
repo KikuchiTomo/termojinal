@@ -278,13 +278,58 @@ fn rasterize_emoji_ct(
         return None;
     }
 
-    // Center vertically in CG coordinate system (origin bottom-left, Y up).
-    // Baseline position: center the text height within the bitmap.
+    // Compute emoji metrics for centering and square fitting.
     let ascent = ct_font.ascent();
     let descent = ct_font.descent();
-    let text_h = ascent + descent.abs();
-    let baseline_y = ((bmp_h as f64 - text_h) / 2.0 + descent.abs()).max(0.0);
-    ctx.set_text_position(0.0, baseline_y);
+    let text_h = (ascent + descent.abs()).max(1.0);
+
+    // Get the glyph advance width to center horizontally and maintain
+    // correct aspect ratio.  Apple Color Emoji glyphs have advance_w ≠
+    // text_h, so naively placing at x=0 causes right-edge clipping and
+    // the non-square metrics cause vertical stretching.
+    extern "C" {
+        fn CTFontGetAdvancesForGlyphs(
+            font: *const std::ffi::c_void,
+            orientation: u32, // CTFontOrientation
+            glyphs: *const u16,
+            advances: *mut CGSize,
+            count: core_foundation::base::CFIndex,
+        ) -> f64;
+    }
+    let mut advance_size = CGSize::new(0.0, 0.0);
+    let _total_advance = unsafe {
+        CTFontGetAdvancesForGlyphs(
+            ct_font.as_CFTypeRef() as *const _,
+            0, // kCTFontOrientationDefault
+            &glyph_id,
+            &mut advance_size,
+            1,
+        )
+    };
+    let advance_w = advance_size.width.max(1.0);
+
+    // Fit the emoji into a square region within the bitmap.  Since the
+    // bitmap-to-screen-quad mapping is uniform (same scale factor for
+    // both axes), a square region in the bitmap appears square on screen.
+    let glyph_max = advance_w.max(text_h);
+    let target_side = (bmp_w.min(bmp_h) as f64) * 0.92; // 92% to avoid clipping
+    let fit_scale = if glyph_max > 0.0 { target_side / glyph_max } else { 1.0 };
+
+    // Apply uniform scale to the CG context so the glyph is rendered
+    // at the correct size.  Core Text will scale the sbix bitmap strike.
+    ctx.scale(fit_scale, fit_scale);
+
+    // Compute text position in the SCALED coordinate system.
+    // In scaled coords: bitmap is (bmp_w / fit_scale) × (bmp_h / fit_scale).
+    let scaled_bmp_w = bmp_w as f64 / fit_scale;
+    let scaled_bmp_h = bmp_h as f64 / fit_scale;
+
+    // Center horizontally.
+    let text_x = ((scaled_bmp_w - advance_w) / 2.0).max(0.0);
+    // Center vertically (CG coordinate system: origin bottom-left, Y up).
+    let baseline_y = ((scaled_bmp_h - text_h) / 2.0 + descent.abs()).max(0.0);
+
+    ctx.set_text_position(text_x, baseline_y);
 
     unsafe {
         CTLineDraw(line, ctx.as_ptr());

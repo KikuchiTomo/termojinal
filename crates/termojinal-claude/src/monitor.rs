@@ -128,11 +128,24 @@ impl ClaudeSessionMonitor {
                             // Read session file.
                             let (session_id, title, cwd, started_at) =
                                 if let Some((sid, t)) = title_cache.get(&claude_pid) {
-                                    // Use cached title, but re-read session file for cwd.
+                                    // Use cached title, but re-read session file for cwd
+                                    // and verify session_id hasn't changed (new session
+                                    // on the same PID should bust the cache).
                                     let sf = read_session_file(claude_pid);
-                                    let cwd = sf.as_ref().map(|s| s.cwd.clone()).unwrap_or_default();
-                                    let started = sf.as_ref().map(|s| s.started_at).unwrap_or(0);
-                                    (sid.clone(), t.clone(), cwd, started)
+                                    let session_changed = sf.as_ref()
+                                        .map(|s| s.session_id != *sid)
+                                        .unwrap_or(false);
+                                    if session_changed {
+                                        // Session changed — re-read title.
+                                        let sf = sf.unwrap();
+                                        let title = read_task_title(&sf.session_id, &sf.cwd);
+                                        title_cache.insert(claude_pid, (sf.session_id.clone(), title.clone()));
+                                        (sf.session_id, title, sf.cwd, sf.started_at)
+                                    } else {
+                                        let cwd = sf.as_ref().map(|s| s.cwd.clone()).unwrap_or_default();
+                                        let started = sf.as_ref().map(|s| s.started_at).unwrap_or(0);
+                                        (sid.clone(), t.clone(), cwd, started)
+                                    }
                                 } else if let Some(sf) = read_session_file(claude_pid) {
                                     let title = read_task_title(&sf.session_id, &sf.cwd);
                                     title_cache.insert(claude_pid, (sf.session_id.clone(), title.clone()));

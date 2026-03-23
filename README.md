@@ -185,6 +185,7 @@ make fmt            # format
 ## Documentation
 
 - [Quick Start](docs/quick_start.md)
+- [Features](docs/features.md)
 - [Configuration Reference](docs/configuration.md)
 - [Custom Commands & JSON API](docs/command.md)
 
