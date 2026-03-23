@@ -3267,13 +3267,21 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                                 state.window.request_redraw();
                             }
-                            // e: cd to selected directory
+                            // e: cd to selected directory, then unfocus tree
                             Key::Character(c) if c.as_str() == "e" && !is_ctrl => {
                                 dir_tree_cd(state);
+                                let wi2 = state.active_workspace;
+                                if wi2 < state.dir_trees.len() {
+                                    state.dir_trees[wi2].focused = false;
+                                }
                             }
-                            // v: open selected file in new tab with $EDITOR or nvim
+                            // v: open selected file in new tab, then unfocus tree
                             Key::Character(c) if c.as_str() == "v" && !is_ctrl => {
                                 dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
+                                let wi2 = state.active_workspace;
+                                if wi2 < state.dir_trees.len() {
+                                    state.dir_trees[wi2].focused = false;
+                                }
                             }
                             // f: enter find mode (prefix search)
                             Key::Character(c) if c.as_str() == "f" && !is_ctrl => {
@@ -3284,8 +3292,27 @@ impl ApplicationHandler<UserEvent> for App {
                                     state.window.request_redraw();
                                 }
                             }
-                            // Escape: unfocus tree (return focus to terminal)
+                            // Escape or q: unfocus tree (return focus to terminal)
                             Key::Named(NamedKey::Escape) => {
+                                state.dir_trees[wi].focused = false;
+                                state.window.request_redraw();
+                            }
+                            Key::Character(c) if c.as_str() == "q" && !is_ctrl => {
+                                state.dir_trees[wi].focused = false;
+                                state.window.request_redraw();
+                            }
+                            // Cmd+Shift+E: toggle tree (same as global keybinding)
+                            Key::Character(c)
+                                if state.modifiers.super_key()
+                                    && state.modifiers.shift_key()
+                                    && (c.as_str() == "e" || c.as_str() == "E") =>
+                            {
+                                state.dir_trees[wi].visible = false;
+                                state.dir_trees[wi].focused = false;
+                                state.window.request_redraw();
+                            }
+                            // Tab: unfocus tree, keep it visible
+                            Key::Named(NamedKey::Tab) => {
                                 state.dir_trees[wi].focused = false;
                                 state.window.request_redraw();
                             }
@@ -3928,6 +3955,21 @@ impl ApplicationHandler<UserEvent> for App {
                             dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
                         }
                         break 'mouse_input;
+                    }
+                }
+
+                // --- Unfocus file tree on click outside sidebar ---
+                if btn_state == ElementState::Pressed && button == MouseButton::Left {
+                    let wi = state.active_workspace;
+                    if wi < state.dir_trees.len() && state.dir_trees[wi].focused {
+                        let cx = state.cursor_pos.0 as f32;
+                        let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                        if cx >= sidebar_w {
+                            state.dir_trees[wi].focused = false;
+                            state.dir_trees[wi].find_active = false;
+                            state.dir_trees[wi].find_query.clear();
+                            state.window.request_redraw();
+                        }
                     }
                 }
 
