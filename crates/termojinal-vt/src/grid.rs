@@ -1,4 +1,5 @@
 use crate::cell::Cell;
+use crate::color::Color;
 
 /// The terminal screen buffer: a 2D grid of cells.
 #[derive(Debug, Clone)]
@@ -52,17 +53,29 @@ impl Grid {
 
     /// Clear a row with default cells.
     pub fn clear_row(&mut self, row: usize) {
+        self.clear_row_with_bg(row, Color::Default);
+    }
+
+    /// Clear a row using the given background color (BCE).
+    pub fn clear_row_with_bg(&mut self, row: usize, bg: Color) {
         self.dirty_rows[row].set(true);
+        let blank = Cell::blank_with_bg(bg);
         let start = self.idx(0, row);
         for i in start..start + self.cols {
-            self.cells[i] = Cell::default();
+            self.cells[i] = blank;
         }
     }
 
     /// Clear the entire grid.
     pub fn clear(&mut self) {
+        self.clear_with_bg(Color::Default);
+    }
+
+    /// Clear the entire grid using the given background color (BCE).
+    pub fn clear_with_bg(&mut self, bg: Color) {
+        let blank = Cell::blank_with_bg(bg);
         for cell in &mut self.cells {
-            *cell = Cell::default();
+            *cell = blank;
         }
         for d in &self.dirty_rows {
             d.set(true);
@@ -71,27 +84,61 @@ impl Grid {
 
     /// Clear cells from (col, row) to end of line.
     pub fn clear_to_eol(&mut self, col: usize, row: usize) {
+        self.clear_to_eol_with_bg(col, row, Color::Default);
+    }
+
+    /// Clear cells from (col, row) to end of line using the given background color (BCE).
+    pub fn clear_to_eol_with_bg(&mut self, col: usize, row: usize, bg: Color) {
         self.dirty_rows[row].set(true);
-        let start = self.idx(col, row);
-        let end = self.idx(0, row) + self.cols;
+        let blank = Cell::blank_with_bg(bg);
+        // If the first cleared cell is a continuation (width==0) of a wide char,
+        // clear the leading cell to avoid a ghost half-character.
+        if col > 0 && col < self.cols {
+            let idx = row * self.cols + col;
+            if self.cells[idx].width == 0 {
+                let prev_idx = row * self.cols + col - 1;
+                self.cells[prev_idx] = blank;
+            }
+        }
+        let start = row * self.cols + col;
+        let end = row * self.cols + self.cols;
         for i in start..end {
-            self.cells[i] = Cell::default();
+            self.cells[i] = blank;
         }
     }
 
     /// Clear cells from start of line to (col, row) inclusive.
     pub fn clear_from_bol(&mut self, col: usize, row: usize) {
+        self.clear_from_bol_with_bg(col, row, Color::Default);
+    }
+
+    /// Clear cells from start of line to (col, row) inclusive using the given background color (BCE).
+    pub fn clear_from_bol_with_bg(&mut self, col: usize, row: usize, bg: Color) {
         self.dirty_rows[row].set(true);
-        let row_start = self.idx(0, row);
-        let end = self.idx(col, row) + 1;
+        let blank = Cell::blank_with_bg(bg);
+        let row_start = row * self.cols;
+        let end = row * self.cols + col + 1;
         for i in row_start..end {
-            self.cells[i] = Cell::default();
+            self.cells[i] = blank;
+        }
+        // If the cell just past the cleared region is a continuation (width==0)
+        // of a wide char whose leading cell was just cleared, clear it too.
+        if col + 1 < self.cols {
+            let next_idx = row * self.cols + col + 1;
+            if self.cells[next_idx].width == 0 {
+                self.cells[next_idx] = blank;
+            }
         }
     }
 
     /// Scroll lines up within a region [top, bottom].
     /// The top line is removed and a blank line is inserted at the bottom.
     pub fn scroll_up(&mut self, top: usize, bottom: usize, count: usize) {
+        self.scroll_up_with_bg(top, bottom, count, Color::Default);
+    }
+
+    /// Scroll lines up with BCE background color for new blank lines.
+    pub fn scroll_up_with_bg(&mut self, top: usize, bottom: usize, count: usize, bg: Color) {
         for _ in 0..count {
             // Shift rows up by one within the region.
             for row in top..bottom {
@@ -103,13 +150,18 @@ impl Grid {
                 }
                 self.dirty_rows[row].set(true);
             }
-            self.clear_row(bottom);
+            self.clear_row_with_bg(bottom, bg);
         }
     }
 
     /// Scroll lines down within a region [top, bottom].
     /// The bottom line is removed and a blank line is inserted at the top.
     pub fn scroll_down(&mut self, top: usize, bottom: usize, count: usize) {
+        self.scroll_down_with_bg(top, bottom, count, Color::Default);
+    }
+
+    /// Scroll lines down with BCE background color for new blank lines.
+    pub fn scroll_down_with_bg(&mut self, top: usize, bottom: usize, count: usize, bg: Color) {
         for _ in 0..count {
             for row in (top + 1..=bottom).rev() {
                 let src_start = self.idx(0, row - 1);
@@ -119,47 +171,69 @@ impl Grid {
                 }
                 self.dirty_rows[row].set(true);
             }
-            self.clear_row(top);
+            self.clear_row_with_bg(top, bg);
         }
     }
 
     /// Insert blank lines at the given row, shifting subsequent lines down.
     pub fn insert_lines(&mut self, row: usize, count: usize, bottom: usize) {
+        self.insert_lines_with_bg(row, count, bottom, Color::Default);
+    }
+
+    /// Insert blank lines with BCE background color.
+    pub fn insert_lines_with_bg(&mut self, row: usize, count: usize, bottom: usize, bg: Color) {
         let n = count.min(bottom - row + 1);
-        self.scroll_down(row, bottom, n);
+        self.scroll_down_with_bg(row, bottom, n, bg);
     }
 
     /// Delete lines at the given row, shifting subsequent lines up.
     pub fn delete_lines(&mut self, row: usize, count: usize, bottom: usize) {
+        self.delete_lines_with_bg(row, count, bottom, Color::Default);
+    }
+
+    /// Delete lines with BCE background color for new blank lines.
+    pub fn delete_lines_with_bg(&mut self, row: usize, count: usize, bottom: usize, bg: Color) {
         let n = count.min(bottom - row + 1);
-        self.scroll_up(row, bottom, n);
+        self.scroll_up_with_bg(row, bottom, n, bg);
     }
 
     /// Insert blank cells at (col, row), shifting existing cells right.
     pub fn insert_cells(&mut self, col: usize, row: usize, count: usize) {
+        self.insert_cells_with_bg(col, row, count, Color::Default);
+    }
+
+    /// Insert blank cells with BCE background color.
+    pub fn insert_cells_with_bg(&mut self, col: usize, row: usize, count: usize, bg: Color) {
         self.dirty_rows[row].set(true);
         let row_start = self.idx(0, row);
         let n = count.min(self.cols - col);
+        let blank = Cell::blank_with_bg(bg);
         // Shift right.
         for c in (col + n..self.cols).rev() {
             self.cells[row_start + c] = self.cells[row_start + c - n];
         }
         // Clear inserted cells.
         for c in col..col + n {
-            self.cells[row_start + c] = Cell::default();
+            self.cells[row_start + c] = blank;
         }
     }
 
     /// Delete cells at (col, row), shifting remaining cells left.
     pub fn delete_cells(&mut self, col: usize, row: usize, count: usize) {
+        self.delete_cells_with_bg(col, row, count, Color::Default);
+    }
+
+    /// Delete cells with BCE background color for vacated cells at end of line.
+    pub fn delete_cells_with_bg(&mut self, col: usize, row: usize, count: usize, bg: Color) {
         self.dirty_rows[row].set(true);
         let row_start = self.idx(0, row);
         let n = count.min(self.cols - col);
+        let blank = Cell::blank_with_bg(bg);
         for c in col..self.cols - n {
             self.cells[row_start + c] = self.cells[row_start + c + n];
         }
         for c in (self.cols - n)..self.cols {
-            self.cells[row_start + c] = Cell::default();
+            self.cells[row_start + c] = blank;
         }
     }
 
@@ -187,17 +261,27 @@ impl Grid {
 
     /// Erase characters from (col, row) to end of screen.
     pub fn erase_below(&mut self, col: usize, row: usize) {
-        self.clear_to_eol(col, row);
+        self.erase_below_with_bg(col, row, Color::Default);
+    }
+
+    /// Erase characters from (col, row) to end of screen with BCE background.
+    pub fn erase_below_with_bg(&mut self, col: usize, row: usize, bg: Color) {
+        self.clear_to_eol_with_bg(col, row, bg);
         for r in (row + 1)..self.rows {
-            self.clear_row(r);
+            self.clear_row_with_bg(r, bg);
         }
     }
 
     /// Erase characters from start of screen to (col, row).
     pub fn erase_above(&mut self, col: usize, row: usize) {
-        self.clear_from_bol(col, row);
+        self.erase_above_with_bg(col, row, Color::Default);
+    }
+
+    /// Erase characters from start of screen to (col, row) with BCE background.
+    pub fn erase_above_with_bg(&mut self, col: usize, row: usize, bg: Color) {
+        self.clear_from_bol_with_bg(col, row, bg);
         for r in 0..row {
-            self.clear_row(r);
+            self.clear_row_with_bg(r, bg);
         }
     }
 

@@ -721,7 +721,8 @@ impl Terminal {
             }
             let top = self.scroll_top;
             let bottom = self.scroll_bottom;
-            self.grid_mut().scroll_up(top, bottom, 1);
+            let bg = self.pen.bg;
+            self.grid_mut().scroll_up_with_bg(top, bottom, 1, bg);
         } else {
             self.cursor_row = self.clamp_row(self.cursor_row + 1);
         }
@@ -731,7 +732,8 @@ impl Terminal {
         if self.cursor_row == self.scroll_top {
             let top = self.scroll_top;
             let bottom = self.scroll_bottom;
-            self.grid_mut().scroll_down(top, bottom, 1);
+            let bg = self.pen.bg;
+            self.grid_mut().scroll_down_with_bg(top, bottom, 1, bg);
         } else {
             self.cursor_row = self.cursor_row.saturating_sub(1);
         }
@@ -1032,6 +1034,37 @@ impl vte::Perform for Terminal {
 
         let has_hyperlink = self.current_hyperlink.is_some();
 
+        // Fix ghost characters: clean up wide character fragments.
+        //
+        // Case 1: If we are overwriting the continuation cell (width==0)
+        // of a wide character, the leading cell must be cleared.
+        if col > 0 {
+            let prev_width = self.grid().cell(col, row).width;
+            if prev_width == 0 {
+                // This cell is a continuation — clear the leading cell to the left.
+                self.grid_mut().cell_mut(col - 1, row).reset();
+            }
+        }
+
+        // Case 2: If we are overwriting the leading cell (width==2) of a wide
+        // character, the continuation cell to the right must be cleared.
+        {
+            let old_width = self.grid().cell(col, row).width;
+            if old_width == 2 && col + 1 < self.cols {
+                self.grid_mut().cell_mut(col + 1, row).reset();
+            }
+        }
+
+        // Case 3: If we are writing a wide character, the continuation cell
+        // at col+1 might be the leading cell of another wide character. If so,
+        // clear *that* wide character's continuation at col+2.
+        if char_width == 2 && col + 1 < self.cols {
+            let next_width = self.grid().cell(col + 1, row).width;
+            if next_width == 2 && col + 2 < self.cols {
+                self.grid_mut().cell_mut(col + 2, row).reset();
+            }
+        }
+
         {
             let cell = self.grid_mut().cell_mut(col, row);
             cell.c = c;
@@ -1212,54 +1245,60 @@ impl vte::Perform for Terminal {
                 self.cursor_col = self.clamp_col(col.saturating_sub(1));
                 self.wrap_pending = false;
             }
-            // ED — Erase in Display.
+            // ED — Erase in Display (BCE: use current pen background).
             ([], 'J') => {
                 let col = self.cursor_col;
                 let row = self.cursor_row;
+                let bg = self.pen.bg;
                 match param(0, 0) {
-                    0 => self.grid_mut().erase_below(col, row),
-                    1 => self.grid_mut().erase_above(col, row),
-                    2 | 3 => self.grid_mut().clear(),
+                    0 => self.grid_mut().erase_below_with_bg(col, row, bg),
+                    1 => self.grid_mut().erase_above_with_bg(col, row, bg),
+                    2 | 3 => self.grid_mut().clear_with_bg(bg),
                     _ => {}
                 }
             }
-            // EL — Erase in Line.
+            // EL — Erase in Line (BCE: use current pen background).
             ([], 'K') => {
                 let row = self.cursor_row;
                 let col = self.cursor_col;
+                let bg = self.pen.bg;
                 match param(0, 0) {
-                    0 => self.grid_mut().clear_to_eol(col, row),
-                    1 => self.grid_mut().clear_from_bol(col, row),
-                    2 => self.grid_mut().clear_row(row),
+                    0 => self.grid_mut().clear_to_eol_with_bg(col, row, bg),
+                    1 => self.grid_mut().clear_from_bol_with_bg(col, row, bg),
+                    2 => self.grid_mut().clear_row_with_bg(row, bg),
                     _ => {}
                 }
             }
-            // IL — Insert Lines.
+            // IL — Insert Lines (BCE).
             ([], 'L') => {
                 let n = param(0, 1) as usize;
                 let row = self.cursor_row;
                 let bottom = self.scroll_bottom;
-                self.grid_mut().insert_lines(row, n, bottom);
+                let bg = self.pen.bg;
+                self.grid_mut().insert_lines_with_bg(row, n, bottom, bg);
             }
-            // DL — Delete Lines.
+            // DL — Delete Lines (BCE).
             ([], 'M') => {
                 let n = param(0, 1) as usize;
                 let row = self.cursor_row;
                 let bottom = self.scroll_bottom;
-                self.grid_mut().delete_lines(row, n, bottom);
+                let bg = self.pen.bg;
+                self.grid_mut().delete_lines_with_bg(row, n, bottom, bg);
             }
-            // DCH — Delete Characters.
+            // DCH — Delete Characters (BCE).
             ([], 'P') => {
                 let n = param(0, 1) as usize;
                 let col = self.cursor_col;
                 let row = self.cursor_row;
-                self.grid_mut().delete_cells(col, row, n);
+                let bg = self.pen.bg;
+                self.grid_mut().delete_cells_with_bg(col, row, n, bg);
             }
-            // SU — Scroll Up (C3: track scrolled lines for command history).
+            // SU — Scroll Up (C3: track scrolled lines for command history) (BCE).
             ([], 'S') => {
                 let n = param(0, 1) as usize;
                 let top = self.scroll_top;
                 let bottom = self.scroll_bottom;
+                let bg = self.pen.bg;
                 // Save scrolled-off rows to scrollback (same guard as newline).
                 if top == 0 && !self.using_alt {
                     for i in 0..n.min(bottom + 1) {
@@ -1268,34 +1307,37 @@ impl vte::Perform for Terminal {
                     }
                     self.total_scrolled_lines += n.min(bottom + 1);
                 }
-                self.grid_mut().scroll_up(top, bottom, n);
+                self.grid_mut().scroll_up_with_bg(top, bottom, n, bg);
             }
-            // SD — Scroll Down.
+            // SD — Scroll Down (BCE).
             ([], 'T') => {
                 let n = param(0, 1) as usize;
                 let top = self.scroll_top;
                 let bottom = self.scroll_bottom;
-                self.grid_mut().scroll_down(top, bottom, n);
+                let bg = self.pen.bg;
+                self.grid_mut().scroll_down_with_bg(top, bottom, n, bg);
             }
-            // ECH — Erase Characters.
+            // ECH — Erase Characters (BCE: use current pen background).
             ([], 'X') => {
                 let n = param(0, 1) as usize;
                 let row = self.cursor_row;
                 let col = self.cursor_col;
                 let cols = self.cols;
+                let bg = self.pen.bg;
                 for i in 0..n {
                     let c = col + i;
                     if c < cols {
-                        self.grid_mut().cell_mut(c, row).reset();
+                        self.grid_mut().cell_mut(c, row).reset_with_bg(bg);
                     }
                 }
             }
-            // ICH — Insert Characters.
+            // ICH — Insert Characters (BCE).
             ([], '@') => {
                 let n = param(0, 1) as usize;
                 let col = self.cursor_col;
                 let row = self.cursor_row;
-                self.grid_mut().insert_cells(col, row, n);
+                let bg = self.pen.bg;
+                self.grid_mut().insert_cells_with_bg(col, row, n, bg);
             }
             // VPA — Vertical Line Position Absolute.
             ([], 'd') => {

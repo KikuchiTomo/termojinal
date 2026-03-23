@@ -71,6 +71,19 @@ impl Cell {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Return a blank cell with the given background color (for BCE — Back Color Erase).
+    pub fn blank_with_bg(bg: Color) -> Self {
+        Self {
+            bg,
+            ..Self::default()
+        }
+    }
+
+    /// Reset this cell but keep the given background color (for BCE).
+    pub fn reset_with_bg(&mut self, bg: Color) {
+        *self = Self::blank_with_bg(bg);
+    }
 }
 
 /// The "pen" — current style attributes applied to new characters.
