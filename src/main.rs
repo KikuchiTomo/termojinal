@@ -1781,9 +1781,6 @@ fn load_tree_root(tree: &mut DirectoryTreeState, root: &str) {
     tree.scroll_offset = 0;
 }
 
-/// Check whether there is a subsequent entry at the given depth level after `idx`.
-/// Used to draw vertical continuation guide lines.
-
 /// Return a color based on file extension for the directory tree.
 fn file_extension_color(name: &str) -> [f32; 4] {
     let ext = name.rsplit('.').next().unwrap_or("");
@@ -5700,7 +5697,7 @@ fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> Se
                 if !text.is_empty() && !text.contains('\r') && !text.contains('\x1b') {
                     // Skip control characters (Ctrl+key combos produce control codes).
                     if text.chars().all(|c| c.is_control()) {
-                        return SearchKeyResult::Pass;
+                        return SearchKeyResult::Consumed;
                     }
                     let text = text.clone();
                     if let Some(ref mut search) = state.search {
@@ -7767,17 +7764,14 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             // Precompute guide line data in a single O(N) backward pass.
             // For each visible entry, compute which depth levels have continuations
             // and whether this entry is the last sibling at its depth.
-            let max_depth = tree.entries[scroll..visible_end].iter()
+            let scan_end = tree.entries.len().min(visible_end + 200);
+            // Compute max_depth over the full scan range (not just visible) to avoid OOB.
+            let max_depth = tree.entries[scroll..scan_end].iter()
                 .map(|e| e.depth).max().unwrap_or(0);
-            // `active_depths` tracks which depth levels have a sibling below the current entry.
-            // Scan backward from the end of visible entries.
             let mut entry_is_last: Vec<bool> = vec![true; visible_end - scroll];
             let mut entry_continuations: Vec<Vec<bool>> = vec![vec![false; max_depth + 1]; visible_end - scroll];
             {
-                // Track the last-seen depth-level activity scanning backward.
                 let mut depth_has_more = vec![false; max_depth + 2];
-                // Scan backward through ALL entries from end to scroll start for correctness.
-                let scan_end = tree.entries.len().min(visible_end + 200); // look ahead a bit for continuations
                 for j in (scroll..scan_end).rev() {
                     let d = tree.entries[j].depth;
                     if j < visible_end {
