@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::io::{Read as _, Seek, SeekFrom};
 use std::time::{Duration, SystemTime};
 
 /// Detected Claude Code session state.
@@ -40,11 +41,11 @@ pub struct ClaudeSession {
 /// Session activity state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionState {
-    /// JSONL modified within last 10 seconds.
+    /// Claude Code is actively processing (JSONL last entry is not `last-prompt`).
     Running,
-    /// JSONL modified 10-60 seconds ago.
+    /// Process is alive but JSONL cannot be read.
     Idle,
-    /// JSONL not modified for >60 seconds (or process exited).
+    /// Claude Code has returned to prompt (`last-prompt`) or process exited.
     Done,
     /// A PermissionRequest is pending.
     WaitingForPermission,
@@ -276,33 +277,72 @@ fn read_task_title(session_id: &str, cwd: &str) -> String {
     String::new()
 }
 
-/// Detect session state from JSONL file modification time and process liveness.
+/// Detect session state from the JSONL file's last entry type and process liveness.
 ///
-/// If the claude process is still alive (kill -0 succeeds), the state will
-/// never drop below `Idle` — even if the JSONL hasn't been modified for a
-/// long time (e.g. while Claude is thinking or executing a tool).
+/// Claude Code writes a `last-prompt` entry to the JSONL when it finishes a
+/// task and returns to the interactive prompt.  We read the last line of the
+/// JSONL (via a backwards seek to avoid reading the entire file) and check
+/// its `"type"` field:
+///
+/// * `"last-prompt"` — Claude Code is waiting for user input (**Done**).
+/// * Anything else (`"progress"`, `"user"`, `"assistant"`, ...) — Claude
+///   Code is actively processing (**Running**).
+///
+/// When the JSONL cannot be read, we fall back to process liveness:
+/// alive → Idle, dead → Done.
 fn detect_session_state(session_id: &str, cwd: &str, claude_pid: i32) -> SessionState {
     let process_alive = unsafe { libc::kill(claude_pid, 0) } == 0;
 
     let Some(path) = session_jsonl_path(session_id, cwd) else {
         return if process_alive { SessionState::Idle } else { SessionState::Done };
     };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return if process_alive { SessionState::Idle } else { SessionState::Done };
-    };
-    let Ok(modified) = metadata.modified() else {
-        return if process_alive { SessionState::Idle } else { SessionState::Done };
-    };
-    let elapsed = SystemTime::now().duration_since(modified).unwrap_or(Duration::from_secs(999));
-    if elapsed.as_secs() < 10 {
-        SessionState::Running
-    } else if process_alive {
-        // Process is alive but JSONL hasn't been updated recently —
-        // Claude is likely thinking or executing a tool.
-        SessionState::Running
-    } else {
-        SessionState::Done
+
+    // Read the last line of the JSONL by seeking backwards from EOF.
+    if let Some(last_type) = read_jsonl_last_type(&path) {
+        return match last_type.as_str() {
+            // Claude Code wrote `last-prompt` — it is idle, waiting for input.
+            "last-prompt" => SessionState::Done,
+            // Any other type means work is happening (or just started).
+            _ => {
+                if process_alive {
+                    SessionState::Running
+                } else {
+                    // Process exited mid-task (crash / user killed it).
+                    SessionState::Done
+                }
+            }
+        };
     }
+
+    // Could not read JSONL — fall back to process liveness.
+    if process_alive { SessionState::Idle } else { SessionState::Done }
+}
+
+/// Read the `"type"` field from the last non-empty line of a JSONL file.
+///
+/// Uses a tail-read strategy: seeks to the last 4 KiB of the file and
+/// parses only the final line, avoiding full-file reads on large sessions.
+fn read_jsonl_last_type(path: &std::path::Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    if file_len == 0 {
+        return None;
+    }
+
+    // Read the tail of the file (last 4 KiB is more than enough for one JSONL line
+    // in most cases; Claude Code progress lines are typically < 2 KiB).
+    let tail_size: u64 = 4096;
+    let seek_pos = file_len.saturating_sub(tail_size);
+    file.seek(SeekFrom::Start(seek_pos)).ok()?;
+
+    let mut buf = String::new();
+    file.read_to_string(&mut buf).ok()?;
+
+    // Find the last non-empty line.
+    let last_line = buf.lines().rev().find(|l| !l.trim().is_empty())?;
+
+    let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
+    json.get("type").and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
 /// Read subagent metadata from the session's subagents directory.

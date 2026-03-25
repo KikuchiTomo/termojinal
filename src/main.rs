@@ -2663,8 +2663,8 @@ struct AppState {
     timeline_scroll_offset: usize,
     /// S4: Pane ID the timeline was opened for (prevents switching on pane focus change).
     timeline_pane_id: Option<PaneId>,
-    /// Whether the sessions summary panel in the sidebar is collapsed.
-    sessions_collapsed: bool,
+    /// Whether the Claudes summary panel in the sidebar is collapsed.
+    claudes_collapsed: bool,
     /// Cached session list from the daemon (refreshed by background thread).
     daemon_sessions: Vec<DaemonSessionInfo>,
     /// Pending close confirmation: pane has running child process.
@@ -3584,7 +3584,7 @@ impl ApplicationHandler<UserEvent> for App {
             timeline_selected: 0,
             timeline_scroll_offset: 0,
             timeline_pane_id: None,
-            sessions_collapsed: false,
+            claudes_collapsed: false,
             daemon_sessions: Vec::new(),
             pending_close_confirm: None, // (proc_name, pane_id)
             needs_animation_frame: false,
@@ -6895,16 +6895,16 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
         return Some(Action::NewWorkspace);
     }
 
-    // --- Sessions Summary click handling ---
-    // Mirror the layout calculation from render_sidebar to find session entry positions.
+    // --- Claudes Summary click handling ---
+    // Mirror the layout calculation from render_sidebar to find Claude entry positions.
     let phys_h = state.window.inner_size().height as f32;
 
-    // Collect active agent sessions (same logic as render_sidebar).
-    struct ClickSessionEntry {
+    // Collect active Claude sessions (same logic as render_sidebar).
+    struct ClickClaudeEntry {
         wi: usize,
         running_sub_count: usize,
     }
-    let mut session_click_entries: Vec<ClickSessionEntry> = Vec::new();
+    let mut claude_click_entries: Vec<ClickClaudeEntry> = Vec::new();
     for wi in 0..state.workspaces.len() {
         if wi >= state.agent_infos.len() {
             break;
@@ -6913,11 +6913,11 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             let running_sub_count = state.agent_infos[wi].subagents.iter()
                 .filter(|s| matches!(s.state, AgentState::Running))
                 .count();
-            session_click_entries.push(ClickSessionEntry { wi, running_sub_count });
+            claude_click_entries.push(ClickClaudeEntry { wi, running_sub_count });
         }
     }
 
-    if !session_click_entries.is_empty() {
+    if !claude_click_entries.is_empty() {
         let session_line_h = cell_h;
         let session_gap = info_line_gap;
         let session_pad_y = 3.0;
@@ -6927,7 +6927,7 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
         let bottom_pad = 8.0;
 
         // Calculate per-entry height (must match render logic).
-        let compute_click_entry_h = |entry: &ClickSessionEntry| -> f32 {
+        let compute_click_entry_h = |entry: &ClickClaudeEntry| -> f32 {
             let base_lines = 2.0;
             let sub_lines = entry.running_sub_count as f32;
             (base_lines + sub_lines) * session_line_h
@@ -6935,11 +6935,11 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                 + session_pad_y * 2.0
         };
 
-        let sessions_total_h = if state.sessions_collapsed {
+        let sessions_total_h = if state.claudes_collapsed {
             header_h
         } else {
-            let entries_h: f32 = session_click_entries.iter().map(|e| compute_click_entry_h(e)).sum();
-            let gaps_h = (session_click_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
+            let entries_h: f32 = claude_click_entries.iter().map(|e| compute_click_entry_h(e)).sum();
+            let gaps_h = (claude_click_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
             header_h + entries_h + gaps_h
         };
 
@@ -6951,15 +6951,15 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             // Check if click is on the header line (toggle collapse).
             let header_y = sessions_start_y + sessions_sep_h;
             if cy >= header_y && cy < header_y + header_h {
-                state.sessions_collapsed = !state.sessions_collapsed;
+                state.claudes_collapsed = !state.claudes_collapsed;
                 state.window.request_redraw();
                 return None;
             }
 
-            // If not collapsed, check individual session entries.
-            if !state.sessions_collapsed {
+            // If not collapsed, check individual Claude entries.
+            if !state.claudes_collapsed {
                 let mut sy = header_y + header_h;
-                for entry in &session_click_entries {
+                for entry in &claude_click_entries {
                     let entry_h = compute_click_entry_h(entry);
                     let session_end = sy + entry_h + session_entry_gap;
                     if cy >= sy && cy < session_end {
@@ -7953,14 +7953,14 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         state.renderer.render_text(view, new_ws_label, side_pad, new_ws_y, dim_fg, sidebar_bg);
     }
 
-    // --- Sessions Summary (bottom of sidebar) ---
-    // Collect all active agent sessions across workspaces.
+    // --- Claudes Summary (bottom of sidebar) ---
+    // Collect all active Claude sessions across workspaces.
     // Each entry: (workspace_idx, title, state_label, subagents with state)
     struct SubAgentEntry {
         title: String,
         state_label: &'static str,
     }
-    struct SessionEntry {
+    struct ClaudeEntry {
         wi: usize,
         title: String,
         state_label: &'static str,
@@ -7968,7 +7968,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         worktree_display: String,       // e.g. "jterm" (last component of worktree path)
         branch: String,                 // git branch name
     }
-    let mut session_entries: Vec<SessionEntry> = Vec::new();
+    let mut claude_entries: Vec<ClaudeEntry> = Vec::new();
     let done_color: [f32; 4] = [0.45, 0.75, 0.45, 1.0]; // green for "done"
     for wi in 0..state.workspaces.len() {
         if wi >= state.agent_infos.len() {
@@ -8040,7 +8040,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         } else {
             String::new()
         };
-        session_entries.push(SessionEntry {
+        claude_entries.push(ClaudeEntry {
             wi,
             title,
             state_label,
@@ -8051,7 +8051,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     }
 
     let has_daemon_sessions = !state.daemon_sessions.is_empty();
-    if !session_entries.is_empty() || has_daemon_sessions {
+    if !claude_entries.is_empty() || has_daemon_sessions {
         let session_line_h = cell_h;
         let session_gap = info_line_gap;
         let session_pad_y = 3.0;
@@ -8064,7 +8064,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // Line 1: color dot + title
         // Line 2: status + (worktree, branch)
         // + N lines for running subagents
-        let compute_entry_h = |entry: &SessionEntry| -> f32 {
+        let compute_entry_h = |entry: &ClaudeEntry| -> f32 {
             let base_lines = 2.0; // title + status line
             let sub_lines = entry.subagents.len() as f32;
             (base_lines + sub_lines) * session_line_h
@@ -8074,12 +8074,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
 
         // Compute total height depending on collapsed state.
         let daemon_entry_h = session_line_h + session_pad_y * 2.0;
-        let sessions_total_h = if state.sessions_collapsed {
+        let sessions_total_h = if state.claudes_collapsed {
             header_h
         } else {
-            let entries_h: f32 = session_entries.iter().map(|e| compute_entry_h(e)).sum();
+            let entries_h: f32 = claude_entries.iter().map(|e| compute_entry_h(e)).sum();
             let daemon_h: f32 = state.daemon_sessions.len() as f32 * (daemon_entry_h + session_entry_gap);
-            let gaps_h = (session_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
+            let gaps_h = (claude_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
             header_h + entries_h + gaps_h + daemon_h
         };
 
@@ -8107,25 +8107,22 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 sep_lower_color,
             );
 
-            // --- Header: collapsible toggle + "Sessions" + count ---
+            // --- Header: collapsible toggle + "Claudes" + count ---
             let header_y = sep_sess_y + sessions_sep_h;
-            let collapse_icon = if state.sessions_collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ or ▾
+            let collapse_icon = if state.claudes_collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ or ▾
             let header_icon_fg = agent_active_color;
             state.renderer.render_text(view, collapse_icon, side_pad, header_y, header_icon_fg, sidebar_bg);
-            // Count only Claude Code agent sessions, not raw daemon pane
-            // registrations which represent individual tabs/panes rather than
-            // logical AI sessions.
-            let total_count = session_entries.len();
-            let header_text = format!("Sessions ({})", total_count);
+            let total_count = claude_entries.len();
+            let header_text = format!("Claudes ({})", total_count);
             let header_fg = [active_fg[0] * 0.8, active_fg[1] * 0.8, active_fg[2] * 0.8, 0.9];
             state.renderer.render_text(view, &header_text, side_pad + cell_w * 2.0, header_y, header_fg, sidebar_bg);
 
-            // If collapsed, stop here — no session entries drawn.
-            if !state.sessions_collapsed {
+            // If collapsed, stop here — no Claude entries drawn.
+            if !state.claudes_collapsed {
                 let mut sy = header_y + header_h;
                 let info_indent = text_left + cell_w * 0.5;
 
-                for (_idx, entry) in session_entries.iter().enumerate() {
+                for (_idx, entry) in claude_entries.iter().enumerate() {
                     let entry_h = compute_entry_h(entry);
                     if sy + entry_h > phys_h - bottom_pad {
                         break;
@@ -8199,17 +8196,6 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         "done" => done_color,
                         _ => dim_fg,
                     };
-                    // Small status dot (procedural circle).
-                    let sd2 = cell_h * 0.30;
-                    let sr2 = sd2 / 2.0;
-                    let scx2 = info_indent + cell_w * 0.5;
-                    let scy2 = line2_y + cell_h * 0.5;
-                    state.renderer.submit_rounded_rects(view, &[RoundedRect {
-                        rect: [scx2 - sr2, scy2 - sr2, sd2, sd2],
-                        color: state_color,
-                        border_color: [0.0; 4],
-                        params: [sr2, 0.0, 0.0, 0.0],
-                    }]);
                     // Build state icon + label.
                     let (state_icon, state_text) = match entry.state_label {
                         "running" => ("\u{25B6}", "Run"),    // ▶ Run
@@ -8219,7 +8205,7 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     };
                     let label_fg = state_color;
                     // Render state icon + state text.
-                    let icon_x = info_indent + cell_w * 1.0;
+                    let icon_x = info_indent;
                     state.renderer.render_text(view, state_icon, icon_x, line2_y, label_fg, card_bg);
                     let state_text_x = icon_x + cell_w * 2.0;
                     state.renderer.render_text(view, state_text, state_text_x, line2_y, label_fg, card_bg);
