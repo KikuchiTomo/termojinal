@@ -37,3 +37,6 @@ docs/claude/*.md
 .claude/worktrees/
 
 docs/myplan.txt
+cross_platform_plan.md
+refactor_extract.sh
+*.bak
