@@ -209,43 +209,81 @@ pub(crate) fn cells_to_rtf(
     rtf
 }
 
+/// Sanitize a string by removing NUL bytes and other control characters
+/// that could cause issues with NSPasteboard.
+fn sanitize_for_clipboard(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c != '\0' && (c >= ' ' || c == '\n' || c == '\r' || c == '\t'))
+        .collect()
+}
+
+/// Fallback: copy plain text only using arboard (safe, no unsafe code).
+fn copy_plain_text_fallback(text: &str) {
+    let sanitized = sanitize_for_clipboard(text);
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => {
+            if let Err(e) = clipboard.set_text(&sanitized) {
+                log::error!("arboard fallback copy failed: {e}");
+            }
+        }
+        Err(e) => {
+            log::error!("failed to create arboard clipboard: {e}");
+        }
+    }
+}
+
 /// Copy text + RTF to the macOS clipboard using NSPasteboard.
+/// Falls back to plain-text-only copy (via arboard) if the unsafe
+/// NSPasteboard call panics.
 pub(crate) fn copy_to_clipboard_with_rtf(plain_text: &str, rtf_text: &str) {
-    use objc2::rc::Id;
-    use objc2::runtime::NSObject;
-    use objc2::{class, msg_send, msg_send_id};
+    let plain_owned = sanitize_for_clipboard(plain_text);
+    let rtf_owned = sanitize_for_clipboard(rtf_text);
 
-    unsafe {
-        let pasteboard: Id<NSObject> = msg_send_id![class!(NSPasteboard), generalPasteboard];
-        let () = msg_send![&*pasteboard, clearContents];
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use objc2::rc::Id;
+        use objc2::runtime::NSObject;
+        use objc2::{class, msg_send, msg_send_id};
 
-        let make_nsstring = |s: &str| -> Id<NSObject> {
-            let cstr = std::ffi::CString::new(s).unwrap_or_else(|_| {
-                // If the string contains NUL bytes, strip them.
-                let cleaned: String = s.chars().filter(|&c| c != '\0').collect();
-                std::ffi::CString::new(cleaned).unwrap()
-            });
-            msg_send_id![class!(NSString), stringWithUTF8String: cstr.as_ptr()]
-        };
+        unsafe {
+            let pasteboard: Id<NSObject> = msg_send_id![class!(NSPasteboard), generalPasteboard];
+            let () = msg_send![&*pasteboard, clearContents];
 
-        let make_nsdata = |bytes: &[u8]| -> Id<NSObject> {
-            msg_send_id![
-                class!(NSData),
-                dataWithBytes: bytes.as_ptr(),
-                length: bytes.len()
-            ]
-        };
+            let make_nsstring = |s: &str| -> Id<NSObject> {
+                let cstr = std::ffi::CString::new(s).unwrap_or_else(|_| {
+                    let cleaned: String = s.chars().filter(|&c| c != '\0').collect();
+                    std::ffi::CString::new(cleaned)
+                        .unwrap_or_else(|_| std::ffi::CString::new("").unwrap())
+                });
+                msg_send_id![class!(NSString), stringWithUTF8String: cstr.as_ptr()]
+            };
 
-        // UTType constants as NSString.
-        let utf8_type = make_nsstring("public.utf8-plain-text");
-        let rtf_type = make_nsstring("public.rtf");
+            let make_nsdata = |bytes: &[u8]| -> Id<NSObject> {
+                msg_send_id![
+                    class!(NSData),
+                    dataWithBytes: bytes.as_ptr(),
+                    length: bytes.len()
+                ]
+            };
 
-        // Set plain text.
-        let ns_text = make_nsstring(plain_text);
-        let () = msg_send![&*pasteboard, setString: &*ns_text, forType: &*utf8_type];
+            // UTType constants as NSString.
+            let utf8_type = make_nsstring("public.utf8-plain-text");
+            let rtf_type = make_nsstring("public.rtf");
 
-        // Set RTF data.
-        let rtf_data = make_nsdata(rtf_text.as_bytes());
-        let () = msg_send![&*pasteboard, setData: &*rtf_data, forType: &*rtf_type];
+            // Set plain text.
+            let ns_text = make_nsstring(&plain_owned);
+            let () = msg_send![&*pasteboard, setString: &*ns_text, forType: &*utf8_type];
+
+            // Set RTF data.
+            let rtf_data = make_nsdata(rtf_owned.as_bytes());
+            let () = msg_send![&*pasteboard, setData: &*rtf_data, forType: &*rtf_type];
+        }
+    }));
+
+    if let Err(e) = result {
+        log::error!(
+            "NSPasteboard copy panicked, falling back to plain text: {:?}",
+            e.downcast_ref::<String>().map(|s| s.as_str())
+        );
+        copy_plain_text_fallback(plain_text);
     }
 }
