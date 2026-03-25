@@ -63,6 +63,31 @@ pub enum IpcRequest {
 
     /// Kill all sessions (daemon-owned and externally tracked).
     KillAll,
+
+    /// Claude Code status update from hooks.
+    ///
+    /// Sent by `tm status` when a Claude Code hook fires (PreToolUse,
+    /// PostToolUse, Stop). The daemon forwards this to the session monitor
+    /// so the GUI can update agent state without polling.
+    ClaudeStatusUpdate {
+        /// Claude Code session ID (`$CLAUDE_SESSION_ID`).
+        #[serde(default)]
+        session_id: Option<String>,
+        /// State string: "running", "done", "idle".
+        state: String,
+        /// Subagent ID (for subagent-start / subagent-done).
+        #[serde(default)]
+        agent_id: Option<String>,
+        /// Subagent type (e.g. "task", "search").
+        #[serde(default)]
+        agent_type: Option<String>,
+        /// Subagent description.
+        #[serde(default)]
+        description: Option<String>,
+        /// PID of the notifying process (used to identify which PTY pane).
+        #[serde(default)]
+        pid: Option<i32>,
+    },
 }
 
 /// A response from the daemon to the client.
@@ -219,6 +244,61 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_claude_status_update() {
+        let req = IpcRequest::ClaudeStatusUpdate {
+            session_id: Some("sess-abc".to_string()),
+            state: "running".to_string(),
+            agent_id: None,
+            agent_type: None,
+            description: None,
+            pid: Some(12345),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "claude_status_update");
+        assert_eq!(parsed["session_id"], "sess-abc");
+        assert_eq!(parsed["state"], "running");
+        assert_eq!(parsed["pid"], 12345);
+    }
+
+    #[test]
+    fn test_deserialize_claude_status_update_minimal() {
+        let req: IpcRequest = serde_json::from_str(
+            r#"{"type":"claude_status_update","state":"done"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            req,
+            IpcRequest::ClaudeStatusUpdate {
+                session_id: None,
+                state: "done".to_string(),
+                agent_id: None,
+                agent_type: None,
+                description: None,
+                pid: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_serialize_claude_status_update_subagent() {
+        let req = IpcRequest::ClaudeStatusUpdate {
+            session_id: Some("sess-1".to_string()),
+            state: "running".to_string(),
+            agent_id: Some("agent-42".to_string()),
+            agent_type: Some("task".to_string()),
+            description: Some("fixing bug".to_string()),
+            pid: Some(9999),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "claude_status_update");
+        assert_eq!(parsed["agent_id"], "agent-42");
+        assert_eq!(parsed["agent_type"], "task");
+        assert_eq!(parsed["description"], "fixing bug");
+    }
+
+    #[test]
     fn test_response_ok() {
         let resp = IpcResponse::ok(json!({"sessions": ["a", "b"]}));
         assert!(resp.success);
@@ -283,6 +363,22 @@ mod tests {
                 id: "test-id".to_string(),
             },
             IpcRequest::KillAll,
+            IpcRequest::ClaudeStatusUpdate {
+                session_id: Some("sess-1".to_string()),
+                state: "running".to_string(),
+                agent_id: None,
+                agent_type: None,
+                description: None,
+                pid: Some(42),
+            },
+            IpcRequest::ClaudeStatusUpdate {
+                session_id: None,
+                state: "done".to_string(),
+                agent_id: Some("a-1".to_string()),
+                agent_type: Some("task".to_string()),
+                description: Some("desc".to_string()),
+                pid: None,
+            },
         ];
 
         for req in requests {

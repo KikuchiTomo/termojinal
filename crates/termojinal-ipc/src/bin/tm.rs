@@ -96,6 +96,29 @@ enum Commands {
     /// Reads hook JSON from stdin, forwards to termojinal, waits for decision,
     /// and outputs hook decision JSON to stdout.
     AllowRequest,
+
+    /// Report Claude Code status to termojinal (called by hooks).
+    ///
+    /// Usage:
+    ///   tm status running         — Claude Code is actively working
+    ///   tm status done            — Claude Code task completed
+    ///   tm status subagent-start <agent_id> [--type <type>] [--description <desc>]
+    ///   tm status subagent-done <agent_id>
+    Status {
+        /// State: "running", "done", "subagent-start", "subagent-done"
+        state: String,
+
+        /// Agent ID (for subagent-start / subagent-done)
+        agent_id: Option<String>,
+
+        /// Subagent type (e.g. "task", "search")
+        #[arg(long = "type")]
+        agent_type: Option<String>,
+
+        /// Subagent description
+        #[arg(long)]
+        description: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -139,6 +162,24 @@ async fn main() {
         return;
     }
 
+    // The `status` subcommand sends a Claude Code status update to the daemon.
+    if let Commands::Status {
+        state,
+        agent_id,
+        agent_type,
+        description,
+    } = &cli.command
+    {
+        send_status(
+            state.clone(),
+            agent_id.clone(),
+            agent_type.clone(),
+            description.clone(),
+        )
+        .await;
+        return;
+    }
+
     let client = IpcClient::default_path();
 
     let request = match &cli.command {
@@ -164,7 +205,10 @@ async fn main() {
             cols: *cols,
             rows: *rows,
         },
-        Commands::Notify { .. } | Commands::Setup | Commands::AllowRequest | Commands::Exit { .. } => {
+        Commands::Notify { .. }
+        | Commands::Setup
+        | Commands::AllowRequest
+        | Commands::Status { .. } => {
             unreachable!("handled above")
         }
     };
@@ -241,7 +285,11 @@ async fn main() {
                     Commands::Resize { id, cols, rows } => {
                         println!("Resized session {id} to {cols}x{rows}");
                     }
-                    Commands::Setup | Commands::AllowRequest | Commands::Notify { .. } | Commands::Exit { .. } => {
+                    Commands::Setup
+                    | Commands::AllowRequest
+                    | Commands::Notify { .. }
+                    | Commands::Exit { .. }
+                    | Commands::Status { .. } => {
                         unreachable!("handled above")
                     }
                 }
@@ -254,6 +302,67 @@ async fn main() {
         Err(e) => {
             eprintln!("Error: {e}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Send a Claude Code status update to the daemon.
+///
+/// Reads `CLAUDE_SESSION_ID` from environment and uses PPID to identify
+/// which PTY pane this hook was invoked from.
+async fn send_status(
+    state: String,
+    agent_id: Option<String>,
+    agent_type: Option<String>,
+    description: Option<String>,
+) {
+    let session_id = std::env::var("CLAUDE_SESSION_ID").ok();
+    // Use PPID to trace back to the PTY shell process.
+    let ppid = unsafe { libc::getppid() };
+
+    // Normalize subagent states.
+    let (final_state, final_agent_id) = match state.as_str() {
+        "subagent-start" => {
+            if agent_id.is_none() {
+                eprintln!("Error: subagent-start requires an agent_id argument");
+                std::process::exit(1);
+            }
+            ("running".to_string(), agent_id)
+        }
+        "subagent-done" => {
+            if agent_id.is_none() {
+                eprintln!("Error: subagent-done requires an agent_id argument");
+                std::process::exit(1);
+            }
+            ("done".to_string(), agent_id)
+        }
+        "running" | "done" => (state, None),
+        other => {
+            eprintln!("Error: unknown state '{other}'. Expected: running, done, subagent-start, subagent-done");
+            std::process::exit(1);
+        }
+    };
+
+    let request = IpcRequest::ClaudeStatusUpdate {
+        session_id,
+        state: final_state,
+        agent_id: final_agent_id,
+        agent_type,
+        description,
+        pid: Some(ppid),
+    };
+
+    let client = IpcClient::default_path();
+    match client.send(&request).await {
+        Ok(resp) => {
+            if !resp.success {
+                let msg = resp.error.as_deref().unwrap_or("unknown error");
+                eprintln!("Warning: status update failed: {msg}");
+            }
+        }
+        Err(_) => {
+            // Daemon not running — silently ignore.
+            // This is expected when hooks are configured but termojinal isn't running.
         }
     }
 }
@@ -775,16 +884,15 @@ fn run_setup() {
     // 4a. Notification hook
     let notify_hook_dest = hooks_dir.join("termojinal-notify.sh");
     if !notify_hook_dest.exists() {
-        let hook_script = r#"#!/usr/bin/env bash
-# termojinal notification hook for Claude Code
-input=$(cat)
-hook_event=$(echo "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)
-message=$(echo "$input" | jq -r '.message // empty' 2>/dev/null)
-title=$(echo "$input" | jq -r '.title // "Claude Code"' 2>/dev/null)
-notif_type=$(echo "$input" | jq -r '.notification_type // empty' 2>/dev/null)
-[ "$hook_event" != "Notification" ] && exit 0
-exec tm notify --title "$title" --body "$message" ${notif_type:+--notification-type "$notif_type"}
-"#;
+        let hook_script = "#!/usr/bin/env bash\n\
+# termojinal notification hook for Claude Code\n\
+input=$(cat)\n\
+hook_event=$(echo \"$input\" | jq -r '.hook_event_name // empty' 2>/dev/null)\n\
+message=$(echo \"$input\" | jq -r '.message // empty' 2>/dev/null)\n\
+title=$(echo \"$input\" | jq -r '.title // \"Claude Code\"' 2>/dev/null)\n\
+notif_type=$(echo \"$input\" | jq -r '.notification_type // empty' 2>/dev/null)\n\
+[ \"$hook_event\" != \"Notification\" ] && exit 0\n\
+exec tm notify --title \"$title\" --body \"$message\" ${notif_type:+--notification-type \"$notif_type\"}\n";
         fs::write(&notify_hook_dest, hook_script).ok();
         #[cfg(unix)]
         {
@@ -799,11 +907,10 @@ exec tm notify --title "$title" --body "$message" ${notif_type:+--notification-t
     // 4b. PermissionRequest hook (Allow Flow)
     let permission_hook_dest = hooks_dir.join("termojinal-permission.sh");
     if !permission_hook_dest.exists() {
-        let hook_script = r#"#!/usr/bin/env bash
-# termojinal Allow Flow hook for Claude Code PermissionRequest events.
-# Pipes hook input to `tm allow-request`, which blocks until the user decides.
-exec tm allow-request
-"#;
+        let hook_script = "#!/usr/bin/env bash\n\
+# termojinal Allow Flow hook for Claude Code PermissionRequest events.\n\
+# Pipes hook input to `tm allow-request`, which blocks until the user decides.\n\
+exec tm allow-request\n";
         fs::write(&permission_hook_dest, hook_script).ok();
         #[cfg(unix)]
         {
@@ -827,8 +934,9 @@ exec tm allow-request
     };
     let needs_notify_hook = !settings_content.contains("termojinal-notify.sh");
     let needs_permission_hook = !settings_content.contains("termojinal-permission.sh");
+    let needs_status_hooks = !settings_content.contains("tm status");
 
-    if needs_notify_hook || needs_permission_hook {
+    if needs_notify_hook || needs_permission_hook || needs_status_hooks {
         let mut settings: serde_json::Value = if !settings_content.is_empty() {
             serde_json::from_str(&settings_content).unwrap_or(serde_json::json!({}))
         } else {
@@ -879,6 +987,68 @@ exec tm allow-request
             if let Some(arr) = perm_hooks.as_array_mut() {
                 arr.push(hook_entry);
             }
+        }
+
+        // 5b. Register status hooks for event-driven state detection.
+        if needs_status_hooks {
+            // PreToolUse -> "running" (Claude is about to use a tool)
+            let pre_tool_entry = serde_json::json!({
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "tm status running"
+                    }
+                ]
+            });
+            let pre_hooks = hooks
+                .as_object_mut()
+                .unwrap()
+                .entry("PreToolUse".to_string())
+                .or_insert(serde_json::json!([]));
+            if let Some(arr) = pre_hooks.as_array_mut() {
+                arr.push(pre_tool_entry);
+            }
+
+            // PostToolUse -> "running" (Claude just finished a tool, still working)
+            let post_tool_entry = serde_json::json!({
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "tm status running"
+                    }
+                ]
+            });
+            let post_hooks = hooks
+                .as_object_mut()
+                .unwrap()
+                .entry("PostToolUse".to_string())
+                .or_insert(serde_json::json!([]));
+            if let Some(arr) = post_hooks.as_array_mut() {
+                arr.push(post_tool_entry);
+            }
+
+            // Stop -> "done" (Claude finished the task)
+            let stop_entry = serde_json::json!({
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "tm status done"
+                    }
+                ]
+            });
+            let stop_hooks = hooks
+                .as_object_mut()
+                .unwrap()
+                .entry("Stop".to_string())
+                .or_insert(serde_json::json!([]));
+            if let Some(arr) = stop_hooks.as_array_mut() {
+                arr.push(stop_entry);
+            }
+
+            println!("[ok] status hooks registered (PreToolUse, PostToolUse, Stop)");
         }
 
         fs::write(

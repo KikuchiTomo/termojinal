@@ -1180,6 +1180,8 @@ impl Terminal {
                         col: self.cursor_col,
                         row: self.cursor_row,
                         pen: self.pen,
+                        cursor_visible: self.modes.cursor_visible,
+                        cursor_shape: self.cursor_shape,
                     };
                     if self.using_alt {
                         self.saved_cursor_alt = Some(saved);

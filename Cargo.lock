@@ -2596,6 +2596,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "env_logger",
+ "libc",
  "log",
  "rand",
  "serde",

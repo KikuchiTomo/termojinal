@@ -24,10 +24,29 @@ pub enum ServerError {
     Json(#[from] serde_json::Error),
 }
 
+/// Callback type for handling Claude status updates.
+///
+/// When the server receives a `ClaudeStatusUpdate` IPC request it invokes
+/// this callback so the caller (daemon or app) can forward the event to the
+/// Claude session monitor's hooks store.
+pub type ClaudeStatusCallback = Arc<dyn Fn(ClaudeStatusEvent) + Send + Sync>;
+
+/// Structured event extracted from a `ClaudeStatusUpdate` IPC request.
+#[derive(Debug, Clone)]
+pub struct ClaudeStatusEvent {
+    pub session_id: Option<String>,
+    pub state: String,
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
+    pub description: Option<String>,
+    pub pid: Option<i32>,
+}
+
 /// The IPC server that wraps a `SessionManager` and handles JSON requests.
 pub struct IpcServer {
     manager: Arc<Mutex<SessionManager>>,
     socket_path: String,
+    claude_status_cb: Option<ClaudeStatusCallback>,
 }
 
 impl IpcServer {
@@ -36,7 +55,13 @@ impl IpcServer {
         Self {
             manager,
             socket_path,
+            claude_status_cb: None,
         }
+    }
+
+    /// Set a callback for handling Claude Code status updates.
+    pub fn set_claude_status_callback(&mut self, cb: ClaudeStatusCallback) {
+        self.claude_status_cb = Some(cb);
     }
 
     /// Start listening for IPC connections.
@@ -61,8 +86,9 @@ impl IpcServer {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
                     let manager = self.manager.clone();
+                    let cb = self.claude_status_cb.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, manager).await {
+                        if let Err(e) = handle_connection(stream, manager, cb).await {
                             log::error!("IPC connection error: {e}");
                         }
                     });
@@ -87,6 +113,7 @@ impl Drop for IpcServer {
 async fn handle_connection(
     stream: UnixStream,
     manager: Arc<Mutex<SessionManager>>,
+    claude_status_cb: Option<ClaudeStatusCallback>,
 ) -> Result<(), ServerError> {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
@@ -100,7 +127,7 @@ async fn handle_connection(
     log::debug!("IPC request: {}", line.trim());
 
     let response = match serde_json::from_str::<IpcRequest>(line.trim()) {
-        Ok(request) => dispatch(request, &manager).await,
+        Ok(request) => dispatch(request, &manager, &claude_status_cb).await,
         Err(e) => IpcResponse::err(format!("invalid request: {e}")),
     };
 
@@ -115,6 +142,7 @@ async fn handle_connection(
 async fn dispatch(
     request: IpcRequest,
     manager: &Arc<Mutex<SessionManager>>,
+    claude_status_cb: &Option<ClaudeStatusCallback>,
 ) -> IpcResponse {
     match request {
         IpcRequest::Ping => IpcResponse::ok(serde_json::json!({"status": "pong"})),
@@ -182,7 +210,6 @@ async fn dispatch(
         }
 
         IpcRequest::FocusPane { id } => {
-            // Pane management is a future feature; acknowledge for now.
             log::info!("focus pane {id} (not yet implemented)");
             IpcResponse::ok(serde_json::json!({"pane": id}))
         }
@@ -193,13 +220,11 @@ async fn dispatch(
                     "invalid direction: {direction} (expected 'horizontal' or 'vertical')"
                 ));
             }
-            // Pane splitting is a future feature; acknowledge for now.
             log::info!("split pane {direction} (not yet implemented)");
             IpcResponse::ok(serde_json::json!({"direction": direction}))
         }
 
         IpcRequest::ClosePane => {
-            // Pane management is a future feature; acknowledge for now.
             log::info!("close pane (not yet implemented)");
             IpcResponse::ok_empty()
         }
@@ -238,6 +263,30 @@ async fn dispatch(
             let count = mgr.kill_all();
             log::info!("killed all {count} sessions");
             IpcResponse::ok(serde_json::json!({"killed": count}))
+        }
+
+        IpcRequest::ClaudeStatusUpdate {
+            session_id,
+            state,
+            agent_id,
+            agent_type,
+            description,
+            pid,
+        } => {
+            log::info!(
+                "claude status update: state={state}, pid={pid:?}, session_id={session_id:?}, agent_id={agent_id:?}"
+            );
+            if let Some(cb) = claude_status_cb {
+                cb(ClaudeStatusEvent {
+                    session_id,
+                    state,
+                    agent_id,
+                    agent_type,
+                    description,
+                    pid,
+                });
+            }
+            IpcResponse::ok_empty()
         }
     }
 }

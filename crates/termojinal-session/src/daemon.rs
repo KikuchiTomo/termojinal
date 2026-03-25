@@ -284,6 +284,15 @@ async fn handle_connection(
                     log::info!("killed all {count} sessions");
                     json!({"success": true, "data": {"killed": count}})
                 }
+                "claude_status_update" => {
+                    // The daemon's own listener acknowledges the request.
+                    // In the full architecture the GUI app handles these via
+                    // the IpcServer callback; here we just log and ACK.
+                    let state = req.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let pid = req.get("pid").and_then(|v| v.as_i64());
+                    log::info!("claude status update (daemon): state={state}, pid={pid:?}");
+                    json!({"success": true})
+                }
                 _ => json!({"success": false, "error": format!("unknown request type: {req_type}")}),
             }
         }

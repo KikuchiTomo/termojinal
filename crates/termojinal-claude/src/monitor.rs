@@ -1,19 +1,23 @@
 //! Claude Code session monitor — detects Claude Code processes running in PTY
-//! panes and monitors their state by reading session files from `~/.claude/`.
+//! panes and monitors their state.
 //!
-//! The monitor runs a background thread that periodically:
-//! 1. Walks PTY child process trees to find `claude` processes
-//! 2. Reads `~/.claude/sessions/<pid>.json` for session metadata
-//! 3. Reads JSONL files for task title and activity state
-//! 4. Reads subagent metadata from session subdirectories
+//! State detection uses two mechanisms:
 //!
-//! Results are shared with the render thread via `Arc<Mutex>`.
+//! 1. **Hooks (primary)**: Claude Code hooks call `tm status running|done` which
+//!    sends an IPC message. The monitor stores these events in a `HooksStateStore`
+//!    and uses them as the authoritative state source.
+//!
+//! 2. **Process tree scan (fallback)**: A background thread walks PTY child
+//!    process trees to find `claude` processes. When hooks are not configured,
+//!    the process is detected but state defaults to `Idle`.
+//!
+//! Title reading from `~/.claude/` JSONL files is retained for the initial
+//! detection (first user message = task title).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::io::{Read as _, Seek, SeekFrom};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 /// Detected Claude Code session state.
 #[derive(Debug, Clone)]
@@ -41,11 +45,11 @@ pub struct ClaudeSession {
 /// Session activity state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionState {
-    /// Claude Code is actively processing (JSONL last entry is not `last-prompt`).
+    /// Claude Code is actively working (hook reported "running").
     Running,
-    /// Process is alive but JSONL cannot be read.
+    /// Claude Code process exists but no recent hook events.
     Idle,
-    /// Claude Code has returned to prompt (`last-prompt`) or process exited.
+    /// Task completed (hook reported "done" or process exited).
     Done,
     /// A PermissionRequest is pending.
     WaitingForPermission,
@@ -68,6 +72,128 @@ pub struct PaneInfo {
     pub pty_pid: i32,
 }
 
+/// A hooks-based status update received via IPC (`tm status`).
+#[derive(Debug, Clone)]
+pub struct HooksStatusEvent {
+    pub session_id: Option<String>,
+    pub state: String,
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
+    pub description: Option<String>,
+    pub pid: Option<i32>,
+    pub received_at: Instant,
+}
+
+/// Store for hooks-based state. Thread-safe; shared between IPC handler and
+/// the monitor background thread.
+#[derive(Clone)]
+pub struct HooksStateStore {
+    inner: Arc<Mutex<HooksStateInner>>,
+}
+
+struct HooksStateInner {
+    /// PID -> latest event (for main Claude process state).
+    pid_events: HashMap<i32, HooksStatusEvent>,
+    /// (PID, agent_id) -> latest subagent event.
+    subagent_events: HashMap<(i32, String), HooksStatusEvent>,
+}
+
+impl HooksStateStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HooksStateInner {
+                pid_events: HashMap::new(),
+                subagent_events: HashMap::new(),
+            })),
+        }
+    }
+
+    /// Record a status event from a hook.
+    pub fn record_event(&self, event: HooksStatusEvent) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(pid) = event.pid {
+            if let Some(ref agent_id) = event.agent_id {
+                inner
+                    .subagent_events
+                    .insert((pid, agent_id.clone()), event);
+            } else {
+                inner.pid_events.insert(pid, event);
+            }
+        }
+    }
+
+    /// Look up the latest state for a given PID. Returns `None` if no hook
+    /// event has been recorded for this PID.
+    pub fn get_state(&self, pid: i32) -> Option<SessionState> {
+        let inner = self.inner.lock().unwrap();
+        let event = inner.pid_events.get(&pid)?;
+        Some(parse_hook_state(&event.state, event.received_at))
+    }
+
+    /// Get active subagents for a given PID.
+    pub fn get_subagents(&self, pid: i32) -> Vec<SubAgentState> {
+        let inner = self.inner.lock().unwrap();
+        let mut subagents = Vec::new();
+        for ((p, _), event) in &inner.subagent_events {
+            if *p != pid {
+                continue;
+            }
+            let state = parse_hook_state(&event.state, event.received_at);
+            // Only include running subagents.
+            if state == SessionState::Running {
+                subagents.push(SubAgentState {
+                    agent_id: event.agent_id.clone().unwrap_or_default(),
+                    agent_type: event.agent_type.clone().unwrap_or_default(),
+                    description: event.description.clone().unwrap_or_default(),
+                    state,
+                });
+            }
+        }
+        subagents
+    }
+
+    /// Evict entries for PIDs that are no longer alive or have not reported
+    /// in a long time (> 10 minutes).
+    pub fn evict_stale(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        let cutoff = Instant::now() - Duration::from_secs(600);
+        inner.pid_events.retain(|pid, evt| {
+            evt.received_at > cutoff && is_process_alive(*pid)
+        });
+        inner.subagent_events.retain(|(pid, _), evt| {
+            evt.received_at > cutoff && is_process_alive(*pid)
+        });
+    }
+}
+
+/// Parse a hook state string into a `SessionState`.
+///
+/// "running" maps to `Running`. "done" maps to `Done`. Anything else
+/// (including "idle") maps to `Idle`.
+///
+/// For "running", if the event is older than 120 seconds without a new
+/// event, we treat it as idle (hooks should fire frequently during active
+/// work).
+fn parse_hook_state(state: &str, received_at: Instant) -> SessionState {
+    match state {
+        "running" => {
+            let age = Instant::now().duration_since(received_at);
+            if age > Duration::from_secs(120) {
+                SessionState::Idle
+            } else {
+                SessionState::Running
+            }
+        }
+        "done" => SessionState::Done,
+        _ => SessionState::Idle,
+    }
+}
+
+fn is_process_alive(pid: i32) -> bool {
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0
+}
+
 /// Background thread that monitors Claude Code sessions.
 pub struct ClaudeSessionMonitor {
     /// Latest detected sessions.
@@ -76,6 +202,8 @@ pub struct ClaudeSessionMonitor {
     pane_infos: Arc<Mutex<Vec<PaneInfo>>>,
     /// Wake signal.
     notify: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    /// Hooks-based state store (shared with IPC handler).
+    hooks_store: HooksStateStore,
 }
 
 impl ClaudeSessionMonitor {
@@ -84,16 +212,19 @@ impl ClaudeSessionMonitor {
         let sessions: Arc<Mutex<Vec<ClaudeSession>>> = Arc::new(Mutex::new(Vec::new()));
         let pane_infos: Arc<Mutex<Vec<PaneInfo>>> = Arc::new(Mutex::new(Vec::new()));
         let notify = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let hooks_store = HooksStateStore::new();
 
         let sess = Arc::clone(&sessions);
         let panes = Arc::clone(&pane_infos);
         let wake = Arc::clone(&notify);
+        let store = hooks_store.clone();
 
         std::thread::Builder::new()
             .name("claude-session-monitor".into())
             .spawn(move || {
                 // Cache: claude_pid -> (session_id, title) to avoid re-reading files every cycle.
                 let mut title_cache: HashMap<i32, (String, String)> = HashMap::new();
+                let mut evict_counter: u32 = 0;
 
                 loop {
                     // Wait 3 seconds or wake immediately.
@@ -129,15 +260,11 @@ impl ClaudeSessionMonitor {
                             // Read session file.
                             let (session_id, title, cwd, started_at) =
                                 if let Some((sid, t)) = title_cache.get(&claude_pid) {
-                                    // Use cached title, but re-read session file for cwd
-                                    // and verify session_id hasn't changed (new session
-                                    // on the same PID should bust the cache).
                                     let sf = read_session_file(claude_pid);
                                     let session_changed = sf.as_ref()
                                         .map(|s| s.session_id != *sid)
                                         .unwrap_or(false);
                                     if session_changed {
-                                        // Session changed — re-read title.
                                         let sf = sf.unwrap();
                                         let title = read_task_title(&sf.session_id, &sf.cwd);
                                         title_cache.insert(claude_pid, (sf.session_id.clone(), title.clone()));
@@ -155,11 +282,18 @@ impl ClaudeSessionMonitor {
                                     continue;
                                 };
 
-                            // Determine state from JSONL mtime + process liveness.
-                            let state = detect_session_state(&session_id, &cwd, claude_pid);
+                            // Determine state: hooks store takes priority, fall back to
+                            // process-alive check (Idle if alive, Done if dead).
+                            let state = store.get_state(claude_pid).unwrap_or_else(|| {
+                                if is_process_alive(claude_pid) {
+                                    SessionState::Idle
+                                } else {
+                                    SessionState::Done
+                                }
+                            });
 
-                            // Read subagents.
-                            let subagents = read_subagents(&session_id, &cwd);
+                            // Subagents from hooks store.
+                            let subagents = store.get_subagents(claude_pid);
 
                             detected.push(ClaudeSession {
                                 pane_id: info.pane_id,
@@ -180,11 +314,18 @@ impl ClaudeSessionMonitor {
                     title_cache.retain(|pid, _| live_pids.contains(pid));
 
                     *sess.lock().unwrap() = detected;
+
+                    // Periodically evict stale hooks store entries (every ~10 cycles = 30s).
+                    evict_counter += 1;
+                    if evict_counter >= 10 {
+                        evict_counter = 0;
+                        store.evict_stale();
+                    }
                 }
             })
             .expect("failed to spawn claude session monitor thread");
 
-        Self { sessions, pane_infos, notify }
+        Self { sessions, pane_infos, notify, hooks_store }
     }
 
     /// Submit pane info for scanning (non-blocking).
@@ -202,6 +343,23 @@ impl ClaudeSessionMonitor {
     /// Get latest detected sessions (non-blocking).
     pub fn get_sessions(&self) -> Vec<ClaudeSession> {
         self.sessions.try_lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Get a reference to the hooks state store.
+    ///
+    /// The GUI / daemon can use this to forward `ClaudeStatusUpdate` IPC
+    /// events into the monitor without going through the background thread.
+    pub fn hooks_store(&self) -> &HooksStateStore {
+        &self.hooks_store
+    }
+
+    /// Wake the background thread immediately (e.g. after a hooks event).
+    pub fn wake(&self) {
+        let (lock, cvar) = &*self.notify;
+        if let Ok(mut nudged) = lock.try_lock() {
+            *nudged = true;
+            cvar.notify_one();
+        }
     }
 }
 
@@ -254,10 +412,8 @@ fn read_task_title(session_id: &str, cwd: &str) -> String {
         let Ok(line) = line else { continue; };
         let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
         if json.get("type").and_then(|v| v.as_str()) == Some("user") {
-            // Extract text from message content.
             if let Some(msg) = json.get("message").and_then(|m| m.get("content")) {
                 if let Some(text) = msg.as_str() {
-                    // Truncate to first line, max 80 chars.
                     let first_line = text.lines().next().unwrap_or("");
                     return first_line.chars().take(80).collect();
                 }
@@ -275,123 +431,6 @@ fn read_task_title(session_id: &str, cwd: &str) -> String {
         }
     }
     String::new()
-}
-
-/// Detect session state from the JSONL file's last entry type and process liveness.
-///
-/// Claude Code writes a `last-prompt` entry to the JSONL when it finishes a
-/// task and returns to the interactive prompt.  We read the last line of the
-/// JSONL (via a backwards seek to avoid reading the entire file) and check
-/// its `"type"` field:
-///
-/// * `"last-prompt"` — Claude Code is waiting for user input (**Done**).
-/// * Anything else (`"progress"`, `"user"`, `"assistant"`, ...) — Claude
-///   Code is actively processing (**Running**).
-///
-/// When the JSONL cannot be read, we fall back to process liveness:
-/// alive → Idle, dead → Done.
-fn detect_session_state(session_id: &str, cwd: &str, claude_pid: i32) -> SessionState {
-    let process_alive = unsafe { libc::kill(claude_pid, 0) } == 0;
-
-    let Some(path) = session_jsonl_path(session_id, cwd) else {
-        return if process_alive { SessionState::Idle } else { SessionState::Done };
-    };
-
-    // Read the last line of the JSONL by seeking backwards from EOF.
-    if let Some(last_type) = read_jsonl_last_type(&path) {
-        return match last_type.as_str() {
-            // Claude Code wrote `last-prompt` — it is idle, waiting for input.
-            "last-prompt" => SessionState::Done,
-            // Any other type means work is happening (or just started).
-            _ => {
-                if process_alive {
-                    SessionState::Running
-                } else {
-                    // Process exited mid-task (crash / user killed it).
-                    SessionState::Done
-                }
-            }
-        };
-    }
-
-    // Could not read JSONL — fall back to process liveness.
-    if process_alive { SessionState::Idle } else { SessionState::Done }
-}
-
-/// Read the `"type"` field from the last non-empty line of a JSONL file.
-///
-/// Uses a tail-read strategy: seeks to the last 4 KiB of the file and
-/// parses only the final line, avoiding full-file reads on large sessions.
-fn read_jsonl_last_type(path: &std::path::Path) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let file_len = file.metadata().ok()?.len();
-    if file_len == 0 {
-        return None;
-    }
-
-    // Read the tail of the file (last 4 KiB is more than enough for one JSONL line
-    // in most cases; Claude Code progress lines are typically < 2 KiB).
-    let tail_size: u64 = 4096;
-    let seek_pos = file_len.saturating_sub(tail_size);
-    file.seek(SeekFrom::Start(seek_pos)).ok()?;
-
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).ok()?;
-
-    // Find the last non-empty line.
-    let last_line = buf.lines().rev().find(|l| !l.trim().is_empty())?;
-
-    let json: serde_json::Value = serde_json::from_str(last_line).ok()?;
-    json.get("type").and_then(|v| v.as_str()).map(|s| s.to_string())
-}
-
-/// Read subagent metadata from the session's subagents directory.
-fn read_subagents(session_id: &str, cwd: &str) -> Vec<SubAgentState> {
-    let Some(home) = dirs::home_dir() else { return Vec::new(); };
-    let project_dir = cwd_to_project_path(cwd);
-    let subagent_dir = home.join(".claude").join("projects").join(&project_dir)
-        .join(session_id).join("subagents");
-
-    let Ok(entries) = std::fs::read_dir(&subagent_dir) else {
-        return Vec::new();
-    };
-
-    let mut subagents = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".meta.json") { continue; }
-        let agent_id = name.trim_start_matches("agent-").trim_end_matches(".meta.json").to_string();
-
-        let Ok(content) = std::fs::read_to_string(entry.path()) else { continue; };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { continue; };
-
-        let agent_type = json.get("agentType").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let description = json.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-        // Check activity from JSONL mtime.
-        let jsonl_path = subagent_dir.join(format!("agent-{agent_id}.jsonl"));
-        let state = if let Ok(meta) = std::fs::metadata(&jsonl_path) {
-            if let Ok(modified) = meta.modified() {
-                let elapsed = SystemTime::now().duration_since(modified).unwrap_or(Duration::from_secs(999));
-                if elapsed.as_secs() < 15 { SessionState::Running } else { SessionState::Done }
-            } else {
-                SessionState::Done
-            }
-        } else {
-            SessionState::Done
-        };
-
-        // Only include running subagents.
-        if state == SessionState::Running {
-            subagents.push(SubAgentState {
-                agent_id,
-                agent_type,
-                description,
-                state,
-            });
-        }
-    }
-    subagents
 }
 
 /// Build a child process map: parent_pid -> Vec<(child_pid, command)>.
@@ -425,7 +464,6 @@ fn find_claude_child(child_map: &HashMap<i32, Vec<(i32, String)>>, root_pid: i32
         if !visited.insert(pid) { continue; }
         if let Some(children) = child_map.get(&pid) {
             for (child_pid, cmd) in children {
-                // Match "claude" binary (not Claude.app).
                 let basename = cmd.split('/').last().unwrap_or(cmd);
                 let first_word = basename.split_whitespace().next().unwrap_or("");
                 if first_word == "claude" {
@@ -436,4 +474,186 @@ fn find_claude_child(child_map: &HashMap<i32, Vec<(i32, String)>>, root_pid: i32
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hooks_state_store_record_and_get() {
+        let store = HooksStateStore::new();
+        assert!(store.get_state(100).is_none());
+
+        store.record_event(HooksStatusEvent {
+            session_id: Some("sess-1".to_string()),
+            state: "running".to_string(),
+            agent_id: None,
+            agent_type: None,
+            description: None,
+            pid: Some(100),
+            received_at: Instant::now(),
+        });
+
+        let state = store.get_state(100);
+        assert_eq!(state, Some(SessionState::Running));
+    }
+
+    #[test]
+    fn test_hooks_state_store_done() {
+        let store = HooksStateStore::new();
+
+        store.record_event(HooksStatusEvent {
+            session_id: None,
+            state: "done".to_string(),
+            agent_id: None,
+            agent_type: None,
+            description: None,
+            pid: Some(200),
+            received_at: Instant::now(),
+        });
+
+        assert_eq!(store.get_state(200), Some(SessionState::Done));
+    }
+
+    #[test]
+    fn test_hooks_state_store_overwrite() {
+        let store = HooksStateStore::new();
+
+        store.record_event(HooksStatusEvent {
+            session_id: None,
+            state: "running".to_string(),
+            agent_id: None,
+            agent_type: None,
+            description: None,
+            pid: Some(300),
+            received_at: Instant::now(),
+        });
+        assert_eq!(store.get_state(300), Some(SessionState::Running));
+
+        store.record_event(HooksStatusEvent {
+            session_id: None,
+            state: "done".to_string(),
+            agent_id: None,
+            agent_type: None,
+            description: None,
+            pid: Some(300),
+            received_at: Instant::now(),
+        });
+        assert_eq!(store.get_state(300), Some(SessionState::Done));
+    }
+
+    #[test]
+    fn test_hooks_state_store_subagents() {
+        let store = HooksStateStore::new();
+
+        store.record_event(HooksStatusEvent {
+            session_id: Some("sess-1".to_string()),
+            state: "running".to_string(),
+            agent_id: Some("agent-42".to_string()),
+            agent_type: Some("task".to_string()),
+            description: Some("fixing tests".to_string()),
+            pid: Some(400),
+            received_at: Instant::now(),
+        });
+
+        let subs = store.get_subagents(400);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].agent_id, "agent-42");
+        assert_eq!(subs[0].agent_type, "task");
+        assert_eq!(subs[0].description, "fixing tests");
+        assert_eq!(subs[0].state, SessionState::Running);
+
+        assert!(store.get_subagents(999).is_empty());
+    }
+
+    #[test]
+    fn test_hooks_state_store_subagent_done() {
+        let store = HooksStateStore::new();
+
+        store.record_event(HooksStatusEvent {
+            session_id: None,
+            state: "running".to_string(),
+            agent_id: Some("a-1".to_string()),
+            agent_type: Some("task".to_string()),
+            description: Some("work".to_string()),
+            pid: Some(500),
+            received_at: Instant::now(),
+        });
+        assert_eq!(store.get_subagents(500).len(), 1);
+
+        store.record_event(HooksStatusEvent {
+            session_id: None,
+            state: "done".to_string(),
+            agent_id: Some("a-1".to_string()),
+            agent_type: None,
+            description: None,
+            pid: Some(500),
+            received_at: Instant::now(),
+        });
+        assert!(store.get_subagents(500).is_empty());
+    }
+
+    #[test]
+    fn test_hooks_state_store_no_pid_ignored() {
+        let store = HooksStateStore::new();
+
+        store.record_event(HooksStatusEvent {
+            session_id: Some("sess-1".to_string()),
+            state: "running".to_string(),
+            agent_id: None,
+            agent_type: None,
+            description: None,
+            pid: None,
+            received_at: Instant::now(),
+        });
+
+        assert!(store.get_state(0).is_none());
+    }
+
+    #[test]
+    fn test_parse_hook_state_values() {
+        let now = Instant::now();
+        assert_eq!(parse_hook_state("running", now), SessionState::Running);
+        assert_eq!(parse_hook_state("done", now), SessionState::Done);
+        assert_eq!(parse_hook_state("idle", now), SessionState::Idle);
+        assert_eq!(parse_hook_state("unknown", now), SessionState::Idle);
+    }
+
+    #[test]
+    fn test_parse_hook_state_stale_running() {
+        let old = Instant::now() - Duration::from_secs(200);
+        assert_eq!(parse_hook_state("running", old), SessionState::Idle);
+    }
+
+    #[test]
+    fn test_cwd_to_project_path() {
+        assert_eq!(cwd_to_project_path("/home/user/project"), "-home-user-project");
+        assert_eq!(cwd_to_project_path("/"), "-");
+    }
+
+    #[test]
+    fn test_find_claude_child_empty_map() {
+        let map = HashMap::new();
+        assert!(find_claude_child(&map, 1).is_none());
+    }
+
+    #[test]
+    fn test_find_claude_child_found() {
+        let mut map: HashMap<i32, Vec<(i32, String)>> = HashMap::new();
+        map.insert(1, vec![(2, "/bin/bash".to_string())]);
+        map.insert(2, vec![(3, "/usr/local/bin/claude --resume".to_string())]);
+        assert_eq!(find_claude_child(&map, 1), Some(3));
+    }
+
+    #[test]
+    fn test_find_claude_child_not_claude_app() {
+        let mut map: HashMap<i32, Vec<(i32, String)>> = HashMap::new();
+        map.insert(1, vec![(2, "/Applications/Claude.app/Contents/MacOS/Claude".to_string())]);
+        assert!(find_claude_child(&map, 1).is_none());
+    }
 }
