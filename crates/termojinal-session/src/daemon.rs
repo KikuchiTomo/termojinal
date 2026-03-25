@@ -135,9 +135,20 @@ impl Daemon {
 
         if let Some(parent) = std::path::Path::new(&self.socket_path).parent() {
             std::fs::create_dir_all(parent)?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
 
         let listener = UnixListener::bind(&self.socket_path).map_err(SessionError::Io)?;
+
+        // Restrict socket file permissions to owner only.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &self.socket_path,
+                std::fs::Permissions::from_mode(0o600),
+            )?;
+        }
 
         log::info!("termojinald listening on {}", self.socket_path);
 

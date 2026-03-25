@@ -706,6 +706,10 @@ pub(crate) fn app_ipc_listener(
     // Ensure parent directory exists.
     if let Some(parent) = sock_path.parent() {
         std::fs::create_dir_all(parent).ok();
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)) {
+            log::warn!("failed to set parent dir permissions: {e}");
+        }
     }
 
     // Remove stale socket from a previous run.
@@ -721,6 +725,16 @@ pub(crate) fn app_ipc_listener(
             return;
         }
     };
+
+    // Restrict socket file permissions to owner only.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) =
+            std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))
+        {
+            log::warn!("failed to set socket permissions: {e}");
+        }
+    }
     // Non-blocking so the loop can check shutdown flag.
     listener
         .set_nonblocking(true)
