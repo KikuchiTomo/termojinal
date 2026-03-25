@@ -83,7 +83,10 @@ pub fn load_commands() -> Vec<LoadedCommand> {
     };
 
     if !commands_dir.exists() {
-        log::debug!("commands directory does not exist: {}", commands_dir.display());
+        log::debug!(
+            "commands directory does not exist: {}",
+            commands_dir.display()
+        );
         return Vec::new();
     }
 
@@ -128,10 +131,7 @@ pub fn load_commands_from(dir: &Path) -> Vec<LoadedCommand> {
         match load_single_command(&path, &toml_path) {
             Ok(cmd) => commands.push(cmd),
             Err(e) => {
-                log::warn!(
-                    "failed to load command from {}: {e}",
-                    path.display()
-                );
+                log::warn!("failed to load command from {}: {e}", path.display());
             }
         }
     }
@@ -155,8 +155,7 @@ fn load_single_command(dir: &Path, toml_path: &Path) -> Result<LoadedCommand, Co
         ));
     }
 
-    let verify_result =
-        command_signer::verify_command(&contents, meta.signature.as_deref());
+    let verify_result = command_signer::verify_command(&contents, meta.signature.as_deref());
 
     Ok(LoadedCommand {
         meta,
@@ -214,7 +213,10 @@ tags = ["github", "review", "claude"]
         let meta = parsed.command;
 
         assert_eq!(meta.name, "Start PR Review");
-        assert_eq!(meta.description, "Review待ちPRを選んでworktree + Claude Codeを起動");
+        assert_eq!(
+            meta.description,
+            "Review待ちPRを選んでworktree + Claude Codeを起動"
+        );
         assert_eq!(meta.icon, "arrow.triangle.branch");
         assert_eq!(meta.version, "1.0.0");
         assert_eq!(meta.author, "termojinal");

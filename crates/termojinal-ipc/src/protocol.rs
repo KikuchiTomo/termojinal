@@ -147,10 +147,7 @@ impl Frame {
 ///
 /// Wire format: `[4-byte big-endian length][1-byte type][payload]`
 /// where `length = 1 + payload.len()` (covers the type byte + payload).
-pub async fn write_frame<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    frame: &Frame,
-) -> io::Result<()> {
+pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &Frame) -> io::Result<()> {
     let length = 1u32 + frame.payload.len() as u32;
     writer.write_all(&length.to_be_bytes()).await?;
     writer.write_u8(frame.msg_type).await?;
@@ -531,10 +528,8 @@ mod tests {
 
     #[test]
     fn test_deserialize_claude_status_update_minimal() {
-        let req: IpcRequest = serde_json::from_str(
-            r#"{"type":"claude_status_update","state":"done"}"#,
-        )
-        .unwrap();
+        let req: IpcRequest =
+            serde_json::from_str(r#"{"type":"claude_status_update","state":"done"}"#).unwrap();
         assert_eq!(
             req,
             IpcRequest::ClaudeStatusUpdate {

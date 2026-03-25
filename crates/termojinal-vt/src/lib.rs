@@ -19,9 +19,7 @@ pub mod term;
 pub use cell::{Attrs, Cell, Pen};
 pub use color::{Color, NamedColor};
 pub use grid::Grid;
-pub use image::{
-    ApcExtractor, ImagePlacement, ImageStore, KittyAccumulator, TerminalImage,
-};
+pub use image::{ApcExtractor, ImagePlacement, ImageStore, KittyAccumulator, TerminalImage};
 pub use scrollback::ScrollbackBuffer;
 pub use term::{
     char_width, ClipboardEvent, CommandRecord, CursorShape, DrcsFontStore, DrcsGlyph,

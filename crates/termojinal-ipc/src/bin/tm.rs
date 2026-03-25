@@ -9,7 +9,11 @@ use termojinal_ipc::client::IpcClient;
 use termojinal_ipc::protocol::IpcRequest;
 
 #[derive(Parser)]
-#[command(name = "tm", about = "Control the termojinal terminal emulator", version)]
+#[command(
+    name = "tm",
+    about = "Control the termojinal terminal emulator",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -240,7 +244,11 @@ async fn main() {
                             if let Some(sessions) = data.get("sessions") {
                                 if let Some(arr) = sessions.as_array() {
                                     if *json {
-                                        println!("{}", serde_json::to_string_pretty(sessions).unwrap_or_default());
+                                        println!(
+                                            "{}",
+                                            serde_json::to_string_pretty(sessions)
+                                                .unwrap_or_default()
+                                        );
                                     } else if arr.is_empty() {
                                         println!("No active sessions.");
                                     } else if arr.first().and_then(|v| v.as_str()).is_some() {
@@ -259,10 +267,7 @@ async fn main() {
                     }
                     Commands::New { .. } => {
                         if let Some(data) = &response.data {
-                            let id = data
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
+                            let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
                             let name = data
                                 .get("name")
                                 .and_then(|v| v.as_str())
@@ -273,7 +278,8 @@ async fn main() {
                     Commands::Kill { id, all } => {
                         if *all {
                             if let Some(data) = &response.data {
-                                let count = data.get("killed").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let count =
+                                    data.get("killed").and_then(|v| v.as_u64()).unwrap_or(0);
                                 println!("Killed {count} session(s).");
                             } else {
                                 println!("All sessions killed.");
@@ -480,7 +486,12 @@ fn print_session_table(sessions: &[serde_json::Value]) {
         .collect();
 
     // Compute column widths (header label is the minimum).
-    let w_id = rows.iter().map(|r| r.id_short.len()).max().unwrap_or(0).max(2);
+    let w_id = rows
+        .iter()
+        .map(|r| r.id_short.len())
+        .max()
+        .unwrap_or(0)
+        .max(2);
     let w_name = rows.iter().map(|r| r.name.len()).max().unwrap_or(0).max(4);
     let w_shell = rows.iter().map(|r| r.shell.len()).max().unwrap_or(0).max(5);
     let w_cwd = rows
@@ -534,9 +545,7 @@ fn send_notify(
     use std::os::unix::net::UnixStream;
 
     let data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let sock_path = data_dir
-        .join("termojinal")
-        .join("termojinal-app.sock");
+    let sock_path = data_dir.join("termojinal").join("termojinal-app.sock");
 
     let request = AppIpcRequest::Notify {
         title,
@@ -654,9 +663,7 @@ fn handle_allow_request() {
 
     // Connect to the app socket.
     let data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let sock_path = data_dir
-        .join("termojinal")
-        .join("termojinal-app.sock");
+    let sock_path = data_dir.join("termojinal").join("termojinal-app.sock");
 
     let request = AppIpcRequest::PermissionRequest {
         tool_name,
@@ -731,7 +738,9 @@ fn handle_exit(id: String, force: bool) {
             std::process::exit(1);
         }
     };
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
 
     // First attempt: try to exit gracefully (or with force).
     let req = serde_json::json!({
@@ -739,15 +748,21 @@ fn handle_exit(id: String, force: bool) {
         "id": id,
         "force": force,
     });
-    let msg = format!("{}
-", req);
+    let msg = format!(
+        "{}
+",
+        req
+    );
     if stream.write_all(msg.as_bytes()).is_err() {
         eprintln!("Error: failed to send request to daemon");
         std::process::exit(1);
     }
 
     let mut line = String::new();
-    if std::io::BufReader::new(&stream).read_line(&mut line).is_err() {
+    if std::io::BufReader::new(&stream)
+        .read_line(&mut line)
+        .is_err()
+    {
         eprintln!("Error: failed to read response from daemon");
         std::process::exit(1);
     }
@@ -761,18 +776,25 @@ fn handle_exit(id: String, force: bool) {
     };
 
     if resp.get("success").and_then(|v| v.as_bool()) != Some(true) {
-        let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+        let err = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
         eprintln!("Error: {err}");
         std::process::exit(1);
     }
 
     // Check if a running process was detected.
-    if let Some(proc_name) = resp.get("data")
+    if let Some(proc_name) = resp
+        .get("data")
         .and_then(|d| d.get("running_process"))
         .and_then(|v| v.as_str())
     {
         // Interactive confirmation.
-        eprint!("Process '{}' is running in this session. Exit anyway? [y/N] ", proc_name);
+        eprint!(
+            "Process '{}' is running in this session. Exit anyway? [y/N] ",
+            proc_name
+        );
         std::io::stderr().flush().ok();
 
         let mut answer = String::new();
@@ -794,14 +816,19 @@ fn handle_exit(id: String, force: bool) {
                 std::process::exit(1);
             }
         };
-        stream2.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        stream2
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
         let req2 = serde_json::json!({
             "type": "exit_session",
             "id": id,
             "force": true,
         });
-        let msg2 = format!("{}
-", req2);
+        let msg2 = format!(
+            "{}
+",
+            req2
+        );
         if stream2.write_all(msg2.as_bytes()).is_err() {
             eprintln!("Error: failed to send force-exit request");
             std::process::exit(1);
@@ -862,7 +889,13 @@ fn run_setup() {
 
     if has_claude {
         let status = Command::new("claude")
-            .args(["config", "set", "--global", "preferredNotifChannel", "iterm2"])
+            .args([
+                "config",
+                "set",
+                "--global",
+                "preferredNotifChannel",
+                "iterm2",
+            ])
             .status();
         match status {
             Ok(s) if s.success() => {
@@ -870,7 +903,9 @@ fn run_setup() {
             }
             _ => {
                 println!("[!!] failed to set notification channel");
-                println!("     run manually: claude config set --global preferredNotifChannel iterm2");
+                println!(
+                    "     run manually: claude config set --global preferredNotifChannel iterm2"
+                );
             }
         }
     } else {

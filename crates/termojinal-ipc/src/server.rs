@@ -5,8 +5,8 @@
 //! [`IpcResponse`] results.
 
 use crate::protocol::{IpcRequest, IpcResponse};
-use termojinal_session::{SessionError, SessionManager};
 use std::sync::Arc;
+use termojinal_session::{SessionError, SessionManager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
@@ -156,22 +156,31 @@ async fn dispatch(
 
         IpcRequest::ListSessionDetails => {
             let mgr = manager.lock().await;
-            let details: Vec<serde_json::Value> = mgr.list_details().iter().map(|s| {
-                serde_json::json!({
-                    "id": s.id,
-                    "name": s.name,
-                    "shell": s.shell,
-                    "cwd": s.cwd,
-                    "pid": s.pid,
-                    "cols": s.cols,
-                    "rows": s.rows,
-                    "created_at": s.created_at.to_rfc3339(),
+            let details: Vec<serde_json::Value> = mgr
+                .list_details()
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "shell": s.shell,
+                        "cwd": s.cwd,
+                        "pid": s.pid,
+                        "cols": s.cols,
+                        "rows": s.rows,
+                        "created_at": s.created_at.to_rfc3339(),
+                    })
                 })
-            }).collect();
+                .collect();
             IpcResponse::ok(serde_json::json!({"sessions": details}))
         }
 
-        IpcRequest::CreateSession { shell, cwd, cols, rows } => {
+        IpcRequest::CreateSession {
+            shell,
+            cwd,
+            cols,
+            rows,
+        } => {
             let shell = shell.unwrap_or_else(|| {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
             });
@@ -229,7 +238,14 @@ async fn dispatch(
             IpcResponse::ok_empty()
         }
 
-        IpcRequest::RegisterSession { pane_id, pid, shell, cwd, cols, rows } => {
+        IpcRequest::RegisterSession {
+            pane_id,
+            pid,
+            shell,
+            cwd,
+            cols,
+            rows,
+        } => {
             let mut mgr = manager.lock().await;
             let id = mgr.register_external_session(pane_id, pid, &shell, &cwd, cols, rows);
             log::info!("registered external session: pane_id={pane_id}, pid={pid}, id={id}");

@@ -249,7 +249,8 @@ pub fn list_tools() -> Vec<Tool> {
         },
         Tool {
             name: "update_agent_status".into(),
-            description: "Report Claude Code session status to the sidebar (title, state, subagents)".into(),
+            description:
+                "Report Claude Code session status to the sidebar (title, state, subagents)".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

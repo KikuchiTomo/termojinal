@@ -81,10 +81,9 @@ impl CommandRunner {
             .env("TERMOJINAL_SOCKET", socket_path)
             .spawn()?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "failed to capture child stdout"))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "failed to capture child stdout")
+        })?;
 
         let (tx, rx) = mpsc::channel();
 
@@ -109,9 +108,8 @@ impl CommandRunner {
                                 }
                                 Err(e) => {
                                     log::warn!("invalid JSON from command: {e} (line: {trimmed})");
-                                    let _ = tx.send(ReaderEvent::ReadError(format!(
-                                        "invalid JSON: {e}"
-                                    )));
+                                    let _ = tx
+                                        .send(ReaderEvent::ReadError(format!("invalid JSON: {e}")));
                                     break;
                                 }
                             }
@@ -190,11 +188,9 @@ impl CommandRunner {
     /// This should be called after the user completes the interaction
     /// requested by the current [`CommandMessage`].
     pub fn respond(&mut self, response: CommandResponse) -> Result<(), std::io::Error> {
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin not available"))?;
+        let stdin = self.child.stdin.as_mut().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin not available")
+        })?;
 
         let mut json = serde_json::to_string(&response)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -248,11 +244,7 @@ mod tests {
 
         let dir = tmp.to_path_buf();
         let run_path = dir.join("run.sh");
-        fs::write(
-            &run_path,
-            format!("#!/bin/sh\n{script_body}"),
-        )
-        .unwrap();
+        fs::write(&run_path, format!("#!/bin/sh\n{script_body}")).unwrap();
 
         // Make executable.
         #[cfg(unix)]
@@ -299,12 +291,10 @@ mod tests {
     #[test]
     fn test_runner_done_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let cmd = make_test_command(
-            tmp.path(),
-            r#"echo '{"type":"done","notify":"All done!"}'"#,
-        );
+        let cmd = make_test_command(tmp.path(), r#"echo '{"type":"done","notify":"All done!"}'"#);
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
 
         assert!(poll_until_message(&mut runner, 2000), "expected a message");
         match runner.current_message().unwrap() {
@@ -314,7 +304,10 @@ mod tests {
             other => panic!("expected Done, got: {other:?}"),
         }
 
-        assert_eq!(runner.status(), &RunnerStatus::Done(Some("All done!".to_string())));
+        assert_eq!(
+            runner.status(),
+            &RunnerStatus::Done(Some("All done!".to_string()))
+        );
     }
 
     #[test]
@@ -325,7 +318,8 @@ mod tests {
             r#"echo '{"type":"error","message":"something broke"}'"#,
         );
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
 
         assert!(poll_until_message(&mut runner, 2000), "expected a message");
         assert_eq!(
@@ -343,10 +337,14 @@ mod tests {
 echo '{"type":"done"}'"#,
         );
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
 
         // First poll: should get the info message.
-        assert!(poll_until_message(&mut runner, 2000), "expected info message");
+        assert!(
+            poll_until_message(&mut runner, 2000),
+            "expected info message"
+        );
         match runner.current_message().unwrap() {
             CommandMessage::Info { message } => {
                 assert_eq!(message, "Loading...");
@@ -357,7 +355,10 @@ echo '{"type":"done"}'"#,
         assert_eq!(runner.status(), &RunnerStatus::WaitingForMessage);
 
         // Second poll: should get the done message.
-        assert!(poll_until_message(&mut runner, 2000), "expected done message");
+        assert!(
+            poll_until_message(&mut runner, 2000),
+            "expected done message"
+        );
         match runner.current_message().unwrap() {
             CommandMessage::Done { notify } => {
                 assert!(notify.is_none());
@@ -379,9 +380,13 @@ echo '{"type":"done"}'
 "#,
         );
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
 
-        assert!(poll_until_message(&mut runner, 2000), "expected fuzzy message");
+        assert!(
+            poll_until_message(&mut runner, 2000),
+            "expected fuzzy message"
+        );
         assert_eq!(runner.status(), &RunnerStatus::WaitingForInput);
 
         // Send a response.
@@ -394,7 +399,10 @@ echo '{"type":"done"}'
         assert_eq!(runner.status(), &RunnerStatus::WaitingForMessage);
 
         // Wait for the script to process the response and send Done.
-        assert!(poll_until_message(&mut runner, 2000), "expected done message");
+        assert!(
+            poll_until_message(&mut runner, 2000),
+            "expected done message"
+        );
         assert_eq!(runner.status(), &RunnerStatus::Done(None));
     }
 
@@ -407,7 +415,8 @@ echo '{"type":"done"}'
             "sleep 60",
         );
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
         runner.cancel();
         assert_eq!(
             runner.status(),
@@ -420,7 +429,8 @@ echo '{"type":"done"}'
         let tmp = tempfile::tempdir().unwrap();
         let cmd = make_test_command(tmp.path(), "# This script produces no output");
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
 
         // Poll until the runner reaches a terminal state or times out.
         let start = std::time::Instant::now();
@@ -441,12 +451,10 @@ echo '{"type":"done"}'
     #[test]
     fn test_runner_current_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let cmd = make_test_command(
-            tmp.path(),
-            r#"echo '{"type":"info","message":"hello"}'"#,
-        );
+        let cmd = make_test_command(tmp.path(), r#"echo '{"type":"info","message":"hello"}'"#);
 
-        let mut runner = CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
+        let mut runner =
+            CommandRunner::start_with_socket(&cmd, "/tmp/termojinal-test.sock").unwrap();
         assert!(runner.current_message().is_none());
 
         assert!(poll_until_message(&mut runner, 2000), "expected a message");

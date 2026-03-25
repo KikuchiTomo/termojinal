@@ -11,9 +11,9 @@ use crate::config::Appearance;
 /// "Dark". Falls back to `Appearance::Dark` if detection fails.
 #[cfg(target_os = "macos")]
 pub fn detect_macos_appearance() -> Appearance {
-    use objc2::{class, msg_send, msg_send_id};
     use objc2::rc::Id;
     use objc2::runtime::NSObject;
+    use objc2::{class, msg_send, msg_send_id};
 
     unsafe {
         // Get NSApplication.sharedApplication

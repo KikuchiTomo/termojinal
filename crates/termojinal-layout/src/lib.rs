@@ -174,8 +174,7 @@ impl Node {
                 first,
                 second,
             } => {
-                let (new_first, found) =
-                    first.split_insert(target, dir, insert_id, insert_first);
+                let (new_first, found) = first.split_insert(target, dir, insert_id, insert_first);
                 if found {
                     return (
                         Node::Split {
@@ -187,8 +186,7 @@ impl Node {
                         true,
                     );
                 }
-                let (new_second, found) =
-                    second.split_insert(target, dir, insert_id, insert_first);
+                let (new_second, found) = second.split_insert(target, dir, insert_id, insert_first);
                 (
                     Node::Split {
                         direction: *direction,
@@ -484,9 +482,9 @@ impl LayoutTree {
         insert_id: PaneId,
         insert_first: bool,
     ) -> Self {
-        let (new_root, _found) =
-            self.root
-                .split_insert(target, direction, insert_id, insert_first);
+        let (new_root, _found) = self
+            .root
+            .split_insert(target, direction, insert_id, insert_first);
         Self {
             root: new_root,
             next_id: self.next_id,
@@ -1195,9 +1193,9 @@ mod tests {
         //  -----
         //  2 | 3
         let tree = LayoutTree::new(0);
-        let (tree, p1) = tree.split(0, SplitDirection::Horizontal);   // [0 | 1]
-        let (tree, p2) = tree.split(0, SplitDirection::Vertical);     // [0/2 | 1]
-        let (tree, p3) = tree.split(p1, SplitDirection::Vertical);    // [0/2 | 1/3]
+        let (tree, p1) = tree.split(0, SplitDirection::Horizontal); // [0 | 1]
+        let (tree, p2) = tree.split(0, SplitDirection::Vertical); // [0/2 | 1]
+        let (tree, p3) = tree.split(p1, SplitDirection::Vertical); // [0/2 | 1/3]
 
         // Focus top-left (0), go right -> top-right (1)
         let tree = tree.focus(0);

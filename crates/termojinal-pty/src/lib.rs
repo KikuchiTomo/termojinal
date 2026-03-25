@@ -23,10 +23,7 @@ pub struct PtySize {
 
 impl Default for PtySize {
     fn default() -> Self {
-        Self {
-            cols: 80,
-            rows: 24,
-        }
+        Self { cols: 80, rows: 24 }
     }
 }
 
@@ -111,8 +108,7 @@ impl Pty {
                 }
 
                 // Execute the shell.
-                let shell_cstr =
-                    CString::new(config.shell.as_str()).expect("invalid shell path");
+                let shell_cstr = CString::new(config.shell.as_str()).expect("invalid shell path");
                 let login_arg = format!("-{}", shell_basename(&config.shell));
                 let login_cstr = CString::new(login_arg).expect("invalid login arg");
                 let args = [login_cstr];
@@ -124,7 +120,11 @@ impl Pty {
             ForkResult::Parent { child } => {
                 drop(slave);
                 log::info!("PTY spawned: pid={child}, shell={}", config.shell);
-                Ok(Pty { master, pid: child, detached: false })
+                Ok(Pty {
+                    master,
+                    pid: child,
+                    detached: false,
+                })
             }
         }
     }
@@ -233,18 +233,18 @@ pub fn default_env() -> HashMap<String, String> {
     // Remove variables that are per-session or would be stale/incorrect
     // in a child PTY.
     let exclude = [
-        "TERM_SESSION_ID",           // macOS per-terminal-session identifier
-        "WINDOWID",                  // X11 window id, not valid for child PTYs
-        "SECURITYSESSIONID",         // macOS security session, inherited automatically by the kernel
-        "OLDPWD",                    // stale previous working directory
-        "_",                         // last command, not meaningful for new shell
-        "DYLD_INSERT_LIBRARIES",     // macOS dynamic linker injection
-        "DYLD_FRAMEWORK_PATH",       // macOS framework path override
-        "DYLD_LIBRARY_PATH",         // macOS library path override
+        "TERM_SESSION_ID",       // macOS per-terminal-session identifier
+        "WINDOWID",              // X11 window id, not valid for child PTYs
+        "SECURITYSESSIONID",     // macOS security session, inherited automatically by the kernel
+        "OLDPWD",                // stale previous working directory
+        "_",                     // last command, not meaningful for new shell
+        "DYLD_INSERT_LIBRARIES", // macOS dynamic linker injection
+        "DYLD_FRAMEWORK_PATH",   // macOS framework path override
+        "DYLD_LIBRARY_PATH",     // macOS library path override
         "DYLD_FALLBACK_FRAMEWORK_PATH",
         "DYLD_FALLBACK_LIBRARY_PATH",
-        "LD_PRELOAD",                // Linux dynamic linker injection
-        "LD_AUDIT",                  // Linux linker audit
+        "LD_PRELOAD", // Linux dynamic linker injection
+        "LD_AUDIT",   // Linux linker audit
     ];
     for key in exclude {
         env.remove(key);
@@ -328,10 +328,7 @@ mod tests {
             env.get("TERM_SESSION_ID").is_none(),
             "TERM_SESSION_ID should be excluded"
         );
-        assert!(
-            env.get("OLDPWD").is_none(),
-            "OLDPWD should be excluded"
-        );
+        assert!(env.get("OLDPWD").is_none(), "OLDPWD should be excluded");
         std::env::remove_var("TERM_SESSION_ID");
         std::env::remove_var("OLDPWD");
     }

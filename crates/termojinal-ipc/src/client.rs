@@ -80,7 +80,13 @@ impl IpcClient {
         shell: Option<String>,
         cwd: Option<String>,
     ) -> Result<IpcResponse, ClientError> {
-        self.send(&IpcRequest::CreateSession { shell, cwd, cols: None, rows: None }).await
+        self.send(&IpcRequest::CreateSession {
+            shell,
+            cwd,
+            cols: None,
+            rows: None,
+        })
+        .await
     }
 
     /// Convenience: kill a session.

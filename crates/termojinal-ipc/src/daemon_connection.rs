@@ -5,8 +5,7 @@
 //! the daemon via binary framing and streams PTY output.
 
 use crate::protocol::{
-    Frame, MSG_CONTROL, MSG_PTY_OUTPUT, MSG_SNAPSHOT,
-    read_frame_sync, write_frame_sync,
+    read_frame_sync, write_frame_sync, Frame, MSG_CONTROL, MSG_PTY_OUTPUT, MSG_SNAPSHOT,
 };
 
 /// Synchronous handle for communicating with the termojinald daemon.
@@ -31,7 +30,9 @@ impl DaemonHandle {
         use std::os::unix::net::UnixStream;
 
         let mut stream = UnixStream::connect(&self.socket_path).ok()?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
         let msg = format!("{}\n", req);
         stream.write_all(msg.as_bytes()).ok()?;
         let mut line = String::new();
@@ -40,7 +41,13 @@ impl DaemonHandle {
     }
 
     /// Create a session on the daemon. Returns (session_id, name, pid).
-    pub fn create_session(&self, shell: &str, cwd: &str, cols: u16, rows: u16) -> Option<(String, String, i32)> {
+    pub fn create_session(
+        &self,
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Option<(String, String, i32)> {
         let req = serde_json::json!({
             "type": "create_session",
             "shell": shell,
@@ -87,8 +94,12 @@ pub fn daemon_pty_write(session_id: &str, data: &[u8]) {
     use std::os::unix::net::UnixStream;
 
     let sock_path = termojinal_session::daemon::socket_path();
-    let Ok(mut stream) = UnixStream::connect(&sock_path) else { return };
-    stream.set_write_timeout(Some(std::time::Duration::from_millis(500))).ok();
+    let Ok(mut stream) = UnixStream::connect(&sock_path) else {
+        return;
+    };
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_millis(500)))
+        .ok();
 
     // For simple key input, we send an AttachSession frame first (to enter
     // binary mode), then the key input frame. The daemon will read both.
@@ -135,8 +146,12 @@ pub fn daemon_pty_resize(session_id: &str, cols: u16, rows: u16) {
     use std::os::unix::net::UnixStream;
 
     let sock_path = termojinal_session::daemon::socket_path();
-    let Ok(mut stream) = UnixStream::connect(&sock_path) else { return };
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+    let Ok(mut stream) = UnixStream::connect(&sock_path) else {
+        return;
+    };
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok();
     let req = serde_json::json!({
         "type": "resize_session",
         "id": session_id,
@@ -202,7 +217,9 @@ pub fn daemon_reader_thread(
     };
 
     // Use a short read timeout so we can periodically check for writes.
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(50))).ok();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+        .ok();
 
     let write_stream = std::sync::Mutex::new(write_stream);
 
@@ -240,9 +257,13 @@ pub fn daemon_reader_thread(
                     }
                     MSG_CONTROL => {
                         // Check for session_exited event.
-                        if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&frame.payload) {
+                        if let Ok(resp) =
+                            serde_json::from_slice::<serde_json::Value>(&frame.payload)
+                        {
                             if let Some(data) = resp.get("data") {
-                                if data.get("event").and_then(|v| v.as_str()) == Some("session_exited") {
+                                if data.get("event").and_then(|v| v.as_str())
+                                    == Some("session_exited")
+                                {
                                     proxy(DaemonReaderEvent::Exited);
                                     return;
                                 }
@@ -252,8 +273,10 @@ pub fn daemon_reader_thread(
                     _ => {}
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut
-                || e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
                 // Timeout -- loop back and try again.
                 continue;
             }

@@ -86,9 +86,15 @@ pub struct AllowFlowUiConfig {
     pub hint_bar_accent: String,
 }
 
-fn default_hint_bar_bg() -> String { "#D97706E0".into() }
-fn default_hint_bar_fg() -> String { "#1A1A24".into() }
-fn default_hint_bar_accent() -> String { "#F59E0B".into() }
+fn default_hint_bar_bg() -> String {
+    "#D97706E0".into()
+}
+fn default_hint_bar_fg() -> String {
+    "#1A1A24".into()
+}
+fn default_hint_bar_accent() -> String {
+    "#F59E0B".into()
+}
 
 impl Default for AllowFlowUiConfig {
     fn default() -> Self {
@@ -115,8 +121,12 @@ pub struct NotificationConfig {
     pub sound: bool,
 }
 
-fn default_notifications_enabled() -> bool { true }
-fn default_notification_sound() -> bool { true }
+fn default_notifications_enabled() -> bool {
+    true
+}
+fn default_notification_sound() -> bool {
+    true
+}
 
 impl Default for NotificationConfig {
     fn default() -> Self {
@@ -182,13 +192,27 @@ pub struct DirectoryTreeConfig {
     pub double_click_ms: u64,
 }
 
-fn default_tree_dir_fg() -> String { "#89B4FA".into() }  // blue (matches Catppuccin)
-fn default_tree_selected_fg() -> String { "#F2F2F8".into() }
-fn default_tree_selected_bg() -> String { "#313244".into() }
-fn default_tree_guide_fg() -> String { "#6C7086".into() }
-fn default_tree_max_lines() -> usize { 20 }
-fn default_tree_editor() -> String { String::new() }  // empty = use $EDITOR or "nvim"
-fn default_tree_double_click_ms() -> u64 { 400 }
+fn default_tree_dir_fg() -> String {
+    "#89B4FA".into()
+} // blue (matches Catppuccin)
+fn default_tree_selected_fg() -> String {
+    "#F2F2F8".into()
+}
+fn default_tree_selected_bg() -> String {
+    "#313244".into()
+}
+fn default_tree_guide_fg() -> String {
+    "#6C7086".into()
+}
+fn default_tree_max_lines() -> usize {
+    20
+}
+fn default_tree_editor() -> String {
+    String::new()
+} // empty = use $EDITOR or "nvim"
+fn default_tree_double_click_ms() -> u64 {
+    400
+}
 
 impl Default for DirectoryTreeConfig {
     fn default() -> Self {
@@ -249,8 +273,12 @@ pub struct TimeTravelConfig {
     pub max_snapshots_per_session: usize,
 }
 
-fn default_max_command_history() -> usize { 10_000 }
-fn default_max_snapshots() -> usize { 50 }
+fn default_max_command_history() -> usize {
+    10_000
+}
+fn default_max_snapshots() -> usize {
+    50
+}
 
 impl Default for TimeTravelConfig {
     fn default() -> Self {
@@ -339,7 +367,12 @@ pub fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
         let b = u8::from_str_radix(&s[4..6], 16).ok()?;
         let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-        Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
+        Some([
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ])
     } else {
         None
     }
@@ -420,33 +453,83 @@ pub struct ThemeSection {
     pub light: String,
 }
 
-fn default_bg() -> String { "#1E1E2E".into() }
-fn default_fg() -> String { "#CDD6F4".into() }
-fn default_cursor_color() -> String { "#F5E0DC".into() }
-fn default_selection_bg() -> String { "#45475A".into() }
-fn default_preedit_bg() -> String { "#313244".into() }
-fn default_search_highlight_bg() -> String { "#F9E2AF".into() }
-fn default_search_highlight_fg() -> String { "#1E1E2E".into() }
-fn default_bold_brightness() -> f32 { 1.2 }
-fn default_dim_opacity() -> f32 { 0.6 }
+fn default_bg() -> String {
+    "#1E1E2E".into()
+}
+fn default_fg() -> String {
+    "#CDD6F4".into()
+}
+fn default_cursor_color() -> String {
+    "#F5E0DC".into()
+}
+fn default_selection_bg() -> String {
+    "#45475A".into()
+}
+fn default_preedit_bg() -> String {
+    "#313244".into()
+}
+fn default_search_highlight_bg() -> String {
+    "#F9E2AF".into()
+}
+fn default_search_highlight_fg() -> String {
+    "#1E1E2E".into()
+}
+fn default_bold_brightness() -> f32 {
+    1.2
+}
+fn default_dim_opacity() -> f32 {
+    0.6
+}
 
 // ANSI 16 color defaults (Catppuccin Mocha)
-fn default_ansi_black() -> String { "#45475A".into() }
-fn default_ansi_bright_black() -> String { "#585B70".into() }
-fn default_ansi_red() -> String { "#F38BA8".into() }
-fn default_ansi_bright_red() -> String { "#F38BA8".into() }
-fn default_ansi_green() -> String { "#A6E3A1".into() }
-fn default_ansi_bright_green() -> String { "#A6E3A1".into() }
-fn default_ansi_yellow() -> String { "#F9E2AF".into() }
-fn default_ansi_bright_yellow() -> String { "#F9E2AF".into() }
-fn default_ansi_blue() -> String { "#89B4FA".into() }
-fn default_ansi_bright_blue() -> String { "#89B4FA".into() }
-fn default_ansi_magenta() -> String { "#F5C2E7".into() }
-fn default_ansi_bright_magenta() -> String { "#F5C2E7".into() }
-fn default_ansi_cyan() -> String { "#94E2D5".into() }
-fn default_ansi_bright_cyan() -> String { "#94E2D5".into() }
-fn default_ansi_white() -> String { "#BAC2DE".into() }
-fn default_ansi_bright_white() -> String { "#A6ADC8".into() }
+fn default_ansi_black() -> String {
+    "#45475A".into()
+}
+fn default_ansi_bright_black() -> String {
+    "#585B70".into()
+}
+fn default_ansi_red() -> String {
+    "#F38BA8".into()
+}
+fn default_ansi_bright_red() -> String {
+    "#F38BA8".into()
+}
+fn default_ansi_green() -> String {
+    "#A6E3A1".into()
+}
+fn default_ansi_bright_green() -> String {
+    "#A6E3A1".into()
+}
+fn default_ansi_yellow() -> String {
+    "#F9E2AF".into()
+}
+fn default_ansi_bright_yellow() -> String {
+    "#F9E2AF".into()
+}
+fn default_ansi_blue() -> String {
+    "#89B4FA".into()
+}
+fn default_ansi_bright_blue() -> String {
+    "#89B4FA".into()
+}
+fn default_ansi_magenta() -> String {
+    "#F5C2E7".into()
+}
+fn default_ansi_bright_magenta() -> String {
+    "#F5C2E7".into()
+}
+fn default_ansi_cyan() -> String {
+    "#94E2D5".into()
+}
+fn default_ansi_bright_cyan() -> String {
+    "#94E2D5".into()
+}
+fn default_ansi_white() -> String {
+    "#BAC2DE".into()
+}
+fn default_ansi_bright_white() -> String {
+    "#A6ADC8".into()
+}
 
 impl Default for ThemeSection {
     fn default() -> Self {
@@ -559,11 +642,21 @@ pub struct FontSection {
     pub ambiguous_width: AmbiguousWidth,
 }
 
-fn default_font_family() -> String { "monospace".into() }
-fn default_font_size() -> f32 { 14.0 }
-fn default_line_height() -> f32 { 1.2 }
-fn default_max_font_size() -> f32 { 72.0 }
-fn default_font_size_step() -> f32 { 1.0 }
+fn default_font_family() -> String {
+    "monospace".into()
+}
+fn default_font_size() -> f32 {
+    14.0
+}
+fn default_line_height() -> f32 {
+    1.2
+}
+fn default_max_font_size() -> f32 {
+    72.0
+}
+fn default_font_size_step() -> f32 {
+    1.0
+}
 
 impl Default for FontSection {
     fn default() -> Self {
@@ -598,11 +691,21 @@ pub struct WindowSection {
     pub padding_y: f32,
 }
 
-fn default_width() -> u32 { 960 }
-fn default_height() -> u32 { 640 }
-fn default_opacity() -> f32 { 1.0 }
-fn default_padding_x() -> f32 { 1.0 }
-fn default_padding_y() -> f32 { 0.5 }
+fn default_width() -> u32 {
+    960
+}
+fn default_height() -> u32 {
+    640
+}
+fn default_opacity() -> f32 {
+    1.0
+}
+fn default_padding_x() -> f32 {
+    1.0
+}
+fn default_padding_y() -> f32 {
+    0.5
+}
 
 impl Default for WindowSection {
     fn default() -> Self {
@@ -678,29 +781,75 @@ pub struct SidebarConfig {
     pub agent_idle_color: String,
 }
 
-fn default_sidebar_width() -> f32 { 240.0 }
-fn default_sidebar_min_width() -> f32 { 120.0 }
-fn default_sidebar_max_width() -> f32 { 400.0 }
-fn default_sidebar_bg() -> String { "#0D0D12".into() }
-fn default_sidebar_active_entry_bg() -> String { "#1E1E2A".into() }
-fn default_sidebar_active_fg() -> String { "#F2F2F8".into() }
-fn default_sidebar_inactive_fg() -> String { "#A0A0AC".into() }
-fn default_sidebar_dim_fg() -> String { "#77778A".into() }
-fn default_sidebar_git_branch_fg() -> String { "#5AB3D9".into() }
-fn default_sidebar_separator_color() -> String { "#333338".into() }
-fn default_sidebar_notification_dot() -> String { "#FF941A".into() }
-fn default_sidebar_git_dirty_color() -> String { "#CCB34D".into() }
-fn default_sidebar_top_pad() -> f32 { 6.0 }
-fn default_sidebar_side_pad() -> f32 { 6.0 }
-fn default_sidebar_entry_gap() -> f32 { 8.0 }
-fn default_sidebar_info_line_gap() -> f32 { 2.0 }
-fn default_sidebar_allow_accent_color() -> String { "#4FC1FF".into() }
-fn default_sidebar_allow_hint_fg() -> String { "#7DC8FF".into() }
-fn default_agent_status_enabled() -> bool { true }
-fn default_agent_indicator_style() -> String { "pulse".into() }
-fn default_agent_pulse_speed() -> f32 { 2.0 }
-fn default_agent_active_color() -> String { "#A78BFA".into() }
-fn default_agent_idle_color() -> String { "#FBBF24".into() }
+fn default_sidebar_width() -> f32 {
+    240.0
+}
+fn default_sidebar_min_width() -> f32 {
+    120.0
+}
+fn default_sidebar_max_width() -> f32 {
+    400.0
+}
+fn default_sidebar_bg() -> String {
+    "#0D0D12".into()
+}
+fn default_sidebar_active_entry_bg() -> String {
+    "#1E1E2A".into()
+}
+fn default_sidebar_active_fg() -> String {
+    "#F2F2F8".into()
+}
+fn default_sidebar_inactive_fg() -> String {
+    "#A0A0AC".into()
+}
+fn default_sidebar_dim_fg() -> String {
+    "#77778A".into()
+}
+fn default_sidebar_git_branch_fg() -> String {
+    "#5AB3D9".into()
+}
+fn default_sidebar_separator_color() -> String {
+    "#333338".into()
+}
+fn default_sidebar_notification_dot() -> String {
+    "#FF941A".into()
+}
+fn default_sidebar_git_dirty_color() -> String {
+    "#CCB34D".into()
+}
+fn default_sidebar_top_pad() -> f32 {
+    6.0
+}
+fn default_sidebar_side_pad() -> f32 {
+    6.0
+}
+fn default_sidebar_entry_gap() -> f32 {
+    8.0
+}
+fn default_sidebar_info_line_gap() -> f32 {
+    2.0
+}
+fn default_sidebar_allow_accent_color() -> String {
+    "#4FC1FF".into()
+}
+fn default_sidebar_allow_hint_fg() -> String {
+    "#7DC8FF".into()
+}
+fn default_agent_status_enabled() -> bool {
+    true
+}
+fn default_agent_indicator_style() -> String {
+    "pulse".into()
+}
+fn default_agent_pulse_speed() -> f32 {
+    2.0
+}
+fn default_agent_active_color() -> String {
+    "#A78BFA".into()
+}
+fn default_agent_idle_color() -> String {
+    "#FBBF24".into()
+}
 
 impl Default for SidebarConfig {
     fn default() -> Self {
@@ -783,25 +932,63 @@ pub struct TabBarConfig {
     pub bottom_border_color: String,
 }
 
-fn default_tab_format() -> String { "{title|cwd_base|Tab {index}}".into() }
-fn default_tab_position() -> String { "top".into() }
-fn default_max_width() -> f32 { 200.0 }
-fn default_tab_bar_height() -> f32 { 36.0 }
-fn default_min_tab_width() -> f32 { 60.0 }
-fn default_new_tab_button_width() -> f32 { 32.0 }
-fn default_tab_bar_bg() -> String { "#1A1A1F".into() }
-fn default_tab_active_bg() -> String { "#2E2E38".into() }
-fn default_tab_active_fg() -> String { "#F2F2F8".into() }
-fn default_tab_inactive_fg() -> String { "#8C8C99".into() }
-fn default_tab_accent_color() -> String { "#4D8CFF".into() }
-fn default_tab_separator_color() -> String { "#383840".into() }
-fn default_tab_close_button_fg() -> String { "#808088".into() }
-fn default_tab_new_button_fg() -> String { "#808088".into() }
-fn default_tab_padding_x() -> f32 { 6.0 }
-fn default_tab_padding_y() -> f32 { 6.0 }
-fn default_tab_accent_height() -> u32 { 2 }
-fn default_tab_bottom_border() -> bool { true }
-fn default_tab_bottom_border_color() -> String { "#2A2A34".into() }
+fn default_tab_format() -> String {
+    "{title|cwd_base|Tab {index}}".into()
+}
+fn default_tab_position() -> String {
+    "top".into()
+}
+fn default_max_width() -> f32 {
+    200.0
+}
+fn default_tab_bar_height() -> f32 {
+    36.0
+}
+fn default_min_tab_width() -> f32 {
+    60.0
+}
+fn default_new_tab_button_width() -> f32 {
+    32.0
+}
+fn default_tab_bar_bg() -> String {
+    "#1A1A1F".into()
+}
+fn default_tab_active_bg() -> String {
+    "#2E2E38".into()
+}
+fn default_tab_active_fg() -> String {
+    "#F2F2F8".into()
+}
+fn default_tab_inactive_fg() -> String {
+    "#8C8C99".into()
+}
+fn default_tab_accent_color() -> String {
+    "#4D8CFF".into()
+}
+fn default_tab_separator_color() -> String {
+    "#383840".into()
+}
+fn default_tab_close_button_fg() -> String {
+    "#808088".into()
+}
+fn default_tab_new_button_fg() -> String {
+    "#808088".into()
+}
+fn default_tab_padding_x() -> f32 {
+    6.0
+}
+fn default_tab_padding_y() -> f32 {
+    6.0
+}
+fn default_tab_accent_height() -> u32 {
+    2
+}
+fn default_tab_bottom_border() -> bool {
+    true
+}
+fn default_tab_bottom_border_color() -> String {
+    "#2A2A34".into()
+}
 
 impl Default for TabBarConfig {
     fn default() -> Self {
@@ -852,7 +1039,9 @@ impl std::default::Default for PaneWorkingDirectory {
     }
 }
 
-fn default_pane_working_directory() -> PaneWorkingDirectory { PaneWorkingDirectory::Inherit }
+fn default_pane_working_directory() -> PaneWorkingDirectory {
+    PaneWorkingDirectory::Inherit
+}
 
 /// Pane configuration section (`[pane]`).
 #[derive(Debug, Clone, Deserialize)]
@@ -882,13 +1071,27 @@ pub struct PaneConfig {
     pub fixed_directory: String,
 }
 
-fn default_pane_separator_color() -> String { "#4D4D4D".into() }
-fn default_pane_focus_border_color() -> String { "#3399FFCC".into() }
-fn default_pane_separator_width() -> u32 { 2 }
-fn default_pane_focus_border_width() -> u32 { 2 }
-fn default_pane_separator_tolerance() -> f32 { 4.0 }
-fn default_scrollbar_thumb_opacity() -> f32 { 0.5 }
-fn default_scrollbar_track_opacity() -> f32 { 0.1 }
+fn default_pane_separator_color() -> String {
+    "#4D4D4D".into()
+}
+fn default_pane_focus_border_color() -> String {
+    "#3399FFCC".into()
+}
+fn default_pane_separator_width() -> u32 {
+    2
+}
+fn default_pane_focus_border_width() -> u32 {
+    2
+}
+fn default_pane_separator_tolerance() -> f32 {
+    4.0
+}
+fn default_scrollbar_thumb_opacity() -> f32 {
+    0.5
+}
+fn default_scrollbar_track_opacity() -> f32 {
+    0.1
+}
 
 impl Default for PaneConfig {
     fn default() -> Self {
@@ -921,9 +1124,15 @@ pub struct SearchConfig {
     pub border_color: String,
 }
 
-fn default_search_bar_bg() -> String { "#262633F2".into() }
-fn default_search_input_fg() -> String { "#F2F2F2".into() }
-fn default_search_border_color() -> String { "#4D4D66".into() }
+fn default_search_bar_bg() -> String {
+    "#262633F2".into()
+}
+fn default_search_input_fg() -> String {
+    "#F2F2F2".into()
+}
+fn default_search_border_color() -> String {
+    "#4D4D66".into()
+}
 
 impl Default for SearchConfig {
     fn default() -> Self {
@@ -982,22 +1191,54 @@ pub struct PaletteConfig {
     pub border_width: f32,
 }
 
-fn default_palette_bg() -> String { "#1F1F29F2".into() }
-fn default_palette_border_color() -> String { "#4D4D66".into() }
-fn default_palette_input_fg() -> String { "#F2F2F2".into() }
-fn default_palette_separator_color() -> String { "#40404D".into() }
-fn default_palette_command_fg() -> String { "#CCCCD1".into() }
-fn default_palette_selected_bg() -> String { "#383852".into() }
-fn default_palette_description_fg() -> String { "#808088".into() }
-fn default_palette_overlay_color() -> String { "#00000080".into() }
-fn default_palette_max_height() -> f32 { 400.0 }
-fn default_palette_max_visible_items() -> usize { 10 }
-fn default_palette_width_ratio() -> f32 { 0.6 }
-fn default_palette_corner_radius() -> f32 { 12.0 }
-fn default_palette_blur_radius() -> f32 { 20.0 }
-fn default_palette_shadow_radius() -> f32 { 8.0 }
-fn default_palette_shadow_opacity() -> f32 { 0.3 }
-fn default_palette_border_width() -> f32 { 1.0 }
+fn default_palette_bg() -> String {
+    "#1F1F29F2".into()
+}
+fn default_palette_border_color() -> String {
+    "#4D4D66".into()
+}
+fn default_palette_input_fg() -> String {
+    "#F2F2F2".into()
+}
+fn default_palette_separator_color() -> String {
+    "#40404D".into()
+}
+fn default_palette_command_fg() -> String {
+    "#CCCCD1".into()
+}
+fn default_palette_selected_bg() -> String {
+    "#383852".into()
+}
+fn default_palette_description_fg() -> String {
+    "#808088".into()
+}
+fn default_palette_overlay_color() -> String {
+    "#00000080".into()
+}
+fn default_palette_max_height() -> f32 {
+    400.0
+}
+fn default_palette_max_visible_items() -> usize {
+    10
+}
+fn default_palette_width_ratio() -> f32 {
+    0.6
+}
+fn default_palette_corner_radius() -> f32 {
+    12.0
+}
+fn default_palette_blur_radius() -> f32 {
+    20.0
+}
+fn default_palette_shadow_radius() -> f32 {
+    8.0
+}
+fn default_palette_shadow_opacity() -> f32 {
+    0.3
+}
+fn default_palette_border_width() -> f32 {
+    1.0
+}
 
 impl Default for PaletteConfig {
     fn default() -> Self {
@@ -1036,8 +1277,12 @@ pub struct StatusSegment {
     pub bg: String,
 }
 
-fn default_segment_fg() -> String { "#CCCCCC".into() }
-fn default_segment_bg() -> String { "#1A1A24".into() }
+fn default_segment_fg() -> String {
+    "#CCCCCC".into()
+}
+fn default_segment_bg() -> String {
+    "#1A1A24".into()
+}
 
 /// Status bar configuration section (`[status_bar]`).
 #[derive(Debug, Clone, Deserialize)]
@@ -1061,28 +1306,72 @@ pub struct StatusBarConfig {
     pub right: Vec<StatusSegment>,
 }
 
-fn default_status_enabled() -> bool { true }
-fn default_status_height() -> f32 { 28.0 }
-fn default_status_bg() -> String { "#141420".into() }
-fn default_status_padding_x() -> f32 { 8.0 }
-fn default_status_top_border() -> bool { true }
-fn default_status_top_border_color() -> String { "#2A2A34".into() }
+fn default_status_enabled() -> bool {
+    true
+}
+fn default_status_height() -> f32 {
+    28.0
+}
+fn default_status_bg() -> String {
+    "#141420".into()
+}
+fn default_status_padding_x() -> f32 {
+    8.0
+}
+fn default_status_top_border() -> bool {
+    true
+}
+fn default_status_top_border_color() -> String {
+    "#2A2A34".into()
+}
 
 fn default_left_segments() -> Vec<StatusSegment> {
     vec![
-        StatusSegment { content: "{user}@{host}".into(), fg: "#FFFFFF".into(), bg: "#3A3AFF".into() },
-        StatusSegment { content: "{cwd_short}".into(), fg: "#CCCCCC".into(), bg: "#2A2A34".into() },
-        StatusSegment { content: "{git_branch} {git_status}".into(), fg: "#A6E3A1".into(), bg: "#1A1A24".into() },
+        StatusSegment {
+            content: "{user}@{host}".into(),
+            fg: "#FFFFFF".into(),
+            bg: "#3A3AFF".into(),
+        },
+        StatusSegment {
+            content: "{cwd_short}".into(),
+            fg: "#CCCCCC".into(),
+            bg: "#2A2A34".into(),
+        },
+        StatusSegment {
+            content: "{git_branch} {git_status}".into(),
+            fg: "#A6E3A1".into(),
+            bg: "#1A1A24".into(),
+        },
     ]
 }
 
 fn default_right_segments() -> Vec<StatusSegment> {
     vec![
-        StatusSegment { content: "{ports}".into(), fg: "#94E2D5".into(), bg: "#1A1A24".into() },
-        StatusSegment { content: "{shell}".into(), fg: "#888888".into(), bg: "#2A2A34".into() },
-        StatusSegment { content: "{pane_size}".into(), fg: "#888888".into(), bg: "#1A1A24".into() },
-        StatusSegment { content: "{font_size}px".into(), fg: "#888888".into(), bg: "#2A2A34".into() },
-        StatusSegment { content: "{time}".into(), fg: "#FFFFFF".into(), bg: "#3A3AFF".into() },
+        StatusSegment {
+            content: "{ports}".into(),
+            fg: "#94E2D5".into(),
+            bg: "#1A1A24".into(),
+        },
+        StatusSegment {
+            content: "{shell}".into(),
+            fg: "#888888".into(),
+            bg: "#2A2A34".into(),
+        },
+        StatusSegment {
+            content: "{pane_size}".into(),
+            fg: "#888888".into(),
+            bg: "#1A1A24".into(),
+        },
+        StatusSegment {
+            content: "{font_size}px".into(),
+            fg: "#888888".into(),
+            bg: "#2A2A34".into(),
+        },
+        StatusSegment {
+            content: "{time}".into(),
+            fg: "#FFFFFF".into(),
+            bg: "#3A3AFF".into(),
+        },
     ]
 }
 
@@ -1158,16 +1447,36 @@ pub struct QuickTerminalConfig {
     pub own_workspace: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_qt_hotkey() -> String { "ctrl+`".into() }
-fn default_qt_animation() -> String { "slide_down".into() }
-fn default_qt_animation_duration() -> u32 { 200 }
-fn default_qt_height_ratio() -> f32 { 0.4 }
-fn default_qt_width_ratio() -> f32 { 1.0 }
-fn default_qt_position() -> String { "center".into() }
-fn default_qt_screen_edge() -> String { "top".into() }
-fn default_qt_window_level() -> String { "floating".into() }
-fn default_qt_corner_radius() -> f32 { 12.0 }
+fn default_true() -> bool {
+    true
+}
+fn default_qt_hotkey() -> String {
+    "ctrl+`".into()
+}
+fn default_qt_animation() -> String {
+    "slide_down".into()
+}
+fn default_qt_animation_duration() -> u32 {
+    200
+}
+fn default_qt_height_ratio() -> f32 {
+    0.4
+}
+fn default_qt_width_ratio() -> f32 {
+    1.0
+}
+fn default_qt_position() -> String {
+    "center".into()
+}
+fn default_qt_screen_edge() -> String {
+    "top".into()
+}
+fn default_qt_window_level() -> String {
+    "floating".into()
+}
+fn default_qt_corner_radius() -> f32 {
+    12.0
+}
 
 impl Default for QuickTerminalConfig {
     fn default() -> Self {
@@ -1202,10 +1511,9 @@ impl Default for QuickTerminalConfig {
 pub fn load_config() -> TermojinalConfig {
     // Prefer XDG-style ~/.config/termojinal/ (common on macOS CLI tools),
     // fall back to dirs::config_dir() (~/Library/Application Support/ on macOS).
-    let xdg_path = dirs::home_dir()
-        .map(|h| h.join(".config").join("termojinal").join("config.toml"));
-    let system_path = dirs::config_dir()
-        .map(|d| d.join("termojinal").join("config.toml"));
+    let xdg_path =
+        dirs::home_dir().map(|h| h.join(".config").join("termojinal").join("config.toml"));
+    let system_path = dirs::config_dir().map(|d| d.join("termojinal").join("config.toml"));
     let path = match (&xdg_path, &system_path) {
         (Some(xdg), _) if xdg.exists() => xdg.clone(),
         (_, Some(sys)) if sys.exists() => sys.clone(),
@@ -1290,13 +1598,20 @@ pub fn resolve_theme(config: &TermojinalConfig, appearance: Appearance) -> Theme
         Appearance::Light => &theme.light,
     };
     if name.is_empty() {
-        log::info!("auto_switch enabled but no {:?} theme file set, using inline theme", appearance);
+        log::info!(
+            "auto_switch enabled but no {:?} theme file set, using inline theme",
+            appearance
+        );
         return theme.clone();
     }
     match load_theme_file(name) {
         Some(loaded) => loaded,
         None => {
-            log::warn!("failed to load {:?} theme '{}', using inline theme", appearance, name);
+            log::warn!(
+                "failed to load {:?} theme '{}', using inline theme",
+                appearance,
+                name
+            );
             theme.clone()
         }
     }
@@ -1320,7 +1635,10 @@ pub fn format_tab_title(format: &str, title: &str, cwd: &str, index: usize) -> S
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
-                    if depth == 0 { end = i; break; }
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
                 }
                 _ => {}
             }

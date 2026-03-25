@@ -72,10 +72,7 @@ pub enum AppIpcRequest {
 
     // --- Terminal ---
     /// Send keystrokes to a pane.
-    SendKeys {
-        pane_id: Option<u64>,
-        keys: String,
-    },
+    SendKeys { pane_id: Option<u64>, keys: String },
     /// Run a command in a pane.
     RunCommand {
         pane_id: Option<u64>,
@@ -292,9 +289,7 @@ mod tests {
 
     #[test]
     fn test_serialize_list_tabs() {
-        let req = AppIpcRequest::ListTabs {
-            workspace: Some(1),
-        };
+        let req = AppIpcRequest::ListTabs { workspace: Some(1) };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "list_tabs");
@@ -437,9 +432,7 @@ mod tests {
 
     #[test]
     fn test_serialize_list_pending_requests() {
-        let req = AppIpcRequest::ListPendingRequests {
-            workspace: Some(0),
-        };
+        let req = AppIpcRequest::ListPendingRequests { workspace: Some(0) };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["type"], "list_pending_requests");
@@ -491,8 +484,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_notify_minimal() {
-        let req: AppIpcRequest =
-            serde_json::from_str(r#"{"type":"notify"}"#).unwrap();
+        let req: AppIpcRequest = serde_json::from_str(r#"{"type":"notify"}"#).unwrap();
         assert_eq!(
             req,
             AppIpcRequest::Notify {
@@ -604,13 +596,9 @@ mod tests {
             AppIpcRequest::SwitchWorkspace { index: 0 },
             AppIpcRequest::CloseWorkspace { index: 1 },
             // Tab
-            AppIpcRequest::ListTabs {
-                workspace: Some(0),
-            },
+            AppIpcRequest::ListTabs { workspace: Some(0) },
             AppIpcRequest::ListTabs { workspace: None },
-            AppIpcRequest::CreateTab {
-                workspace: Some(1),
-            },
+            AppIpcRequest::CreateTab { workspace: Some(1) },
             AppIpcRequest::SwitchTab {
                 workspace: Some(0),
                 index: 2,
@@ -632,9 +620,7 @@ mod tests {
                 direction: "vertical".to_string(),
                 pane_id: None,
             },
-            AppIpcRequest::ClosePane {
-                pane_id: Some(42),
-            },
+            AppIpcRequest::ClosePane { pane_id: Some(42) },
             AppIpcRequest::ClosePane { pane_id: None },
             AppIpcRequest::FocusPane { pane_id: 5 },
             AppIpcRequest::ZoomPane { pane_id: Some(3) },
@@ -676,9 +662,7 @@ mod tests {
                 tool_input: json!({}),
                 session_id: None,
             },
-            AppIpcRequest::ListPendingRequests {
-                workspace: Some(0),
-            },
+            AppIpcRequest::ListPendingRequests { workspace: Some(0) },
             AppIpcRequest::ApproveRequest { request_id: 1 },
             AppIpcRequest::DenyRequest { request_id: 2 },
             AppIpcRequest::ApproveAll { workspace: 0 },
@@ -758,8 +742,14 @@ mod tests {
                 },
                 "create_workspace",
             ),
-            (AppIpcRequest::SwitchWorkspace { index: 0 }, "switch_workspace"),
-            (AppIpcRequest::CloseWorkspace { index: 0 }, "close_workspace"),
+            (
+                AppIpcRequest::SwitchWorkspace { index: 0 },
+                "switch_workspace",
+            ),
+            (
+                AppIpcRequest::CloseWorkspace { index: 0 },
+                "close_workspace",
+            ),
             (AppIpcRequest::ListTabs { workspace: None }, "list_tabs"),
             (AppIpcRequest::CreateTab { workspace: None }, "create_tab"),
             (
@@ -837,7 +827,10 @@ mod tests {
                 AppIpcRequest::ListPendingRequests { workspace: None },
                 "list_pending_requests",
             ),
-            (AppIpcRequest::ApproveRequest { request_id: 0 }, "approve_request"),
+            (
+                AppIpcRequest::ApproveRequest { request_id: 0 },
+                "approve_request",
+            ),
             (AppIpcRequest::DenyRequest { request_id: 0 }, "deny_request"),
             (AppIpcRequest::ApproveAll { workspace: 0 }, "approve_all"),
             (

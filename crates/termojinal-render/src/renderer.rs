@@ -229,7 +229,11 @@ impl Renderer {
         // Configure surface.
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
-        let surface_format = caps.formats.iter().find(|f| !f.is_srgb()).copied()
+        let surface_format = caps
+            .formats
+            .iter()
+            .find(|f| !f.is_srgb())
+            .copied()
             .unwrap_or(caps.formats[0]);
 
         let surface_config = wgpu::SurfaceConfiguration {
@@ -241,9 +245,15 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
             alpha_mode: {
                 let caps = surface.get_capabilities(&adapter);
-                if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+                if caps
+                    .alpha_modes
+                    .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+                {
                     wgpu::CompositeAlphaMode::PostMultiplied
-                } else if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                } else if caps
+                    .alpha_modes
+                    .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+                {
                     wgpu::CompositeAlphaMode::PreMultiplied
                 } else {
                     wgpu::CompositeAlphaMode::Auto
@@ -380,54 +390,53 @@ impl Renderer {
 
         // Bind group layout (5 entries: uniform, atlas texture, atlas sampler,
         // emoji texture, emoji sampler).
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bind group"),
@@ -677,7 +686,8 @@ impl Renderer {
                 // as a Core Text fallback.  Also try the emoji atlas for
                 // "text emoji" characters (Emoji=Yes, Emoji_Presentation=No,
                 // e.g. ⏺ U+23FA, ✔ U+2714) that the mono atlas may lack.
-                let try_emoji_fallback = (c > ' ' && !c.is_control()
+                let try_emoji_fallback = (c > ' '
+                    && !c.is_control()
                     && mono_glyph.atlas_w > 0.0
                     && self.atlas.is_glyph_empty(c))
                     || emoji_atlas::is_text_emoji(c);
@@ -742,7 +752,11 @@ impl Renderer {
                 }
             }
 
-            let width_scale = if cell.width > 1 { cell.width as f32 } else { 1.0 };
+            let width_scale = if cell.width > 1 {
+                cell.width as f32
+            } else {
+                1.0
+            };
 
             // Apply background opacity: default bg gets transparent, colored bg stays opaque.
             // In alternate screen mode (TUI apps like neovim), never make bg transparent
@@ -785,14 +799,12 @@ impl Renderer {
         let space_glyph = self.atlas.get_glyph(' ');
 
         let total_lines = scrollback_len + rows;
-        let thumb_height_f =
-            (rows as f64 / total_lines as f64 * rows as f64).max(1.0);
+        let thumb_height_f = (rows as f64 / total_lines as f64 * rows as f64).max(1.0);
         let thumb_top_f =
             (scrollback_len - scroll_offset) as f64 / total_lines as f64 * rows as f64;
 
         let thumb_top = thumb_top_f.floor() as usize;
-        let thumb_bottom =
-            ((thumb_top_f + thumb_height_f).ceil() as usize).min(rows);
+        let thumb_bottom = ((thumb_top_f + thumb_height_f).ceil() as usize).min(rows);
 
         // Fixed-pixel scrollbar width converted to grid units.
         let cell_w = self.atlas.cell_size.width;
@@ -854,8 +866,7 @@ impl Renderer {
         let total_height_px = rows as f32 * cell_h;
 
         let total_lines = scrollback_len + rows;
-        let thumb_height_f =
-            (rows as f64 / total_lines as f64 * rows as f64).max(1.0);
+        let thumb_height_f = (rows as f64 / total_lines as f64 * rows as f64).max(1.0);
         let thumb_top_f =
             (scrollback_len - scroll_offset) as f64 / total_lines as f64 * rows as f64;
 
@@ -930,24 +941,44 @@ impl Renderer {
                     continue;
                 }
 
-                let new_row_instances = self.build_row_instances(terminal, row, selection, search_matches, search_current_idx);
+                let new_row_instances = self.build_row_instances(
+                    terminal,
+                    row,
+                    selection,
+                    search_matches,
+                    search_current_idx,
+                );
 
                 let cache = &self.pane_caches[&key];
                 // Guard against stale row_instance_counts after resize
                 if row >= cache.row_instance_counts.len() {
-                    return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                    return self.full_rebuild(
+                        terminal,
+                        selection,
+                        search_matches,
+                        search_current_idx,
+                    );
                 }
-                let row_start_instance: usize =
-                    cache.row_instance_counts[..row].iter().sum();
+                let row_start_instance: usize = cache.row_instance_counts[..row].iter().sum();
                 let old_count = cache.row_instance_counts[row];
 
                 if new_row_instances.len() == old_count {
                     let Some(cache) = self.pane_caches.get_mut(&key) else {
-                        return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                        return self.full_rebuild(
+                            terminal,
+                            selection,
+                            search_matches,
+                            search_current_idx,
+                        );
                     };
                     // Guard against instance buffer out-of-bounds
                     if row_start_instance + new_row_instances.len() > cache.instances.len() {
-                        return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                        return self.full_rebuild(
+                            terminal,
+                            selection,
+                            search_matches,
+                            search_current_idx,
+                        );
                     }
                     for (i, inst) in new_row_instances.iter().enumerate() {
                         cache.instances[row_start_instance + i] = *inst;
@@ -959,7 +990,12 @@ impl Renderer {
                         bytemuck::cast_slice(&new_row_instances),
                     );
                 } else {
-                    return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                    return self.full_rebuild(
+                        terminal,
+                        selection,
+                        search_matches,
+                        search_current_idx,
+                    );
                 }
             }
 
@@ -1000,7 +1036,13 @@ impl Renderer {
         let mut row_counts = Vec::with_capacity(rows);
 
         for row in 0..rows {
-            let row_instances = self.build_row_instances(terminal, row, selection, search_matches, search_current_idx);
+            let row_instances = self.build_row_instances(
+                terminal,
+                row,
+                selection,
+                search_matches,
+                search_current_idx,
+            );
             row_counts.push(row_instances.len());
             instances.extend_from_slice(&row_instances);
         }
@@ -1019,11 +1061,8 @@ impl Renderer {
         }
 
         if !instances.is_empty() {
-            self.queue.write_buffer(
-                &self.instance_buffer,
-                0,
-                bytemuck::cast_slice(&instances),
-            );
+            self.queue
+                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
         }
 
         let count = instances.len();
@@ -1060,7 +1099,13 @@ impl Renderer {
         let grid_offset_x = -1.0 + (cell_w / surface_w) * 2.0;
         let grid_offset_y = 1.0 - (cell_h * 0.5 / surface_h) * 2.0;
 
-        self.build_uniforms(terminal, cell_ndc_w, cell_ndc_h, grid_offset_x, grid_offset_y)
+        self.build_uniforms(
+            terminal,
+            cell_ndc_w,
+            cell_ndc_h,
+            grid_offset_x,
+            grid_offset_y,
+        )
     }
 
     /// Compute uniforms for viewport rendering.
@@ -1096,7 +1141,13 @@ impl Renderer {
         // cell_size must remain relative to the surface for correct positioning.
         let _ = (vp_w, vp_h); // Used by scissor rect, not needed in uniforms here.
 
-        self.build_uniforms(terminal, cell_ndc_w, cell_ndc_h, grid_offset_x, grid_offset_y)
+        self.build_uniforms(
+            terminal,
+            cell_ndc_w,
+            cell_ndc_h,
+            grid_offset_x,
+            grid_offset_y,
+        )
     }
 
     /// Build a Uniforms struct with the given transform parameters.
@@ -1110,7 +1161,8 @@ impl Renderer {
     ) -> Uniforms {
         let cursor_shape = match terminal.cursor_shape {
             termojinal_vt::CursorShape::Block | termojinal_vt::CursorShape::BlinkingBlock => 0.0,
-            termojinal_vt::CursorShape::Underline | termojinal_vt::CursorShape::BlinkingUnderline => 1.0,
+            termojinal_vt::CursorShape::Underline
+            | termojinal_vt::CursorShape::BlinkingUnderline => 1.0,
             termojinal_vt::CursorShape::Bar | termojinal_vt::CursorShape::BlinkingBar => 2.0,
         };
 
@@ -1118,7 +1170,10 @@ impl Renderer {
             cell_size: [cell_ndc_w, cell_ndc_h],
             grid_offset: [grid_offset_x, grid_offset_y],
             atlas_size: [self.atlas.width as f32, self.atlas.height as f32],
-            emoji_atlas_size: [self.emoji_atlas.width as f32, self.emoji_atlas.height as f32],
+            emoji_atlas_size: [
+                self.emoji_atlas.width as f32,
+                self.emoji_atlas.height as f32,
+            ],
             cursor_pos: [
                 terminal.cursor_col as f32,
                 terminal.cursor_row as f32,
@@ -1182,7 +1237,9 @@ impl Renderer {
     }
 
     /// Begin a frame: get the surface texture and encoder.
-    pub fn begin_frame(&mut self) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder), RenderError> {
+    pub fn begin_frame(
+        &mut self,
+    ) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder), RenderError> {
         let output = self.surface.get_current_texture()?;
         let encoder = self
             .device
@@ -1200,9 +1257,11 @@ impl Renderer {
 
     /// Clear the surface to the default background color. Submits immediately.
     pub fn clear_surface(&mut self, view: &wgpu::TextureView) {
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("clear encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("clear encoder"),
+            });
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("clear pass"),
@@ -1250,7 +1309,8 @@ impl Renderer {
 
         // Select the per-pane cache so dirty optimization works across panes.
         self.set_active_pane(pane_key);
-        let instance_count = self.update_instances(terminal, selection, search_matches, search_current_idx);
+        let instance_count =
+            self.update_instances(terminal, selection, search_matches, search_current_idx);
 
         // Re-upload atlas if needed.
         let current_glyph_count = self.atlas.glyph_count();
@@ -1268,12 +1328,15 @@ impl Renderer {
 
         // Compute uniforms for this viewport.
         let uniforms = self.compute_uniforms_viewport(terminal, vp_x, vp_y, vp_w, vp_h);
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // Create encoder and render pass.
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("pane encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("pane encoder"),
+            });
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pane render pass"),
@@ -1325,12 +1388,7 @@ impl Renderer {
         // Render preedit overlay if present.
         if let Some(text) = preedit {
             let (vp_x, vp_y, vp_w, vp_h) = viewport;
-            self.render_preedit_overlay(
-                terminal,
-                text,
-                Some((vp_x, vp_y, vp_w, vp_h)),
-                view,
-            );
+            self.render_preedit_overlay(terminal, text, Some((vp_x, vp_y, vp_w, vp_h)), view);
         }
 
         Ok(())
@@ -1369,17 +1427,16 @@ impl Renderer {
 
             let cw = termojinal_vt::char_width(ch, self.cjk_width);
             // Try emoji atlas for emoji / text-emoji characters, mono atlas otherwise.
-            let (glyph, is_emoji_cell) = if emoji_atlas::is_emoji(ch)
-                || emoji_atlas::is_text_emoji(ch)
-            {
-                if let Some(eg) = self.emoji_atlas.get_glyph(ch) {
-                    (eg, true)
+            let (glyph, is_emoji_cell) =
+                if emoji_atlas::is_emoji(ch) || emoji_atlas::is_text_emoji(ch) {
+                    if let Some(eg) = self.emoji_atlas.get_glyph(ch) {
+                        (eg, true)
+                    } else {
+                        (self.atlas.get_glyph(ch), false)
+                    }
                 } else {
                     (self.atlas.get_glyph(ch), false)
-                }
-            } else {
-                (self.atlas.get_glyph(ch), false)
-            };
+                };
 
             let width_scale = if cw > 1 { cw as f32 } else { 1.0 };
             let flags = FLAG_UNDERLINE | if is_emoji_cell { FLAG_EMOJI } else { 0 };
@@ -1487,9 +1544,11 @@ impl Renderer {
         height: u32,
         color: [f32; 4],
     ) {
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("separator encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("separator encoder"),
+            });
         self.draw_separator(&mut encoder, view, x, y, width, height, color);
         self.queue.submit(std::iter::once(encoder.finish()));
     }
@@ -1658,7 +1717,7 @@ impl Renderer {
                     bg_color: color,
                     flags: 0,
                     cell_width_scale: 1.0,
-                _pad: [0; 2],
+                    _pad: [0; 2],
                 });
             }
         }
@@ -1668,7 +1727,10 @@ impl Renderer {
             cell_size: [cell_ndc_w, cell_ndc_h],
             grid_offset: [sep_ndc_x, sep_ndc_y],
             atlas_size: [self.atlas.width as f32, self.atlas.height as f32],
-            emoji_atlas_size: [self.emoji_atlas.width as f32, self.emoji_atlas.height as f32],
+            emoji_atlas_size: [
+                self.emoji_atlas.width as f32,
+                self.emoji_atlas.height as f32,
+            ],
             cursor_pos: [0.0; 4],
             cursor_extra: [0.0; 4],
         };
@@ -1689,11 +1751,8 @@ impl Renderer {
             });
         }
 
-        self.queue.write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(&instances),
-        );
+        self.queue
+            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1772,7 +1831,8 @@ impl Renderer {
                 }
             } else {
                 let mono_glyph = self.atlas.get_glyph(c);
-                let try_emoji_fallback = (c > ' ' && !c.is_control()
+                let try_emoji_fallback = (c > ' '
+                    && !c.is_control()
                     && mono_glyph.atlas_w > 0.0
                     && self.atlas.is_glyph_empty(c))
                     || emoji_atlas::is_text_emoji(c);
@@ -1791,12 +1851,7 @@ impl Renderer {
             let flags = if is_emoji_cell { FLAG_EMOJI } else { 0 };
             instances.push(CellInstance {
                 grid_pos: [col as f32, 0.0],
-                atlas_uv: [
-                    glyph.atlas_x,
-                    glyph.atlas_y,
-                    glyph.atlas_w,
-                    glyph.atlas_h,
-                ],
+                atlas_uv: [glyph.atlas_x, glyph.atlas_y, glyph.atlas_w, glyph.atlas_h],
                 fg_color: fg,
                 bg_color: bg,
                 flags,
@@ -1841,7 +1896,10 @@ impl Renderer {
             cell_size: [cell_ndc_w, cell_ndc_h],
             grid_offset: [ndc_x, ndc_y],
             atlas_size: [self.atlas.width as f32, self.atlas.height as f32],
-            emoji_atlas_size: [self.emoji_atlas.width as f32, self.emoji_atlas.height as f32],
+            emoji_atlas_size: [
+                self.emoji_atlas.width as f32,
+                self.emoji_atlas.height as f32,
+            ],
             cursor_pos: [0.0; 4],
             cursor_extra: [0.0; 4],
         };
@@ -1860,15 +1918,14 @@ impl Renderer {
             });
         }
 
-        self.queue.write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(&instances),
-        );
+        self.queue
+            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("text encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("text encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1918,7 +1975,10 @@ impl Renderer {
     /// After calling this, all panes must be resized (since cell dimensions change).
     /// Change the logical font size (in points). Rebuilds the atlas at `size * scale_factor`.
     pub fn set_font_size(&mut self, size: f32) -> Result<(), RenderError> {
-        self.font_config = FontConfig { size, ..self.font_config.clone() };
+        self.font_config = FontConfig {
+            size,
+            ..self.font_config.clone()
+        };
         let scaled_config = FontConfig {
             size: size * self.scale_factor,
             ..self.font_config.clone()
@@ -2089,7 +2149,8 @@ impl Renderer {
     /// Call this before rendering when the image store has been modified
     /// (i.e., when `image_store.take_dirty()` returns true).
     pub fn sync_images(&mut self, store: &termojinal_vt::ImageStore) {
-        self.image_renderer.sync_images(&self.device, &self.queue, store);
+        self.image_renderer
+            .sync_images(&self.device, &self.queue, store);
     }
 
     /// Get a mutable reference to the image renderer.
@@ -2253,8 +2314,13 @@ impl Renderer {
         let screen_width = self.surface_config.width as f32;
         let screen_height = self.surface_config.height as f32;
         self.rounded_rect_renderer.render(
-            encoder, view, &self.device, &self.queue,
-            screen_width, screen_height, rects,
+            encoder,
+            view,
+            &self.device,
+            &self.queue,
+            screen_width,
+            screen_height,
+            rects,
         );
     }
 
@@ -2262,14 +2328,12 @@ impl Renderer {
     ///
     /// Convenience wrapper around [`Self::render_rounded_rects`] that mirrors
     /// the pattern of [`Self::submit_separator`].
-    pub fn submit_rounded_rects(
-        &mut self,
-        view: &wgpu::TextureView,
-        rects: &[RoundedRect],
-    ) {
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("rounded_rect encoder"),
-        });
+    pub fn submit_rounded_rects(&mut self, view: &wgpu::TextureView, rects: &[RoundedRect]) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rounded_rect encoder"),
+            });
         self.render_rounded_rects(&mut encoder, view, rects);
         self.queue.submit(std::iter::once(encoder.finish()));
     }
@@ -2285,8 +2349,14 @@ impl Renderer {
         let width = self.surface_config.width;
         let height = self.surface_config.height;
         self.blur_renderer.blur(
-            encoder, &self.device, &self.queue,
-            source, target, radius, width, height,
+            encoder,
+            &self.device,
+            &self.queue,
+            source,
+            target,
+            radius,
+            width,
+            height,
         );
     }
 

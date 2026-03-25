@@ -34,7 +34,10 @@ impl Frame {
         payload.push(sid.len() as u8);
         payload.extend_from_slice(sid);
         payload.extend_from_slice(data);
-        Frame { msg_type: MSG_PTY_OUTPUT, payload }
+        Frame {
+            msg_type: MSG_PTY_OUTPUT,
+            payload,
+        }
     }
 
     fn snapshot(session_id: &str, data: &[u8]) -> Self {
@@ -43,12 +46,18 @@ impl Frame {
         payload.push(sid.len() as u8);
         payload.extend_from_slice(sid);
         payload.extend_from_slice(data);
-        Frame { msg_type: MSG_SNAPSHOT, payload }
+        Frame {
+            msg_type: MSG_SNAPSHOT,
+            payload,
+        }
     }
 
     fn control_response(response: &serde_json::Value) -> Self {
         let payload = serde_json::to_vec(response).unwrap_or_default();
-        Frame { msg_type: MSG_CONTROL, payload }
+        Frame {
+            msg_type: MSG_CONTROL,
+            payload,
+        }
     }
 
     fn parse_session_payload(&self) -> Option<(&str, &[u8])> {
@@ -65,7 +74,10 @@ impl Frame {
     }
 }
 
-async fn write_frame<W: AsyncWriteExt + Unpin>(writer: &mut W, frame: &Frame) -> std::io::Result<()> {
+async fn write_frame<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    frame: &Frame,
+) -> std::io::Result<()> {
     let length = 1u32 + frame.payload.len() as u32;
     writer.write_all(&length.to_be_bytes()).await?;
     writer.write_u8(frame.msg_type).await?;
@@ -79,7 +91,10 @@ async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<
     reader.read_exact(&mut len_buf).await?;
     let length = u32::from_be_bytes(len_buf);
     if length == 0 || length > MAX_FRAME_SIZE {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid frame"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid frame",
+        ));
     }
     let msg_type = reader.read_u8().await?;
     let payload_len = (length - 1) as usize;
@@ -122,8 +137,7 @@ impl Daemon {
             std::fs::create_dir_all(parent)?;
         }
 
-        let listener =
-            UnixListener::bind(&self.socket_path).map_err(SessionError::Io)?;
+        let listener = UnixListener::bind(&self.socket_path).map_err(SessionError::Io)?;
 
         log::info!("termojinald listening on {}", self.socket_path);
 
@@ -137,17 +151,21 @@ impl Daemon {
                         states.into_iter().partition(|s| is_pid_alive(s.pid));
 
                     for s in &stale {
-                        log::info!(
-                            "removing stale session file: {} (pid={:?})",
-                            s.name, s.pid
-                        );
+                        log::info!("removing stale session file: {} (pid={:?})", s.name, s.pid);
                         manager.remove_saved(&s.id).ok();
                     }
 
                     log::info!("restoring {} saved sessions", live.len());
                     for saved in &live {
-                        match manager.create_session(&saved.shell, &saved.cwd, saved.cols, saved.rows) {
-                            Ok(_) => log::info!("restored session: {} (cwd={})", saved.name, saved.cwd),
+                        match manager.create_session(
+                            &saved.shell,
+                            &saved.cwd,
+                            saved.cols,
+                            saved.rows,
+                        ) {
+                            Ok(_) => {
+                                log::info!("restored session: {} (cwd={})", saved.name, saved.cwd)
+                            }
                             Err(e) => log::warn!("failed to restore session {}: {e}", saved.name),
                         }
                     }
@@ -244,15 +262,18 @@ async fn handle_json_connection(
     first_byte: u8,
 ) -> Result<(), SessionError> {
     use serde_json::json;
-    use tokio::io::BufReader;
     use tokio::io::AsyncBufReadExt;
+    use tokio::io::BufReader;
 
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
     let mut line = String::new();
     line.push(first_byte as char);
 
-    let n = buf_reader.read_line(&mut line).await.map_err(SessionError::Io)?;
+    let n = buf_reader
+        .read_line(&mut line)
+        .await
+        .map_err(SessionError::Io)?;
     if n == 0 && line.len() <= 1 {
         return Ok(());
     }
@@ -272,20 +293,32 @@ async fn handle_json_connection(
                 }
                 "list_session_details" => {
                     let mgr = manager.lock().await;
-                    let details: Vec<serde_json::Value> = mgr.list_details().iter().map(|s| {
-                        json!({
-                            "id": s.id, "name": s.name, "shell": s.shell,
-                            "cwd": s.cwd, "pid": s.pid, "cols": s.cols,
-                            "rows": s.rows, "created_at": s.created_at.to_rfc3339(),
+                    let details: Vec<serde_json::Value> = mgr
+                        .list_details()
+                        .iter()
+                        .map(|s| {
+                            json!({
+                                "id": s.id, "name": s.name, "shell": s.shell,
+                                "cwd": s.cwd, "pid": s.pid, "cols": s.cols,
+                                "rows": s.rows, "created_at": s.created_at.to_rfc3339(),
+                            })
                         })
-                    }).collect();
+                        .collect();
                     json!({"success": true, "data": {"sessions": details}})
                 }
                 "create_session" => {
-                    let shell = req.get("shell").and_then(|v| v.as_str())
-                        .unwrap_or(&std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()))
+                    let shell = req
+                        .get("shell")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(
+                            &std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
+                        )
                         .to_string();
-                    let cwd = req.get("cwd").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+                    let cwd = req
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(".")
+                        .to_string();
                     let cols = req.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                     let rows = req.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
                     let mut mgr = manager.lock().await;
@@ -306,7 +339,11 @@ async fn handle_json_connection(
                     }
                 }
                 "resize_session" => {
-                    let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = req
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let cols = req.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                     let rows = req.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
                     let mgr = manager.lock().await;
@@ -321,12 +358,21 @@ async fn handle_json_connection(
                     if pid <= 0 {
                         json!({"success": false, "error": "invalid pid"})
                     } else {
-                        let shell = req.get("shell").and_then(|v| v.as_str()).unwrap_or("/bin/sh").to_string();
-                        let cwd = req.get("cwd").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+                        let shell = req
+                            .get("shell")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("/bin/sh")
+                            .to_string();
+                        let cwd = req
+                            .get("cwd")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(".")
+                            .to_string();
                         let cols = req.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                         let rows = req.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
                         let mut mgr = manager.lock().await;
-                        let id = mgr.register_external_session(pane_id, pid, &shell, &cwd, cols, rows);
+                        let id =
+                            mgr.register_external_session(pane_id, pid, &shell, &cwd, cols, rows);
                         json!({"success": true, "data": {"id": id, "pane_id": pane_id}})
                     }
                 }
@@ -372,12 +418,17 @@ async fn handle_json_connection(
                     // The daemon's own listener acknowledges the request.
                     // In the full architecture the GUI app handles these via
                     // the IpcServer callback; here we just log and ACK.
-                    let state = req.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let state = req
+                        .get("state")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     let pid = req.get("pid").and_then(|v| v.as_i64());
                     log::info!("claude status update (daemon): state={state}, pid={pid:?}");
                     json!({"success": true})
                 }
-                _ => json!({"success": false, "error": format!("unknown request type: {req_type}")}),
+                _ => {
+                    json!({"success": false, "error": format!("unknown request type: {req_type}")})
+                }
             }
         }
         Err(e) => json!({"success": false, "error": format!("invalid JSON: {e}")}),
@@ -386,7 +437,10 @@ async fn handle_json_connection(
     let mut response_json = serde_json::to_string(&response)
         .map_err(|e| SessionError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
     response_json.push('\n');
-    writer.write_all(response_json.as_bytes()).await.map_err(SessionError::Io)?;
+    writer
+        .write_all(response_json.as_bytes())
+        .await
+        .map_err(SessionError::Io)?;
 
     Ok(())
 }
@@ -403,7 +457,10 @@ async fn handle_binary_connection(
 
     // Read the remaining 3 bytes of the first frame's length header.
     let mut rest = [0u8; 3];
-    reader.read_exact(&mut rest).await.map_err(SessionError::Io)?;
+    reader
+        .read_exact(&mut rest)
+        .await
+        .map_err(SessionError::Io)?;
     let length = u32::from_be_bytes([first_byte, rest[0], rest[1], rest[2]]);
 
     if length == 0 || length > MAX_FRAME_SIZE {
@@ -417,26 +474,37 @@ async fn handle_binary_connection(
     let payload_len = (length - 1) as usize;
     let mut payload = vec![0u8; payload_len];
     if payload_len > 0 {
-        reader.read_exact(&mut payload).await.map_err(SessionError::Io)?;
+        reader
+            .read_exact(&mut payload)
+            .await
+            .map_err(SessionError::Io)?;
     }
 
     let first_frame = Frame { msg_type, payload };
 
     // The first frame must be a control message with attach_session.
     if first_frame.msg_type != MSG_CONTROL {
-        log::warn!("binary connection: first frame is not MSG_CONTROL (got type={})", first_frame.msg_type);
+        log::warn!(
+            "binary connection: first frame is not MSG_CONTROL (got type={})",
+            first_frame.msg_type
+        );
         return Ok(());
     }
 
-    let request: serde_json::Value = serde_json::from_slice(&first_frame.payload)
-        .map_err(SessionError::Serialize)?;
+    let request: serde_json::Value =
+        serde_json::from_slice(&first_frame.payload).map_err(SessionError::Serialize)?;
 
     let req_type = request.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let session_id = if req_type == "attach_session" {
-        request.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        request
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     } else {
         // One-shot control request over binary protocol.
-        let resp = json!({"success": false, "error": "expected attach_session as first binary frame"});
+        let resp =
+            json!({"success": false, "error": "expected attach_session as first binary frame"});
         let resp_frame = Frame::control_response(&resp);
         let _ = write_frame(&mut writer, &resp_frame).await;
         return Ok(());
@@ -567,8 +635,7 @@ pub fn socket_path() -> String {
 
 /// Get the Unix socket path for the termojinal app's IPC listener.
 pub fn app_socket_path() -> String {
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     data_dir
         .join("termojinal")
         .join("termojinal-app.sock")

@@ -69,7 +69,7 @@ pub fn is_zero_width_for_render(c: char) -> bool {
 /// The packing strategy mirrors the monochrome `Atlas`: each emoji occupies
 /// a cell-sized slot (2 cells wide for full-width emoji).
 pub struct EmojiAtlas {
-    pub data: Vec<u8>,   // RGBA data (4 bytes per pixel)
+    pub data: Vec<u8>, // RGBA data (4 bytes per pixel)
     pub width: u32,
     pub height: u32,
     glyphs: HashMap<char, GlyphInfo>,
@@ -149,8 +149,16 @@ impl EmojiAtlas {
 
         // Copy the RGBA bitmap into the atlas. The bitmap may be smaller or
         // equal to entry_w x entry_h, so center it.
-        let offset_x = if bmp_w < entry_w { (entry_w - bmp_w) / 2 } else { 0 };
-        let offset_y = if bmp_h < entry_h { (entry_h - bmp_h) / 2 } else { 0 };
+        let offset_x = if bmp_w < entry_w {
+            (entry_w - bmp_w) / 2
+        } else {
+            0
+        };
+        let offset_y = if bmp_h < entry_h {
+            (entry_h - bmp_h) / 2
+        } else {
+            0
+        };
 
         for row in 0..bmp_h.min(entry_h) {
             for col in 0..bmp_w.min(entry_w) {
@@ -254,8 +262,8 @@ fn rasterize_emoji_ct(
         None,
         bmp_w as usize,
         bmp_h as usize,
-        8,                          // bits per component
-        bmp_w as usize * 4,        // bytes per row
+        8,                  // bits per component
+        bmp_w as usize * 4, // bytes per row
         &color_space,
         kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big,
     );
@@ -270,10 +278,7 @@ fn rasterize_emoji_ct(
     let glyph_id = glyphs[0];
 
     // Get glyph bounding box for positioning.
-    let _bbox = ct_font.get_bounding_rects_for_glyphs(
-        kCTFontOrientationDefault,
-        &[glyph_id],
-    );
+    let _bbox = ct_font.get_bounding_rects_for_glyphs(kCTFontOrientationDefault, &[glyph_id]);
 
     // Use Core Text CTLine for reliable emoji rendering (works with bitmap emoji).
     use core_foundation::attributed_string::CFMutableAttributedString;
@@ -283,10 +288,7 @@ fn rasterize_emoji_ct(
         fn CTLineCreateWithAttributedString(
             attr_string: core_foundation::base::CFTypeRef,
         ) -> *mut std::ffi::c_void;
-        fn CTLineDraw(
-            line: *const std::ffi::c_void,
-            context: *mut core_graphics::sys::CGContext,
-        );
+        fn CTLineDraw(line: *const std::ffi::c_void, context: *mut core_graphics::sys::CGContext);
         fn CFRelease(cf: *const std::ffi::c_void);
         static kCTFontAttributeName: core_foundation::base::CFTypeRef;
         fn CFAttributedStringSetAttribute(
@@ -299,9 +301,18 @@ fn rasterize_emoji_ct(
 
     let s = CFString::new(&c.to_string());
     let mut attr_str = CFMutableAttributedString::new();
-    attr_str.replace_str(&s, core_foundation_sys::base::CFRange { location: 0, length: 0 });
+    attr_str.replace_str(
+        &s,
+        core_foundation_sys::base::CFRange {
+            location: 0,
+            length: 0,
+        },
+    );
 
-    let range = core_foundation_sys::base::CFRange { location: 0, length: attr_str.char_len() };
+    let range = core_foundation_sys::base::CFRange {
+        location: 0,
+        length: attr_str.char_len(),
+    };
     unsafe {
         CFAttributedStringSetAttribute(
             attr_str.as_CFTypeRef() as *mut _,
@@ -351,7 +362,11 @@ fn rasterize_emoji_ct(
     // both axes), a square region in the bitmap appears square on screen.
     let glyph_max = advance_w.max(text_h);
     let target_side = (bmp_w.min(bmp_h) as f64) * 0.92; // 92% to avoid clipping
-    let fit_scale = if glyph_max > 0.0 { target_side / glyph_max } else { 1.0 };
+    let fit_scale = if glyph_max > 0.0 {
+        target_side / glyph_max
+    } else {
+        1.0
+    };
 
     // Apply uniform scale to the CG context so the glyph is rendered
     // at the correct size.  Core Text will scale the sbix bitmap strike.
@@ -425,12 +440,7 @@ fn rasterize_text_ct(
     // .AppleSystemUIFont (SF Pro) doesn't cascade to symbol fonts;
     // Apple Symbols covers Miscellaneous Technical, Dingbats, etc.;
     // Menlo covers many programming symbols; LastResort is the final fallback.
-    let font_names = [
-        ".AppleSystemUIFont",
-        "Apple Symbols",
-        "Menlo",
-        "LastResort",
-    ];
+    let font_names = [".AppleSystemUIFont", "Apple Symbols", "Menlo", "LastResort"];
     let mut ct = None;
     let mut glyphs = [0u16; 2];
     let mut utf16_buf = [0u16; 2];
@@ -490,10 +500,7 @@ fn rasterize_text_ct(
         fn CTLineCreateWithAttributedString(
             attr_string: core_foundation::base::CFTypeRef,
         ) -> *mut std::ffi::c_void;
-        fn CTLineDraw(
-            line: *const std::ffi::c_void,
-            context: *mut core_graphics::sys::CGContext,
-        );
+        fn CTLineDraw(line: *const std::ffi::c_void, context: *mut core_graphics::sys::CGContext);
         fn CFRelease(cf: *const std::ffi::c_void);
         static kCTFontAttributeName: core_foundation::base::CFTypeRef;
         static kCTForegroundColorFromContextAttributeName: core_foundation::base::CFTypeRef;
@@ -507,9 +514,18 @@ fn rasterize_text_ct(
 
     let s = CFString::new(&c.to_string());
     let mut attr_str = CFMutableAttributedString::new();
-    attr_str.replace_str(&s, core_foundation_sys::base::CFRange { location: 0, length: 0 });
+    attr_str.replace_str(
+        &s,
+        core_foundation_sys::base::CFRange {
+            location: 0,
+            length: 0,
+        },
+    );
 
-    let range = core_foundation_sys::base::CFRange { location: 0, length: attr_str.char_len() };
+    let range = core_foundation_sys::base::CFRange {
+        location: 0,
+        length: attr_str.char_len(),
+    };
     unsafe {
         CFAttributedStringSetAttribute(
             attr_str.as_CFTypeRef() as *mut _,
@@ -589,7 +605,13 @@ fn rasterize_text_ct(
         return None;
     }
 
-    log::debug!("rasterize_text_ct: rendered U+{:04X} '{}' {}x{}", c as u32, c, bmp_w, bmp_h);
+    log::debug!(
+        "rasterize_text_ct: rendered U+{:04X} '{}' {}x{}",
+        c as u32,
+        c,
+        bmp_w,
+        bmp_h
+    );
     Some((rgba, bmp_w, bmp_h))
 }
 
@@ -722,11 +744,22 @@ mod tests {
         eprintln!("AppleSystemUIFont: found={}, glyph_id={}", found, glyphs[0]);
 
         // Try other fonts
-        for name in &["Apple Symbols", "Menlo", "SF Mono", "Helvetica", "Arial", "LastResort"] {
+        for name in &[
+            "Apple Symbols",
+            "Menlo",
+            "SF Mono",
+            "Helvetica",
+            "Arial",
+            "LastResort",
+        ] {
             if let Ok(f) = ct_font::new_from_name(name, size) {
                 let mut g2 = [0u16; 2];
                 let ok = unsafe {
-                    f.get_glyphs_for_characters(utf16_buf.as_ptr(), g2.as_mut_ptr(), utf16_len as core_foundation::base::CFIndex)
+                    f.get_glyphs_for_characters(
+                        utf16_buf.as_ptr(),
+                        g2.as_mut_ptr(),
+                        utf16_len as core_foundation::base::CFIndex,
+                    )
                 };
                 eprintln!("  {}: found={}, glyph_id={}", name, ok, g2[0]);
             } else {
@@ -738,7 +771,10 @@ mod tests {
         let result = super::rasterize_text_ct(c, 11.0, 10, 16);
         if let Some((rgba, w, h)) = &result {
             let nonzero_a: usize = rgba.iter().skip(3).step_by(4).filter(|&&a| a > 0).count();
-            eprintln!("rasterize_text_ct('❯'): {}x{}, nonzero_alpha={}", w, h, nonzero_a);
+            eprintln!(
+                "rasterize_text_ct('❯'): {}x{}, nonzero_alpha={}",
+                w, h, nonzero_a
+            );
         } else {
             eprintln!("rasterize_text_ct('❯'): returned None");
         }
@@ -753,7 +789,10 @@ mod tests {
         let result = super::rasterize_text_ct(c, 14.0, 10, 16);
         if let Some((rgba, w, h)) = &result {
             let nonzero_a: usize = rgba.iter().skip(3).step_by(4).filter(|&&a| a > 0).count();
-            eprintln!("rasterize_text_ct('⏺' U+23FA): {}x{}, nonzero_alpha={}", w, h, nonzero_a);
+            eprintln!(
+                "rasterize_text_ct('⏺' U+23FA): {}x{}, nonzero_alpha={}",
+                w, h, nonzero_a
+            );
             assert!(nonzero_a > 0, "U+23FA must produce visible pixels");
         } else {
             eprintln!("rasterize_text_ct('⏺' U+23FA): returned None — checking font support");
@@ -788,7 +827,10 @@ mod tests {
         let result = super::rasterize_text_ct(c, 14.0, 10, 16);
         if let Some((rgba, w, h)) = &result {
             let nonzero_a: usize = rgba.iter().skip(3).step_by(4).filter(|&&a| a > 0).count();
-            eprintln!("rasterize_text_ct('✔' U+2714): {}x{}, nonzero_alpha={}", w, h, nonzero_a);
+            eprintln!(
+                "rasterize_text_ct('✔' U+2714): {}x{}, nonzero_alpha={}",
+                w, h, nonzero_a
+            );
             assert!(nonzero_a > 0, "U+2714 must produce visible pixels");
         } else {
             eprintln!("WARNING: U+2714 could not be rasterized via any font");

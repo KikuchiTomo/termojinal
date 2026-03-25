@@ -72,17 +72,15 @@ pub struct Atlas {
 impl Atlas {
     pub fn new(config: &FontConfig) -> Result<Self, AtlasError> {
         let font_data = Self::load_font_data(&config.family)?;
-        let font = fontdue::Font::from_bytes(
-            font_data.as_slice(),
-            fontdue::FontSettings::default(),
-        )
-        .map_err(|e| AtlasError::FontParsing(e.to_string()))?;
+        let font =
+            fontdue::Font::from_bytes(font_data.as_slice(), fontdue::FontSettings::default())
+                .map_err(|e| AtlasError::FontParsing(e.to_string()))?;
 
-        let line_metrics = font
-            .horizontal_line_metrics(config.size)
-            .ok_or(AtlasError::FontParsing(
-                "no horizontal line metrics".to_string(),
-            ))?;
+        let line_metrics =
+            font.horizontal_line_metrics(config.size)
+                .ok_or(AtlasError::FontParsing(
+                    "no horizontal line metrics".to_string(),
+                ))?;
 
         let ascent = line_metrics.ascent;
         let descent = line_metrics.descent;
@@ -105,7 +103,9 @@ impl Atlas {
         log::info!(
             "font metrics: ascent={ascent:.1}, descent={descent:.1}, \
              cell={}x{}, size={}",
-            cell_w, cell_h, config.size
+            cell_w,
+            cell_h,
+            config.size
         );
 
         // Try to load a Nerd Font as fallback for PUA / box-drawing glyphs.
@@ -205,9 +205,9 @@ impl Atlas {
 
         // --- Shade characters ---
         let shade = match c {
-            '░' => Some(64u8),    // LIGHT SHADE ~25%
-            '▒' => Some(128u8),   // MEDIUM SHADE ~50%
-            '▓' => Some(192u8),   // DARK SHADE ~75%
+            '░' => Some(64u8),  // LIGHT SHADE ~25%
+            '▒' => Some(128u8), // MEDIUM SHADE ~50%
+            '▓' => Some(192u8), // DARK SHADE ~75%
             _ => None,
         };
         if let Some(alpha) = shade {
@@ -227,15 +227,15 @@ impl Atlas {
 
         // --- Block elements (U+2580–U+259F) ---
         let regions: Vec<(u32, u32, u32, u32)> = match c {
-            '█' => vec![(0, 0, w, h)],           // FULL BLOCK
-            '▀' => vec![(0, 0, w, hh)],          // UPPER HALF
-            '▄' => vec![(0, hh, w, h)],          // LOWER HALF
-            '▌' => vec![(0, 0, hw, h)],          // LEFT HALF
-            '▐' => vec![(hw, 0, w, h)],          // RIGHT HALF
-            '▖' => vec![(0, hh, hw, h)],         // QUADRANT LOWER LEFT
-            '▗' => vec![(hw, hh, w, h)],         // QUADRANT LOWER RIGHT
-            '▘' => vec![(0, 0, hw, hh)],         // QUADRANT UPPER LEFT
-            '▝' => vec![(hw, 0, w, hh)],         // QUADRANT UPPER RIGHT
+            '█' => vec![(0, 0, w, h)],   // FULL BLOCK
+            '▀' => vec![(0, 0, w, hh)],  // UPPER HALF
+            '▄' => vec![(0, hh, w, h)],  // LOWER HALF
+            '▌' => vec![(0, 0, hw, h)],  // LEFT HALF
+            '▐' => vec![(hw, 0, w, h)],  // RIGHT HALF
+            '▖' => vec![(0, hh, hw, h)], // QUADRANT LOWER LEFT
+            '▗' => vec![(hw, hh, w, h)], // QUADRANT LOWER RIGHT
+            '▘' => vec![(0, 0, hw, hh)], // QUADRANT UPPER LEFT
+            '▝' => vec![(hw, 0, w, hh)], // QUADRANT UPPER RIGHT
             '▙' => vec![(0, 0, hw, h), (hw, hh, w, h)],
             '▛' => vec![(0, 0, w, hh), (0, hh, hw, h)],
             '▜' => vec![(0, 0, w, hh), (hw, hh, w, h)],
@@ -296,55 +296,99 @@ impl Atlas {
             '┈' => (1, 1, 0, 0), // quad-dash horizontal
             '┊' => (0, 0, 1, 1), // quad-dash vertical
             // Heavy corners
-            '┍' => (0, 2, 0, 1), '┎' => (0, 1, 0, 2),
+            '┍' => (0, 2, 0, 1),
+            '┎' => (0, 1, 0, 2),
             '┏' => (0, 2, 0, 2),
-            '┑' => (2, 0, 0, 1), '┒' => (1, 0, 0, 2),
+            '┑' => (2, 0, 0, 1),
+            '┒' => (1, 0, 0, 2),
             '┓' => (2, 0, 0, 2),
-            '┕' => (0, 2, 1, 0), '┖' => (0, 1, 2, 0),
+            '┕' => (0, 2, 1, 0),
+            '┖' => (0, 1, 2, 0),
             '┗' => (0, 2, 2, 0),
-            '┙' => (2, 0, 1, 0), '┚' => (1, 0, 2, 0),
+            '┙' => (2, 0, 1, 0),
+            '┚' => (1, 0, 2, 0),
             '┛' => (2, 0, 2, 0),
             // Heavy T-junctions
-            '┝' => (0, 2, 1, 1), '┞' => (0, 1, 2, 1), '┟' => (0, 1, 1, 2),
-            '┠' => (0, 1, 2, 2), '┡' => (0, 2, 2, 1), '┢' => (0, 2, 1, 2),
+            '┝' => (0, 2, 1, 1),
+            '┞' => (0, 1, 2, 1),
+            '┟' => (0, 1, 1, 2),
+            '┠' => (0, 1, 2, 2),
+            '┡' => (0, 2, 2, 1),
+            '┢' => (0, 2, 1, 2),
             '┣' => (0, 2, 2, 2),
-            '┥' => (2, 0, 1, 1), '┦' => (1, 0, 2, 1), '┧' => (1, 0, 1, 2),
-            '┨' => (1, 0, 2, 2), '┩' => (2, 0, 2, 1), '┪' => (2, 0, 1, 2),
+            '┥' => (2, 0, 1, 1),
+            '┦' => (1, 0, 2, 1),
+            '┧' => (1, 0, 1, 2),
+            '┨' => (1, 0, 2, 2),
+            '┩' => (2, 0, 2, 1),
+            '┪' => (2, 0, 1, 2),
             '┫' => (2, 0, 2, 2),
-            '┭' => (2, 1, 0, 1), '┮' => (1, 2, 0, 1), '┯' => (2, 2, 0, 1),
-            '┰' => (1, 1, 0, 2), '┱' => (2, 1, 0, 2), '┲' => (1, 2, 0, 2),
+            '┭' => (2, 1, 0, 1),
+            '┮' => (1, 2, 0, 1),
+            '┯' => (2, 2, 0, 1),
+            '┰' => (1, 1, 0, 2),
+            '┱' => (2, 1, 0, 2),
+            '┲' => (1, 2, 0, 2),
             '┳' => (2, 2, 0, 2),
-            '┵' => (2, 1, 1, 0), '┶' => (1, 2, 1, 0), '┷' => (2, 2, 1, 0),
-            '┸' => (1, 1, 2, 0), '┹' => (2, 1, 2, 0), '┺' => (1, 2, 2, 0),
+            '┵' => (2, 1, 1, 0),
+            '┶' => (1, 2, 1, 0),
+            '┷' => (2, 2, 1, 0),
+            '┸' => (1, 1, 2, 0),
+            '┹' => (2, 1, 2, 0),
+            '┺' => (1, 2, 2, 0),
             '┻' => (2, 2, 2, 0),
             // Heavy crosses
-            '┽' => (2, 1, 1, 1), '┾' => (1, 2, 1, 1), '┿' => (2, 2, 1, 1),
-            '╀' => (1, 1, 2, 1), '╁' => (1, 1, 1, 2), '╂' => (1, 1, 2, 2),
-            '╃' => (2, 1, 2, 1), '╄' => (1, 2, 2, 1), '╅' => (2, 1, 1, 2),
-            '╆' => (1, 2, 1, 2), '╇' => (2, 2, 2, 1), '╈' => (2, 2, 1, 2),
-            '╉' => (2, 1, 2, 2), '╊' => (1, 2, 2, 2),
+            '┽' => (2, 1, 1, 1),
+            '┾' => (1, 2, 1, 1),
+            '┿' => (2, 2, 1, 1),
+            '╀' => (1, 1, 2, 1),
+            '╁' => (1, 1, 1, 2),
+            '╂' => (1, 1, 2, 2),
+            '╃' => (2, 1, 2, 1),
+            '╄' => (1, 2, 2, 1),
+            '╅' => (2, 1, 1, 2),
+            '╆' => (1, 2, 1, 2),
+            '╇' => (2, 2, 2, 1),
+            '╈' => (2, 2, 1, 2),
+            '╉' => (2, 1, 2, 2),
+            '╊' => (1, 2, 2, 2),
             '╋' => (2, 2, 2, 2),
             // Double lines
             '═' => (3, 3, 0, 0), // double horizontal
             '║' => (0, 0, 3, 3), // double vertical
-            '╔' => (0, 3, 0, 3), '╗' => (3, 0, 0, 3),
-            '╚' => (0, 3, 3, 0), '╝' => (3, 0, 3, 0),
-            '╠' => (0, 3, 3, 3), '╣' => (3, 0, 3, 3),
-            '╦' => (3, 3, 0, 3), '╩' => (3, 3, 3, 0),
+            '╔' => (0, 3, 0, 3),
+            '╗' => (3, 0, 0, 3),
+            '╚' => (0, 3, 3, 0),
+            '╝' => (3, 0, 3, 0),
+            '╠' => (0, 3, 3, 3),
+            '╣' => (3, 0, 3, 3),
+            '╦' => (3, 3, 0, 3),
+            '╩' => (3, 3, 3, 0),
             '╬' => (3, 3, 3, 3),
             // Mixed single/double
-            '╒' => (0, 3, 0, 1), '╓' => (0, 1, 0, 3),
-            '╕' => (3, 0, 0, 1), '╖' => (1, 0, 0, 3),
-            '╘' => (0, 3, 1, 0), '╙' => (0, 1, 3, 0),
-            '╛' => (3, 0, 1, 0), '╜' => (1, 0, 3, 0),
-            '╞' => (0, 3, 1, 1), '╟' => (0, 1, 3, 3),
-            '╡' => (3, 0, 1, 1), '╢' => (1, 0, 3, 3),
-            '╤' => (3, 3, 0, 1), '╥' => (1, 1, 0, 3),
-            '╧' => (3, 3, 1, 0), '╨' => (1, 1, 3, 0),
-            '╪' => (3, 3, 1, 1), '╫' => (1, 1, 3, 3),
+            '╒' => (0, 3, 0, 1),
+            '╓' => (0, 1, 0, 3),
+            '╕' => (3, 0, 0, 1),
+            '╖' => (1, 0, 0, 3),
+            '╘' => (0, 3, 1, 0),
+            '╙' => (0, 1, 3, 0),
+            '╛' => (3, 0, 1, 0),
+            '╜' => (1, 0, 3, 0),
+            '╞' => (0, 3, 1, 1),
+            '╟' => (0, 1, 3, 3),
+            '╡' => (3, 0, 1, 1),
+            '╢' => (1, 0, 3, 3),
+            '╤' => (3, 3, 0, 1),
+            '╥' => (1, 1, 0, 3),
+            '╧' => (3, 3, 1, 0),
+            '╨' => (1, 1, 3, 0),
+            '╪' => (3, 3, 1, 1),
+            '╫' => (1, 1, 3, 3),
             // Rounded corners
-            '╭' => (0, 1, 0, 1), '╮' => (1, 0, 0, 1),
-            '╯' => (1, 0, 1, 0), '╰' => (0, 1, 1, 0),
+            '╭' => (0, 1, 0, 1),
+            '╮' => (1, 0, 0, 1),
+            '╯' => (1, 0, 1, 0),
+            '╰' => (0, 1, 1, 0),
             _ => return None,
         };
 
@@ -359,24 +403,31 @@ impl Atlas {
             }
         };
 
-        let draw_segment = |fill: &mut dyn FnMut(u32, u32, u32, u32), dir: u32, thickness: u32, is_double: bool| {
+        let draw_segment = |fill: &mut dyn FnMut(u32, u32, u32, u32),
+                            dir: u32,
+                            thickness: u32,
+                            is_double: bool| {
             if is_double {
                 let gap = (thickness + 1).max(2);
                 let t = thickness.max(1);
                 match dir {
-                    0 => { // left
+                    0 => {
+                        // left
                         fill(0, cy - gap, cx, cy - gap + t);
                         fill(0, cy + gap - t, cx, cy + gap);
                     }
-                    1 => { // right
+                    1 => {
+                        // right
                         fill(cx, cy - gap, w, cy - gap + t);
                         fill(cx, cy + gap - t, w, cy + gap);
                     }
-                    2 => { // up
+                    2 => {
+                        // up
                         fill(cx - gap, 0, cx - gap + t, cy);
                         fill(cx + gap - t, 0, cx + gap, cy);
                     }
-                    3 => { // down
+                    3 => {
+                        // down
                         fill(cx - gap, cy, cx - gap + t, h);
                         fill(cx + gap - t, cy, cx + gap, h);
                     }
@@ -385,10 +436,30 @@ impl Atlas {
             } else {
                 let half_t = thickness / 2;
                 match dir {
-                    0 => fill(0, cy.saturating_sub(half_t), cx + half_t, cy + thickness - half_t), // left
-                    1 => fill(cx.saturating_sub(half_t), cy.saturating_sub(half_t), w, cy + thickness - half_t), // right
-                    2 => fill(cx.saturating_sub(half_t), 0, cx + thickness - half_t, cy + half_t), // up
-                    3 => fill(cx.saturating_sub(half_t), cy.saturating_sub(half_t), cx + thickness - half_t, h), // down
+                    0 => fill(
+                        0,
+                        cy.saturating_sub(half_t),
+                        cx + half_t,
+                        cy + thickness - half_t,
+                    ), // left
+                    1 => fill(
+                        cx.saturating_sub(half_t),
+                        cy.saturating_sub(half_t),
+                        w,
+                        cy + thickness - half_t,
+                    ), // right
+                    2 => fill(
+                        cx.saturating_sub(half_t),
+                        0,
+                        cx + thickness - half_t,
+                        cy + half_t,
+                    ), // up
+                    3 => fill(
+                        cx.saturating_sub(half_t),
+                        cy.saturating_sub(half_t),
+                        cx + thickness - half_t,
+                        h,
+                    ), // down
                     _ => {}
                 }
             }
@@ -397,7 +468,9 @@ impl Atlas {
         // Draw each segment.
         let segments = [(0u32, left), (1, right), (2, up), (3, down)];
         for (dir, style) in segments {
-            if style == 0 { continue; }
+            if style == 0 {
+                continue;
+            }
             let is_double = style == 3;
             let thickness = if style == 2 { heavy } else { thin };
             draw_segment(&mut fill, dir, thickness, is_double);
@@ -596,7 +669,12 @@ impl Atlas {
         if c as u32 > 0x7F {
             log::debug!(
                 "glyph U+{:04X} '{}': after_fallback {}x{} nonzero={} empty={}",
-                c as u32, c, glyph_w, glyph_h, nonzero_count, glyph_empty,
+                c as u32,
+                c,
+                glyph_w,
+                glyph_h,
+                nonzero_count,
+                glyph_empty,
             );
         }
 
@@ -608,10 +686,18 @@ impl Atlas {
                     self.glyphs.insert(c, info);
                     return info;
                 }
-                log::debug!("glyph U+{:04X} '{}': Core Text fallback also failed", c as u32, c);
+                log::debug!(
+                    "glyph U+{:04X} '{}': Core Text fallback also failed",
+                    c as u32,
+                    c
+                );
             }
             if glyph_w == 0 || glyph_h == 0 {
-                let info = self.pack_cell_bitmap(&vec![0u8; (entry_w * entry_h) as usize], entry_w, entry_h);
+                let info = self.pack_cell_bitmap(
+                    &vec![0u8; (entry_w * entry_h) as usize],
+                    entry_w,
+                    entry_h,
+                );
                 self.glyphs.insert(c, info);
                 return info;
             }
@@ -786,10 +872,7 @@ impl Atlas {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             // Look for Nerd Font files (contain "Nerd" or "NF" in the name).
             let is_nerd = name.contains("Nerd") || name.contains(" NF ");
@@ -806,17 +889,17 @@ impl Atlas {
                             return Some(font);
                         }
                         Err(e) => {
-                            log::warn!(
-                                "failed to parse fallback font {}: {e}",
-                                path.display()
-                            );
+                            log::warn!("failed to parse fallback font {}: {e}", path.display());
                         }
                     }
                 }
             }
         }
 
-        log::info!("no Nerd Font found in {}, fallback disabled", fonts_dir.display());
+        log::info!(
+            "no Nerd Font found in {}, fallback disabled",
+            fonts_dir.display()
+        );
         None
     }
 
@@ -837,10 +920,7 @@ impl Atlas {
 
         for path in &candidates {
             if let Ok(data) = std::fs::read(path) {
-                match fontdue::Font::from_bytes(
-                    data.as_slice(),
-                    fontdue::FontSettings::default(),
-                ) {
+                match fontdue::Font::from_bytes(data.as_slice(), fontdue::FontSettings::default()) {
                     Ok(font) => {
                         // Verify the font can actually render a common CJK character.
                         if font.lookup_glyph_index('あ') != 0 {
@@ -881,10 +961,7 @@ impl Atlas {
 
         for path in &candidates {
             if let Ok(data) = std::fs::read(path) {
-                match fontdue::Font::from_bytes(
-                    data.as_slice(),
-                    fontdue::FontSettings::default(),
-                ) {
+                match fontdue::Font::from_bytes(data.as_slice(), fontdue::FontSettings::default()) {
                     Ok(font) => {
                         // Verify the font can render a Braille Pattern character
                         // (U+280B = ⠋, commonly used in CLI spinners).
@@ -1000,9 +1077,18 @@ impl Atlas {
 
         let s = CFString::new(&c.to_string());
         let mut attr_str = CFMutableAttributedString::new();
-        attr_str.replace_str(&s, core_foundation_sys::base::CFRange { location: 0, length: 0 });
+        attr_str.replace_str(
+            &s,
+            core_foundation_sys::base::CFRange {
+                location: 0,
+                length: 0,
+            },
+        );
 
-        let range = core_foundation_sys::base::CFRange { location: 0, length: attr_str.char_len() };
+        let range = core_foundation_sys::base::CFRange {
+            location: 0,
+            length: attr_str.char_len(),
+        };
         unsafe {
             CFAttributedStringSetAttribute(
                 attr_str.as_CFTypeRef() as *mut _,
@@ -1094,7 +1180,12 @@ impl Atlas {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn try_core_text_fallback(&mut self, _c: char, _entry_w: u32, _entry_h: u32) -> Option<GlyphInfo> {
+    fn try_core_text_fallback(
+        &mut self,
+        _c: char,
+        _entry_w: u32,
+        _entry_h: u32,
+    ) -> Option<GlyphInfo> {
         None
     }
 }
@@ -1154,8 +1245,7 @@ mod tests {
             let cell_h = atlas.cell_size.height;
             for (&c, &info) in &atlas.glyphs {
                 assert!(
-                    (info.atlas_w - cell_w).abs() < 0.01
-                        && (info.atlas_h - cell_h).abs() < 0.01,
+                    (info.atlas_w - cell_w).abs() < 0.01 && (info.atlas_h - cell_h).abs() < 0.01,
                     "Glyph '{c}' has atlas size {}x{}, expected {}x{}",
                     info.atlas_w,
                     info.atlas_h,
@@ -1207,13 +1297,15 @@ mod tests {
                 assert!(
                     glyph.atlas_w > 0.0 && glyph.atlas_h > 0.0,
                     "Braille char '{}' (U+{:04X}) must have non-zero atlas size",
-                    c, c as u32
+                    c,
+                    c as u32
                 );
                 // Verify the glyph was actually rasterized (not just a blank slot).
                 assert!(
                     atlas.has_glyph(c),
                     "Braille char '{}' (U+{:04X}) must be cached in atlas",
-                    c, c as u32
+                    c,
+                    c as u32
                 );
                 // Verify the atlas bitmap has non-zero pixels for this glyph
                 // (i.e., actual glyph data, not just a transparent empty cell).
@@ -1233,11 +1325,17 @@ mod tests {
                 assert!(
                     nonzero > 0,
                     "Braille char '{}' (U+{:04X}) must have visible pixels (got 0 non-zero)",
-                    c, c as u32
+                    c,
+                    c as u32
                 );
                 eprintln!(
                     "Braille '{}' (U+{:04X}): atlas_w={}, atlas_h={}, nonzero_pixels={}, new={}",
-                    c, c as u32, glyph.atlas_w, glyph.atlas_h, nonzero, atlas.glyph_count() > initial
+                    c,
+                    c as u32,
+                    glyph.atlas_w,
+                    glyph.atlas_h,
+                    nonzero,
+                    atlas.glyph_count() > initial
                 );
             }
         }
@@ -1283,7 +1381,10 @@ mod tests {
                     if sym_idx != 0 {
                         let (sm, sbmp) = sym.rasterize(*c, atlas.font_size);
                         let nonzero_sym = sbmp.iter().filter(|&&b| b > 0).count();
-                        eprintln!("  symbols: glyph_idx={} {}x{} nonzero={}", sym_idx, sm.width, sm.height, nonzero_sym);
+                        eprintln!(
+                            "  symbols: glyph_idx={} {}x{} nonzero={}",
+                            sym_idx, sm.width, sm.height, nonzero_sym
+                        );
                     } else {
                         eprintln!("  symbols: not found");
                     }
@@ -1294,14 +1395,20 @@ mod tests {
                     if cjk_idx != 0 {
                         let (cm, cbmp) = cjk.rasterize(*c, atlas.font_size);
                         let nonzero_cjk = cbmp.iter().filter(|&&b| b > 0).count();
-                        eprintln!("  cjk:     glyph_idx={} {}x{} nonzero={}", cjk_idx, cm.width, cm.height, nonzero_cjk);
+                        eprintln!(
+                            "  cjk:     glyph_idx={} {}x{} nonzero={}",
+                            cjk_idx, cm.width, cm.height, nonzero_cjk
+                        );
                     } else {
                         eprintln!("  cjk:     not found");
                     }
                 }
                 // Now get the final glyph through the normal pipeline
                 let glyph = atlas.get_glyph(*c);
-                eprintln!("  final:   atlas_w={} atlas_h={}", glyph.atlas_w, glyph.atlas_h);
+                eprintln!(
+                    "  final:   atlas_w={} atlas_h={}",
+                    glyph.atlas_w, glyph.atlas_h
+                );
                 eprintln!();
             }
         }
@@ -1325,8 +1432,14 @@ mod tests {
                     assert!(
                         no_overlap,
                         "Overlap: ({},{},{},{}) vs ({},{},{},{})",
-                        a.atlas_x, a.atlas_y, a.atlas_w, a.atlas_h, b.atlas_x, b.atlas_y,
-                        b.atlas_w, b.atlas_h,
+                        a.atlas_x,
+                        a.atlas_y,
+                        a.atlas_w,
+                        a.atlas_h,
+                        b.atlas_x,
+                        b.atlas_y,
+                        b.atlas_w,
+                        b.atlas_h,
                     );
                 }
             }

@@ -50,9 +50,7 @@ impl GlobalHotkey {
     ///
     /// Returns `Ok(GlobalHotkey)` on success, or `Err` if the event tap could
     /// not be created (typically due to missing Input Monitoring permission).
-    pub fn start(
-        callback: impl Fn(HotkeyEvent) + Send + 'static,
-    ) -> Result<Self, HotkeyError> {
+    pub fn start(callback: impl Fn(HotkeyEvent) + Send + 'static) -> Result<Self, HotkeyError> {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
 
@@ -174,8 +172,7 @@ mod platform {
             vec![CGEventType::KeyDown],
             move |_proxy, _event_type, event| {
                 let flags = event.get_flags();
-                let keycode =
-                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
 
                 if is_cmd_shift(flags) {
                     match keycode {

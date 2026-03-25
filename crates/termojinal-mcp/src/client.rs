@@ -44,9 +44,7 @@ impl AppClient {
         stream
             .write_all(msg.as_bytes())
             .map_err(|e| format!("write error: {e}"))?;
-        stream
-            .flush()
-            .map_err(|e| format!("flush error: {e}"))?;
+        stream.flush().map_err(|e| format!("flush error: {e}"))?;
 
         // Shutdown write side so server knows we're done sending.
         stream

@@ -35,8 +35,7 @@ pub fn send_notification(title: &str, body: &str, sound: bool) {
             return;
         }
     };
-    let center: Id<AnyObject> =
-        unsafe { msg_send_id![center_class, currentNotificationCenter] };
+    let center: Id<AnyObject> = unsafe { msg_send_id![center_class, currentNotificationCenter] };
 
     // --- UNMutableNotificationContent ---
     let content_class = match AnyClass::get("UNMutableNotificationContent") {
@@ -58,14 +57,12 @@ pub fn send_notification(title: &str, body: &str, sound: bool) {
     };
 
     let title_c = CString::new(title).unwrap_or_default();
-    let title_ns: Id<AnyObject> = unsafe {
-        msg_send_id![ns_string_class, stringWithUTF8String: title_c.as_ptr()]
-    };
+    let title_ns: Id<AnyObject> =
+        unsafe { msg_send_id![ns_string_class, stringWithUTF8String: title_c.as_ptr()] };
 
     let body_c = CString::new(body).unwrap_or_default();
-    let body_ns: Id<AnyObject> = unsafe {
-        msg_send_id![ns_string_class, stringWithUTF8String: body_c.as_ptr()]
-    };
+    let body_ns: Id<AnyObject> =
+        unsafe { msg_send_id![ns_string_class, stringWithUTF8String: body_c.as_ptr()] };
 
     unsafe {
         let _: () = msg_send![&*content, setTitle: &*title_ns];
@@ -75,8 +72,7 @@ pub fn send_notification(title: &str, body: &str, sound: bool) {
     // --- Sound ---
     if sound {
         if let Some(sound_class) = AnyClass::get("UNNotificationSound") {
-            let default_sound: Id<AnyObject> =
-                unsafe { msg_send_id![sound_class, defaultSound] };
+            let default_sound: Id<AnyObject> = unsafe { msg_send_id![sound_class, defaultSound] };
             unsafe {
                 let _: () = msg_send![&*content, setSound: &*default_sound];
             }
@@ -176,7 +172,8 @@ pub fn request_notification_permission_if_needed() {
     });
 
     unsafe {
-        let _: () = msg_send![&*center, getNotificationSettingsWithCompletionHandler: &*check_block];
+        let _: () =
+            msg_send![&*center, getNotificationSettingsWithCompletionHandler: &*check_block];
     }
 
     // Wait for the result with a timeout.
@@ -202,14 +199,13 @@ pub fn request_notification_permission_if_needed() {
             // = (1<<0) | (1<<1) | (1<<2) = 7
             let options: u64 = 7;
 
-            let request_block =
-                RcBlock::new(move |granted: Bool, _error: *mut AnyObject| {
-                    if granted.as_bool() {
-                        log::info!("notification permission granted by user");
-                    } else {
-                        log::info!("notification permission denied by user");
-                    }
-                });
+            let request_block = RcBlock::new(move |granted: Bool, _error: *mut AnyObject| {
+                if granted.as_bool() {
+                    log::info!("notification permission granted by user");
+                } else {
+                    log::info!("notification permission denied by user");
+                }
+            });
 
             unsafe {
                 let _: () = msg_send![&*center, requestAuthorizationWithOptions: options completionHandler: &*request_block];

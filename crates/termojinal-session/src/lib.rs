@@ -97,7 +97,10 @@ pub enum ClientMessage {
     /// Raw PTY output bytes.
     PtyOutput { session_id: String, data: Vec<u8> },
     /// The session has exited.
-    SessionExited { session_id: String, exit_code: Option<i32> },
+    SessionExited {
+        session_id: String,
+        exit_code: Option<i32>,
+    },
 }
 
 impl ClientSender {
@@ -106,17 +109,21 @@ impl ClientSender {
     }
 
     pub fn send_pty_output(&self, session_id: &str, data: &[u8]) -> Result<(), ()> {
-        self.tx.send(ClientMessage::PtyOutput {
-            session_id: session_id.to_string(),
-            data: data.to_vec(),
-        }).map_err(|_| ())
+        self.tx
+            .send(ClientMessage::PtyOutput {
+                session_id: session_id.to_string(),
+                data: data.to_vec(),
+            })
+            .map_err(|_| ())
     }
 
     pub fn send_session_exited(&self, session_id: &str, exit_code: Option<i32>) -> Result<(), ()> {
-        self.tx.send(ClientMessage::SessionExited {
-            session_id: session_id.to_string(),
-            exit_code,
-        }).map_err(|_| ())
+        self.tx
+            .send(ClientMessage::SessionExited {
+                session_id: session_id.to_string(),
+                exit_code,
+            })
+            .map_err(|_| ())
     }
 }
 
@@ -205,7 +212,10 @@ impl SessionManager {
         // Create channels and shared state.
         let (control_tx, control_rx) = tokio::sync::mpsc::channel::<SessionControl>(256);
         let clients: Arc<Mutex<Vec<ClientSender>>> = Arc::new(Mutex::new(Vec::new()));
-        let terminal = Arc::new(Mutex::new(termojinal_vt::Terminal::new(cols as usize, rows as usize)));
+        let terminal = Arc::new(Mutex::new(termojinal_vt::Terminal::new(
+            cols as usize,
+            rows as usize,
+        )));
         let vt_parser = Arc::new(Mutex::new(vte::Parser::new()));
 
         let clients_clone = clients.clone();
@@ -223,7 +233,8 @@ impl SessionManager {
                 control_rx,
                 terminal_clone,
                 vt_parser_clone,
-            ).await;
+            )
+            .await;
         });
 
         let daemon_session = DaemonSession {
@@ -239,8 +250,14 @@ impl SessionManager {
     }
 
     /// Attach a client to an existing session.
-    pub fn attach_session(&self, session_id: &str, client: ClientSender) -> Result<(), SessionError> {
-        let session = self.sessions.get(session_id)
+    pub fn attach_session(
+        &self,
+        session_id: &str,
+        client: ClientSender,
+    ) -> Result<(), SessionError> {
+        let session = self
+            .sessions
+            .get(session_id)
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
         session.clients.lock().unwrap().push(client);
         Ok(())
@@ -248,9 +265,15 @@ impl SessionManager {
 
     /// Detach a client from a session.
     pub fn detach_session(&self, session_id: &str, client_id: u64) -> Result<(), SessionError> {
-        let session = self.sessions.get(session_id)
+        let session = self
+            .sessions
+            .get(session_id)
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
-        session.clients.lock().unwrap().retain(|c| c.id != client_id);
+        session
+            .clients
+            .lock()
+            .unwrap()
+            .retain(|c| c.id != client_id);
         Ok(())
     }
 
@@ -444,7 +467,9 @@ impl SessionManager {
         }
 
         // Check externally tracked sessions.
-        let tracked_entry = self.tracked.iter()
+        let tracked_entry = self
+            .tracked
+            .iter()
             .find(|(_, s)| s.id == id)
             .map(|(pane_id, s)| (*pane_id, s.pid));
         if let Some((pane_id, pid)) = tracked_entry {
@@ -475,7 +500,9 @@ impl SessionManager {
         }
 
         // Check externally tracked sessions.
-        let tracked_entry = self.tracked.iter()
+        let tracked_entry = self
+            .tracked
+            .iter()
             .find(|(_, s)| s.id == id)
             .map(|(pane_id, s)| (*pane_id, s.pid));
         if let Some((pane_id, pid)) = tracked_entry {
@@ -501,24 +528,43 @@ impl SessionManager {
 
     /// Send input to a session's PTY via its control channel.
     pub async fn send_input(&self, session_id: &str, data: Vec<u8>) -> Result<(), SessionError> {
-        let session = self.sessions.get(session_id)
+        let session = self
+            .sessions
+            .get(session_id)
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
-        session.control_tx.send(SessionControl::WriteInput(data)).await
-            .map_err(|_| SessionError::Io(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "session I/O task has exited",
-            )))
+        session
+            .control_tx
+            .send(SessionControl::WriteInput(data))
+            .await
+            .map_err(|_| {
+                SessionError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "session I/O task has exited",
+                ))
+            })
     }
 
     /// Resize a session's PTY via its control channel.
-    pub async fn resize_session(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), SessionError> {
-        let session = self.sessions.get(session_id)
+    pub async fn resize_session(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), SessionError> {
+        let session = self
+            .sessions
+            .get(session_id)
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
-        session.control_tx.send(SessionControl::Resize { cols, rows }).await
-            .map_err(|_| SessionError::Io(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "session I/O task has exited",
-            )))?;
+        session
+            .control_tx
+            .send(SessionControl::Resize { cols, rows })
+            .await
+            .map_err(|_| {
+                SessionError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "session I/O task has exited",
+                ))
+            })?;
         Ok(())
     }
 }
@@ -697,5 +743,9 @@ fn detect_foreground_child_of(pid: i32) -> Option<String> {
         .output()
         .ok()?;
     let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }

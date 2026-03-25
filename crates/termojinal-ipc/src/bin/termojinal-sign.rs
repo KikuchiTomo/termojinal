@@ -52,25 +52,26 @@ fn main() {
     let signature = command_signer::sign_command(&toml_content, &signing_key);
 
     // Check if the TOML already has a signature field and update/add it
-    let new_content = if toml_content.contains("\nsignature") || toml_content.starts_with("signature") {
-        // Replace existing signature line
-        toml_content
-            .lines()
-            .map(|line| {
-                let trimmed = line.trim();
-                if trimmed.starts_with("signature") && trimmed.contains('=') {
-                    format!("signature = \"{}\"", signature)
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        // Append signature field before the end
-        let trimmed = toml_content.trim_end();
-        format!("{}\nsignature = \"{}\"\n", trimmed, signature)
-    };
+    let new_content =
+        if toml_content.contains("\nsignature") || toml_content.starts_with("signature") {
+            // Replace existing signature line
+            toml_content
+                .lines()
+                .map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("signature") && trimmed.contains('=') {
+                        format!("signature = \"{}\"", signature)
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // Append signature field before the end
+            let trimmed = toml_content.trim_end();
+            format!("{}\nsignature = \"{}\"\n", trimmed, signature)
+        };
 
     // Write back
     if let Err(e) = std::fs::write(toml_path, &new_content) {
@@ -98,7 +99,9 @@ fn generate_key() {
     println!("Secret key (keep this safe!): {}", secret_hex);
     println!("Public key: {}", public_hex);
     println!();
-    println!("To embed the public key in the binary, update TERMOJINAL_PUBLIC_KEY in command_signer.rs:");
+    println!(
+        "To embed the public key in the binary, update TERMOJINAL_PUBLIC_KEY in command_signer.rs:"
+    );
     print!("const TERMOJINAL_PUBLIC_KEY: [u8; 32] = [");
     for (i, b) in pub_key_bytes.iter().enumerate() {
         if i % 8 == 0 {

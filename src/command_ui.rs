@@ -24,10 +24,7 @@ pub enum CommandUIState {
     /// Showing a yes/no confirmation dialog.
     Confirm { message: String, default: bool },
     /// Showing a free-text input field.
-    Text {
-        label: String,
-        placeholder: String,
-    },
+    Text { label: String, placeholder: String },
     /// Showing a progress/information message (non-interactive).
     Info,
     /// The command has finished successfully.
@@ -217,16 +214,8 @@ impl CommandExecution {
                 .iter()
                 .enumerate()
                 .filter(|(_, item)| {
-                    let label = item
-                        .label
-                        .as_deref()
-                        .unwrap_or(&item.value)
-                        .to_lowercase();
-                    let desc = item
-                        .description
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase();
+                    let label = item.label.as_deref().unwrap_or(&item.value).to_lowercase();
+                    let desc = item.description.as_deref().unwrap_or("").to_lowercase();
                     label.contains(&query) || desc.contains(&query)
                 })
                 .map(|(i, _)| i)
@@ -340,7 +329,10 @@ impl CommandExecution {
         }
 
         if let Some(ref text) = event.text {
-            let printable: String = text.chars().filter(|c| !c.is_control() && *c != ' ').collect();
+            let printable: String = text
+                .chars()
+                .filter(|c| !c.is_control() && *c != ' ')
+                .collect();
             if !printable.is_empty() {
                 self.input.push_str(&printable);
                 self.filter_items();
@@ -409,9 +401,16 @@ impl CommandExecution {
         if let Err(e) = self.runner.respond(response) {
             // Broken pipe is expected when the command exits after sending Done/Error.
             if e.kind() == std::io::ErrorKind::BrokenPipe {
-                log::debug!("command '{}' pipe closed (expected after completion)", self.command_name);
+                log::debug!(
+                    "command '{}' pipe closed (expected after completion)",
+                    self.command_name
+                );
             } else {
-                log::error!("failed to send response to command '{}': {}", self.command_name, e);
+                log::error!(
+                    "failed to send response to command '{}': {}",
+                    self.command_name,
+                    e
+                );
                 self.ui_state = CommandUIState::Error(format!("communication error: {e}"));
                 return;
             }

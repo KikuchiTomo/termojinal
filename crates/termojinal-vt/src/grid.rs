@@ -41,8 +41,12 @@ impl Grid {
 
     #[inline]
     pub fn cell(&self, col: usize, row: usize) -> &Cell {
-        debug_assert!(col < self.cols && row < self.rows,
-            "Grid::cell OOB: col={col}, row={row}, cols={}, rows={}", self.cols, self.rows);
+        debug_assert!(
+            col < self.cols && row < self.rows,
+            "Grid::cell OOB: col={col}, row={row}, cols={}, rows={}",
+            self.cols,
+            self.rows
+        );
         &self.cells[self.idx(col, row)]
     }
 
@@ -58,8 +62,12 @@ impl Grid {
 
     #[inline]
     pub fn cell_mut(&mut self, col: usize, row: usize) -> &mut Cell {
-        debug_assert!(col < self.cols && row < self.rows,
-            "Grid::cell_mut OOB: col={col}, row={row}, cols={}, rows={}", self.cols, self.rows);
+        debug_assert!(
+            col < self.cols && row < self.rows,
+            "Grid::cell_mut OOB: col={col}, row={row}, cols={}, rows={}",
+            self.cols,
+            self.rows
+        );
         self.dirty_rows[row].set(true);
         let i = self.idx(col, row);
         &mut self.cells[i]

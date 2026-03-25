@@ -143,61 +143,67 @@ impl AllowFlowUI {
         };
 
         match key {
-            Key::Character(c) => {
-                match c.as_str() {
-                    "Y" => {
-                        let resolved = self.allow_all_for_workspace(target_ws, pane_sessions);
-                        log::info!("allow-all: approved {} requests for workspace {}", resolved.len(), target_ws);
-                        AllowFlowKeyResult::Resolved(resolved)
-                    }
-                    "N" => {
-                        let resolved = self.deny_all_for_workspace(target_ws, pane_sessions);
-                        log::info!("deny-all: denied {} requests for workspace {}", resolved.len(), target_ws);
-                        AllowFlowKeyResult::Resolved(resolved)
-                    }
-                    "y" => {
-                        let mut resolved = Vec::new();
-                        if let Some(req) = self.first_pending_for_workspace(target_ws) {
-                            let req_id = req.id;
-                            let pane_id = req.pane_id;
-                            if let Some(response) = self.engine.respond(req_id, AllowDecision::Allow) {
-                                Self::write_to_pty(pane_sessions, pane_id, &response.pty_write);
-                                resolved.push((req_id, AllowDecision::Allow));
-                            }
-                            self.update_hint_visibility();
-                        }
-                        AllowFlowKeyResult::Resolved(resolved)
-                    }
-                    "n" => {
-                        let mut resolved = Vec::new();
-                        if let Some(req) = self.first_pending_for_workspace(target_ws) {
-                            let req_id = req.id;
-                            let pane_id = req.pane_id;
-                            if let Some(response) = self.engine.respond(req_id, AllowDecision::Deny) {
-                                Self::write_to_pty(pane_sessions, pane_id, &response.pty_write);
-                                resolved.push((req_id, AllowDecision::Deny));
-                            }
-                            self.update_hint_visibility();
-                        }
-                        AllowFlowKeyResult::Resolved(resolved)
-                    }
-                    "a" | "A" => {
-                        let mut resolved = Vec::new();
-                        if let Some(req) = self.first_pending_for_workspace(target_ws) {
-                            let req_id = req.id;
-                            let pane_id = req.pane_id;
-                            if let Some(response) = self.engine.respond(req_id, AllowDecision::Allow) {
-                                Self::write_to_pty(pane_sessions, pane_id, &response.pty_write);
-                                resolved.push((req_id, AllowDecision::Allow));
-                            }
-                            self.engine.apply_rule(req_id, RuleScope::Persistent);
-                            self.update_hint_visibility();
-                        }
-                        AllowFlowKeyResult::Resolved(resolved)
-                    }
-                    _ => AllowFlowKeyResult::NotConsumed,
+            Key::Character(c) => match c.as_str() {
+                "Y" => {
+                    let resolved = self.allow_all_for_workspace(target_ws, pane_sessions);
+                    log::info!(
+                        "allow-all: approved {} requests for workspace {}",
+                        resolved.len(),
+                        target_ws
+                    );
+                    AllowFlowKeyResult::Resolved(resolved)
                 }
-            }
+                "N" => {
+                    let resolved = self.deny_all_for_workspace(target_ws, pane_sessions);
+                    log::info!(
+                        "deny-all: denied {} requests for workspace {}",
+                        resolved.len(),
+                        target_ws
+                    );
+                    AllowFlowKeyResult::Resolved(resolved)
+                }
+                "y" => {
+                    let mut resolved = Vec::new();
+                    if let Some(req) = self.first_pending_for_workspace(target_ws) {
+                        let req_id = req.id;
+                        let pane_id = req.pane_id;
+                        if let Some(response) = self.engine.respond(req_id, AllowDecision::Allow) {
+                            Self::write_to_pty(pane_sessions, pane_id, &response.pty_write);
+                            resolved.push((req_id, AllowDecision::Allow));
+                        }
+                        self.update_hint_visibility();
+                    }
+                    AllowFlowKeyResult::Resolved(resolved)
+                }
+                "n" => {
+                    let mut resolved = Vec::new();
+                    if let Some(req) = self.first_pending_for_workspace(target_ws) {
+                        let req_id = req.id;
+                        let pane_id = req.pane_id;
+                        if let Some(response) = self.engine.respond(req_id, AllowDecision::Deny) {
+                            Self::write_to_pty(pane_sessions, pane_id, &response.pty_write);
+                            resolved.push((req_id, AllowDecision::Deny));
+                        }
+                        self.update_hint_visibility();
+                    }
+                    AllowFlowKeyResult::Resolved(resolved)
+                }
+                "a" | "A" => {
+                    let mut resolved = Vec::new();
+                    if let Some(req) = self.first_pending_for_workspace(target_ws) {
+                        let req_id = req.id;
+                        let pane_id = req.pane_id;
+                        if let Some(response) = self.engine.respond(req_id, AllowDecision::Allow) {
+                            Self::write_to_pty(pane_sessions, pane_id, &response.pty_write);
+                            resolved.push((req_id, AllowDecision::Allow));
+                        }
+                        self.engine.apply_rule(req_id, RuleScope::Persistent);
+                        self.update_hint_visibility();
+                    }
+                    AllowFlowKeyResult::Resolved(resolved)
+                }
+                _ => AllowFlowKeyResult::NotConsumed,
+            },
             Key::Named(NamedKey::Escape) => {
                 self.pane_hint_visible = false;
                 AllowFlowKeyResult::Consumed

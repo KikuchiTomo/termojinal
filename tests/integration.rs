@@ -19,7 +19,10 @@ fn pty_produces_output() {
     assert!(n > 0, "expected PTY output, got 0 bytes");
 
     let output = String::from_utf8_lossy(&buf[..n]);
-    eprintln!("PTY output ({n} bytes): {:?}", &output[..output.len().min(200)]);
+    eprintln!(
+        "PTY output ({n} bytes): {:?}",
+        &output[..output.len().min(200)]
+    );
 }
 
 #[test]
@@ -42,7 +45,10 @@ fn pty_echo_input() {
 
     let n = pty.read(&mut buf).expect("read");
     let output = String::from_utf8_lossy(&buf[..n]);
-    eprintln!("after echo ({n} bytes): {:?}", &output[..output.len().min(500)]);
+    eprintln!(
+        "after echo ({n} bytes): {:?}",
+        &output[..output.len().min(500)]
+    );
     assert!(
         output.contains("hello_termojinal"),
         "expected 'hello_termojinal' in output"

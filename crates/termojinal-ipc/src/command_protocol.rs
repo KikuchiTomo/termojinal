@@ -51,9 +51,7 @@ pub enum CommandMessage {
 
     /// Show a progress/information message. No user interaction required;
     /// the command continues by sending the next message.
-    Info {
-        message: String,
-    },
+    Info { message: String },
 
     /// Signal that the command has finished successfully.
     /// An optional `notify` field triggers a macOS notification.
@@ -63,9 +61,7 @@ pub enum CommandMessage {
     },
 
     /// Signal that the command has encountered an error.
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// A single item in a fuzzy/multi-select list.
@@ -274,7 +270,11 @@ mod tests {
         let json = r#"{"type":"fuzzy","prompt":"Pick","items":[{"value":"a"}],"preview":false}"#;
         let msg: CommandMessage = serde_json::from_str(json).unwrap();
         match msg {
-            CommandMessage::Fuzzy { prompt, items, preview } => {
+            CommandMessage::Fuzzy {
+                prompt,
+                items,
+                preview,
+            } => {
                 assert_eq!(prompt, "Pick");
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].value, "a");
@@ -311,7 +311,12 @@ mod tests {
         let json = r#"{"type":"text","label":"Name"}"#;
         let msg: CommandMessage = serde_json::from_str(json).unwrap();
         match msg {
-            CommandMessage::Text { label, placeholder, default, completions } => {
+            CommandMessage::Text {
+                label,
+                placeholder,
+                default,
+                completions,
+            } => {
                 assert_eq!(label, "Name");
                 assert_eq!(placeholder, "");
                 assert_eq!(default, "");
@@ -389,7 +394,12 @@ mod tests {
     fn test_deserialize_selected() {
         let json = r#"{"type":"selected","value":"v1"}"#;
         let resp: CommandResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp, CommandResponse::Selected { value: "v1".to_string() });
+        assert_eq!(
+            resp,
+            CommandResponse::Selected {
+                value: "v1".to_string()
+            }
+        );
     }
 
     #[test]
@@ -417,7 +427,9 @@ mod tests {
         let resp: CommandResponse = serde_json::from_str(json).unwrap();
         assert_eq!(
             resp,
-            CommandResponse::TextInput { value: "hello".to_string() }
+            CommandResponse::TextInput {
+                value: "hello".to_string()
+            }
         );
     }
 
@@ -499,13 +511,17 @@ mod tests {
     #[test]
     fn test_roundtrip_all_responses() {
         let responses = vec![
-            CommandResponse::Selected { value: "v".to_string() },
+            CommandResponse::Selected {
+                value: "v".to_string(),
+            },
             CommandResponse::MultiSelected {
                 values: vec!["a".to_string(), "b".to_string()],
             },
             CommandResponse::Confirmed { yes: true },
             CommandResponse::Confirmed { yes: false },
-            CommandResponse::TextInput { value: "text".to_string() },
+            CommandResponse::TextInput {
+                value: "text".to_string(),
+            },
             CommandResponse::Cancelled {},
         ];
 
@@ -531,7 +547,8 @@ mod tests {
 
     #[test]
     fn test_fuzzy_item_full() {
-        let json = r#"{"value":"x","label":"X","description":"desc","preview":"prev","icon":"star"}"#;
+        let json =
+            r#"{"value":"x","label":"X","description":"desc","preview":"prev","icon":"star"}"#;
         let item: FuzzyItem = serde_json::from_str(json).unwrap();
         assert_eq!(item.value, "x");
         assert_eq!(item.label.as_deref(), Some("X"));

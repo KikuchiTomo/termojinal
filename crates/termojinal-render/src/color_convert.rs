@@ -137,7 +137,12 @@ impl ThemePalette {
             let g = u8::from_str_radix(&s[2..4], 16).ok()?;
             let b = u8::from_str_radix(&s[4..6], 16).ok()?;
             let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-            Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
+            Some([
+                r as f32 / 255.0,
+                g as f32 / 255.0,
+                b as f32 / 255.0,
+                a as f32 / 255.0,
+            ])
         } else {
             None
         }
@@ -217,7 +222,11 @@ impl ThemePalette {
 pub fn color_to_rgba_themed(color: Color, is_fg: bool, palette: &ThemePalette) -> [f32; 4] {
     match color {
         Color::Default => {
-            if is_fg { palette.fg } else { palette.bg }
+            if is_fg {
+                palette.fg
+            } else {
+                palette.bg
+            }
         }
         Color::Named(named) => {
             let idx = named as u8 as usize;
@@ -406,11 +415,9 @@ mod tests {
     #[test]
     fn test_from_theme_colors_parses_hex() {
         let palette = ThemePalette::from_theme_colors(
-            "#1E1E2E", "#CDD6F4",
-            "#45475A", "#F38BA8", "#A6E3A1", "#F9E2AF",
-            "#89B4FA", "#F5C2E7", "#94E2D5", "#BAC2DE",
-            "#585B70", "#F38BA8", "#A6E3A1", "#F9E2AF",
-            "#89B4FA", "#F5C2E7", "#94E2D5", "#A6ADC8",
+            "#1E1E2E", "#CDD6F4", "#45475A", "#F38BA8", "#A6E3A1", "#F9E2AF", "#89B4FA", "#F5C2E7",
+            "#94E2D5", "#BAC2DE", "#585B70", "#F38BA8", "#A6E3A1", "#F9E2AF", "#89B4FA", "#F5C2E7",
+            "#94E2D5", "#A6ADC8",
         );
         // Background should be Catppuccin Mocha base
         assert!((palette.bg[0] - 0x1E as f32 / 255.0).abs() < 0.001);

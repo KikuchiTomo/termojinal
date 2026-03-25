@@ -126,9 +126,7 @@ impl SnapshotStore {
     ) -> Result<termojinal_vt::TerminalSnapshot, SessionError> {
         let path = self.dir.join(format!("{session_id}.snapshot.json"));
         if !path.exists() {
-            return Err(SessionError::NotFound(format!(
-                "snapshot for {session_id}"
-            )));
+            return Err(SessionError::NotFound(format!("snapshot for {session_id}")));
         }
         let json = std::fs::read_to_string(path)?;
         let snapshot: termojinal_vt::TerminalSnapshot = serde_json::from_str(&json)?;
@@ -148,7 +146,13 @@ impl SnapshotStore {
         let safe_name: String = snapshot
             .name
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let ts = snapshot.created_at.format("%Y%m%d%H%M%S").to_string();
         let path = dir.join(format!("{safe_name}_{ts}.json"));
@@ -172,12 +176,10 @@ impl SnapshotStore {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json") {
                 match std::fs::read_to_string(&path) {
-                    Ok(json) => {
-                        match serde_json::from_str::<termojinal_vt::NamedSnapshot>(&json) {
-                            Ok(s) => snapshots.push(s),
-                            Err(e) => log::warn!("failed to parse snapshot {}: {e}", path.display()),
-                        }
-                    }
+                    Ok(json) => match serde_json::from_str::<termojinal_vt::NamedSnapshot>(&json) {
+                        Ok(s) => snapshots.push(s),
+                        Err(e) => log::warn!("failed to parse snapshot {}: {e}", path.display()),
+                    },
                     Err(e) => log::warn!("failed to read {}: {e}", path.display()),
                 }
             }

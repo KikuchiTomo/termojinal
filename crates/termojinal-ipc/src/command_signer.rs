@@ -11,8 +11,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 /// To generate a new keypair, use `generate_keypair()`.
 const TERMOJINAL_PUBLIC_KEY: [u8; 32] = [
     // TODO: Replace with actual public key bytes after first key generation
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// Result of signature verification.
@@ -258,8 +257,7 @@ signature = "{}"
         );
 
         // Verification should still work because strip_signature_field removes the sig line
-        let result =
-            verify_command_with_key(&toml_with_sig, Some(&signature), &verifying_key);
+        let result = verify_command_with_key(&toml_with_sig, Some(&signature), &verifying_key);
         assert_eq!(result, VerifyResult::ThirdPartyVerified);
     }
 
@@ -324,10 +322,7 @@ run = "./run.sh""#;
         assert!(verifying_key.is_ok());
 
         // The verifying key should match the signing key's verifying key
-        assert_eq!(
-            signing_key.verifying_key().to_bytes(),
-            pub_key_bytes
-        );
+        assert_eq!(signing_key.verifying_key().to_bytes(), pub_key_bytes);
     }
 
     #[test]

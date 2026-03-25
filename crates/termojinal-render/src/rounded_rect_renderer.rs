@@ -68,20 +68,19 @@ impl RoundedRectRenderer {
         });
 
         // Bind group layout: one uniform buffer for screen dimensions.
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rounded_rect bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rounded_rect bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
 
         // Uniform buffer.
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -240,11 +239,7 @@ impl RoundedRectRenderer {
         }
 
         // Upload instance data.
-        queue.write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(rects),
-        );
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
 
         // Encode the render pass.
         {
@@ -310,12 +305,7 @@ mod tests {
     }
 
     /// Rust-side equivalent of the SDF function for unit testing.
-    fn sdf_rounded_rect(
-        p: [f32; 2],
-        center: [f32; 2],
-        half_size: [f32; 2],
-        radius: f32,
-    ) -> f32 {
+    fn sdf_rounded_rect(p: [f32; 2], center: [f32; 2], half_size: [f32; 2], radius: f32) -> f32 {
         let r = radius.min(half_size[0].min(half_size[1]));
         let qx = (p[0] - center[0]).abs() - half_size[0] + r;
         let qy = (p[1] - center[1]).abs() - half_size[1] + r;

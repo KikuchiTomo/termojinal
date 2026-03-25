@@ -286,7 +286,11 @@ impl KeybindingConfig {
     /// Prefers `~/.config/termojinal/` (XDG-style) over `dirs::config_dir()`
     /// (which returns `~/Library/Application Support/` on macOS).
     pub fn config_path() -> Option<PathBuf> {
-        let xdg = dirs::home_dir().map(|h| h.join(".config").join("termojinal").join("keybindings.toml"));
+        let xdg = dirs::home_dir().map(|h| {
+            h.join(".config")
+                .join("termojinal")
+                .join("keybindings.toml")
+        });
         let system = dirs::config_dir().map(|d| d.join("termojinal").join("keybindings.toml"));
         match (&xdg, &system) {
             (Some(x), _) if x.exists() => xdg,
@@ -314,10 +318,7 @@ mod tests {
     #[test]
     fn test_defaults_exist() {
         let config = KeybindingConfig::default();
-        assert_eq!(
-            config.lookup_normal("cmd+d"),
-            Some(&Action::SplitRight)
-        );
+        assert_eq!(config.lookup_normal("cmd+d"), Some(&Action::SplitRight));
         assert_eq!(
             config.lookup_normal("cmd+shift+d"),
             Some(&Action::SplitDown)
@@ -326,46 +327,19 @@ mod tests {
             config.lookup_normal("cmd+shift+enter"),
             Some(&Action::ZoomPane)
         );
-        assert_eq!(
-            config.lookup_normal("cmd+t"),
-            Some(&Action::NewTab)
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+w"),
-            Some(&Action::CloseTab)
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+1"),
-            Some(&Action::Workspace(1))
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+9"),
-            Some(&Action::Workspace(9))
-        );
+        assert_eq!(config.lookup_normal("cmd+t"), Some(&Action::NewTab));
+        assert_eq!(config.lookup_normal("cmd+w"), Some(&Action::CloseTab));
+        assert_eq!(config.lookup_normal("cmd+1"), Some(&Action::Workspace(1)));
+        assert_eq!(config.lookup_normal("cmd+9"), Some(&Action::Workspace(9)));
         assert_eq!(
             config.lookup_normal("cmd+shift+p"),
             Some(&Action::CommandPalette)
         );
-        assert_eq!(
-            config.lookup_normal("cmd+,"),
-            Some(&Action::OpenSettings)
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+c"),
-            Some(&Action::Copy)
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+v"),
-            Some(&Action::Paste)
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+f"),
-            Some(&Action::Search)
-        );
-        assert_eq!(
-            config.lookup_normal("cmd+="),
-            Some(&Action::FontIncrease)
-        );
+        assert_eq!(config.lookup_normal("cmd+,"), Some(&Action::OpenSettings));
+        assert_eq!(config.lookup_normal("cmd+c"), Some(&Action::Copy));
+        assert_eq!(config.lookup_normal("cmd+v"), Some(&Action::Paste));
+        assert_eq!(config.lookup_normal("cmd+f"), Some(&Action::Search));
+        assert_eq!(config.lookup_normal("cmd+="), Some(&Action::FontIncrease));
         assert_eq!(
             config.lookup_normal("cmd+shift++"),
             Some(&Action::FontIncrease),
@@ -376,10 +350,7 @@ mod tests {
             Some(&Action::FontIncrease),
             "Cmd++ (numpad plus) should increase font"
         );
-        assert_eq!(
-            config.lookup_normal("cmd+-"),
-            Some(&Action::FontDecrease)
-        );
+        assert_eq!(config.lookup_normal("cmd+-"), Some(&Action::FontDecrease));
     }
 
     #[test]
@@ -426,10 +397,7 @@ mod tests {
         let config = KeybindingConfig::parse_toml(toml).unwrap();
 
         // User override replaces default.
-        assert_eq!(
-            config.lookup_normal("cmd+d"),
-            Some(&Action::NewTab)
-        );
+        assert_eq!(config.lookup_normal("cmd+d"), Some(&Action::NewTab));
 
         // User-added binding is present.
         assert_eq!(
@@ -438,10 +406,7 @@ mod tests {
         );
 
         // Other defaults are still present.
-        assert_eq!(
-            config.lookup_normal("cmd+t"),
-            Some(&Action::NewTab)
-        );
+        assert_eq!(config.lookup_normal("cmd+t"), Some(&Action::NewTab));
 
         // Global layer populated.
         assert_eq!(
@@ -460,10 +425,7 @@ mod tests {
     fn test_parse_toml_empty() {
         let config = KeybindingConfig::parse_toml("").unwrap();
         // Should still have all defaults.
-        assert_eq!(
-            config.lookup_normal("cmd+d"),
-            Some(&Action::SplitRight)
-        );
+        assert_eq!(config.lookup_normal("cmd+d"), Some(&Action::SplitRight));
     }
 
     #[test]
@@ -473,15 +435,9 @@ mod tests {
 "cmd+d" = "split_down"
 "#;
         let config = KeybindingConfig::parse_toml(toml).unwrap();
-        assert_eq!(
-            config.lookup_normal("cmd+d"),
-            Some(&Action::SplitDown)
-        );
+        assert_eq!(config.lookup_normal("cmd+d"), Some(&Action::SplitDown));
         // Other defaults remain.
-        assert_eq!(
-            config.lookup_normal("cmd+t"),
-            Some(&Action::NewTab)
-        );
+        assert_eq!(config.lookup_normal("cmd+t"), Some(&Action::NewTab));
     }
 
     #[test]

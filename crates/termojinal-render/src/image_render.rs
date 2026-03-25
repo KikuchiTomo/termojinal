@@ -144,15 +144,11 @@ impl ImageRenderer {
     /// Synchronize GPU images with the image store.
     ///
     /// Uploads new images, removes deleted ones.
-    pub fn sync_images(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        store: &ImageStore,
-    ) {
+    pub fn sync_images(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, store: &ImageStore) {
         // Remove GPU images that are no longer in the store.
         let store_images = store.images();
-        self.gpu_images.retain(|id, _| store_images.contains_key(id));
+        self.gpu_images
+            .retain(|id, _| store_images.contains_key(id));
 
         // Upload new images.
         for (id, img) in store_images {
@@ -235,7 +231,11 @@ impl ImageRenderer {
                 },
             );
 
-            log::debug!("image_render: uploaded image id={id} {}x{}", img.width, img.height);
+            log::debug!(
+                "image_render: uploaded image id={id} {}x{}",
+                img.width,
+                img.height
+            );
         }
     }
 

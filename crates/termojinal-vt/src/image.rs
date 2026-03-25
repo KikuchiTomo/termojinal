@@ -104,14 +104,13 @@ impl ImageStore {
     /// Add a placement. Computes cell_cols/cell_rows from pixel dimensions if not provided.
     pub fn add_placement(&mut self, mut placement: ImagePlacement) {
         if placement.cell_cols == 0 && placement.src_width > 0 {
-            placement.cell_cols =
-                (placement.src_width as usize + self.cell_width_px as usize - 1)
-                    / self.cell_width_px as usize;
+            placement.cell_cols = (placement.src_width as usize + self.cell_width_px as usize - 1)
+                / self.cell_width_px as usize;
         }
         if placement.cell_rows == 0 && placement.src_height > 0 {
-            placement.cell_rows =
-                (placement.src_height as usize + self.cell_height_px as usize - 1)
-                    / self.cell_height_px as usize;
+            placement.cell_rows = (placement.src_height as usize + self.cell_height_px as usize
+                - 1)
+                / self.cell_height_px as usize;
         }
         // Ensure at least 1x1 cell.
         placement.cell_cols = placement.cell_cols.max(1);
@@ -358,11 +357,7 @@ impl KittyAccumulator {
 
     /// Feed a parsed APC payload. Returns `Some(KittyCommand, decoded_bytes)` when
     /// the final chunk arrives (`m=0`).
-    pub fn feed(
-        &mut self,
-        header: &str,
-        base64_chunk: &str,
-    ) -> Option<(KittyCommand, Vec<u8>)> {
+    pub fn feed(&mut self, header: &str, base64_chunk: &str) -> Option<(KittyCommand, Vec<u8>)> {
         let cmd = parse_kitty_header(header);
 
         if self.command.is_none() {
@@ -506,7 +501,11 @@ pub fn process_kitty_command(
                 "kitty graphics: stored image id={id} {}x{} ({})",
                 img_w,
                 img_h,
-                if should_place { "placed" } else { "transmit only" }
+                if should_place {
+                    "placed"
+                } else {
+                    "transmit only"
+                }
             );
         }
         KittyAction::Place => {
@@ -628,12 +627,7 @@ impl Iterm2Accumulator {
 
     /// Finalize on `FileEnd`: decode the accumulated data and place the image.
     /// Returns `true` if an image was successfully placed.
-    pub fn finish(
-        &mut self,
-        store: &mut ImageStore,
-        cursor_col: usize,
-        cursor_row: usize,
-    ) -> bool {
+    pub fn finish(&mut self, store: &mut ImageStore, cursor_col: usize, cursor_row: usize) -> bool {
         let params = match self.params.take() {
             Some(p) => p,
             None => {
@@ -705,9 +699,7 @@ impl Iterm2Accumulator {
             src_height: img_h,
         });
 
-        log::debug!(
-            "iterm2 multipart: stored and placed id={id} {img_w}x{img_h}"
-        );
+        log::debug!("iterm2 multipart: stored and placed id={id} {img_w}x{img_h}");
         true
     }
 
@@ -1059,10 +1051,11 @@ pub fn decode_sixel(data: &[u8]) -> Option<DecodedImage> {
                 }
                 if i < data.len() && data[i] >= 0x3F && data[i] <= 0x7E {
                     let sixel_val = data[i] - 0x3F;
-                    let color = palette
-                        .get(&current_color)
-                        .copied()
-                        .unwrap_or(SixelColor { r: 255, g: 255, b: 255 });
+                    let color = palette.get(&current_color).copied().unwrap_or(SixelColor {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                    });
                     for rep in 0..count {
                         draw_sixel_column(
                             &mut pixels,
@@ -1081,10 +1074,11 @@ pub fn decode_sixel(data: &[u8]) -> Option<DecodedImage> {
             }
             0x3F..=0x7E => {
                 let sixel_val = b - 0x3F;
-                let color = palette
-                    .get(&current_color)
-                    .copied()
-                    .unwrap_or(SixelColor { r: 255, g: 255, b: 255 });
+                let color = palette.get(&current_color).copied().unwrap_or(SixelColor {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                });
                 draw_sixel_column(&mut pixels, width, height, x, y, sixel_val, &color);
                 x += 1;
             }
@@ -1147,7 +1141,14 @@ fn init_default_sixel_palette(palette: &mut HashMap<u16, SixelColor>) {
         (255, 255, 255), // 15: bright white
     ];
     for (i, (r, g, b)) in vga16.iter().enumerate() {
-        palette.insert(i as u16, SixelColor { r: *r, g: *g, b: *b });
+        palette.insert(
+            i as u16,
+            SixelColor {
+                r: *r,
+                g: *g,
+                b: *b,
+            },
+        );
     }
 }
 
@@ -1190,22 +1191,13 @@ fn hls_to_rgb(h: u16, l: u16, s: u16) -> (u8, u8, u8) {
         (v * 255.0).round().min(255.0).max(0.0) as u8
     };
 
-    (
-        to_rgb(hk + 1.0 / 3.0),
-        to_rgb(hk),
-        to_rgb(hk - 1.0 / 3.0),
-    )
+    (to_rgb(hk + 1.0 / 3.0), to_rgb(hk), to_rgb(hk - 1.0 / 3.0))
 }
 
 /// Process a complete Sixel DCS sequence.
 ///
 /// The `data` should be the sixel data portion (after the `q` introducer).
-pub fn process_sixel(
-    data: &[u8],
-    store: &mut ImageStore,
-    cursor_col: usize,
-    cursor_row: usize,
-) {
+pub fn process_sixel(data: &[u8], store: &mut ImageStore, cursor_col: usize, cursor_row: usize) {
     match decode_sixel(data) {
         Some(decoded) => {
             let id = store.next_id();
@@ -1582,8 +1574,8 @@ mod tests {
         assert_eq!(img.height, 6);
         // Check first pixel is red.
         assert_eq!(img.data[0], 255); // R
-        assert_eq!(img.data[1], 0);   // G
-        assert_eq!(img.data[2], 0);   // B
+        assert_eq!(img.data[1], 0); // G
+        assert_eq!(img.data[2], 0); // B
         assert_eq!(img.data[3], 255); // A
     }
 
@@ -1598,9 +1590,9 @@ mod tests {
         assert_eq!(img.height, 6);
         // Check pixel at (2, 0) is green.
         let offset = (0 * 3 + 2) * 4;
-        assert_eq!(img.data[offset as usize], 0);     // R
+        assert_eq!(img.data[offset as usize], 0); // R
         assert_eq!(img.data[offset as usize + 1], 255); // G
-        assert_eq!(img.data[offset as usize + 2], 0);   // B
+        assert_eq!(img.data[offset as usize + 2], 0); // B
     }
 
     #[test]
@@ -1766,7 +1758,7 @@ mod tests {
 
         let img = store.get_image(20).unwrap();
         assert_eq!(img.data.len(), 8); // 2 pixels * 4 bytes (RGBA)
-        assert_eq!(img.data[3], 255);  // Alpha added
+        assert_eq!(img.data[3], 255); // Alpha added
         assert_eq!(img.data[7], 255);
     }
 

@@ -3,9 +3,7 @@
 use crate::cell::{Attrs, Cell, Pen};
 use crate::color::{Color, NamedColor};
 use crate::grid::Grid;
-use crate::image::{
-    self, ApcExtractor, ImageStore, Iterm2Accumulator, KittyAccumulator,
-};
+use crate::image::{self, ApcExtractor, ImageStore, Iterm2Accumulator, KittyAccumulator};
 use crate::scrollback::ScrollbackBuffer;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -534,14 +532,26 @@ impl Terminal {
         if self.command_history.is_empty() {
             return None;
         }
-        let pos = self.command_history.partition_point(|cmd| cmd.prompt_line < target_abs);
-        if pos == 0 { None } else { Some(pos - 1) }
+        let pos = self
+            .command_history
+            .partition_point(|cmd| cmd.prompt_line < target_abs);
+        if pos == 0 {
+            None
+        } else {
+            Some(pos - 1)
+        }
     }
 
     /// Binary-search: find the first command whose prompt_line > target (S2).
     fn find_next_command_idx(&self, target_abs: usize) -> Option<usize> {
-        let pos = self.command_history.partition_point(|cmd| cmd.prompt_line <= target_abs);
-        if pos < self.command_history.len() { Some(pos) } else { None }
+        let pos = self
+            .command_history
+            .partition_point(|cmd| cmd.prompt_line <= target_abs);
+        if pos < self.command_history.len() {
+            Some(pos)
+        } else {
+            None
+        }
     }
 
     /// Jump to the previous command's output from the current scroll position.
@@ -576,8 +586,12 @@ impl Terminal {
     /// Return the command that is currently visible at the top of the viewport.
     pub fn current_visible_command(&self) -> Option<(usize, &CommandRecord)> {
         let view_abs = self.viewport_top_abs();
-        let pos = self.command_history.partition_point(|cmd| cmd.prompt_line <= view_abs);
-        if pos == 0 { return None; }
+        let pos = self
+            .command_history
+            .partition_point(|cmd| cmd.prompt_line <= view_abs);
+        if pos == 0 {
+            return None;
+        }
         Some((pos - 1, &self.command_history[pos - 1]))
     }
 
@@ -684,10 +698,7 @@ impl Terminal {
             adjusted.prompt_line = 0;
             term.command_history.push_back(adjusted);
         }
-        term.next_command_id = snapshot
-            .command_history
-            .back()
-            .map_or(0, |c| c.id + 1);
+        term.next_command_id = snapshot.command_history.back().map_or(0, |c| c.id + 1);
         term.osc.title = snapshot.title.clone();
         term.osc.cwd = snapshot.cwd.clone();
 
@@ -862,8 +873,12 @@ impl Terminal {
             // Advance cursor past the image if a new placement was added.
             if self.image_store.placements().len() > before {
                 self.image_store.cap_placement_size(self.cols, self.rows);
-                let cell_rows = self.image_store.placements().last()
-                    .map(|p| p.cell_rows).unwrap_or(1);
+                let cell_rows = self
+                    .image_store
+                    .placements()
+                    .last()
+                    .map(|p| p.cell_rows)
+                    .unwrap_or(1);
                 self.advance_cursor_past_image(cell_rows);
             }
         }
@@ -1102,7 +1117,10 @@ impl Terminal {
                 } else {
                     MouseMode::None
                 };
-                log::trace!("mouse mode 1000 (click) {}", if enable { "on" } else { "off" });
+                log::trace!(
+                    "mouse mode 1000 (click) {}",
+                    if enable { "on" } else { "off" }
+                );
             }
             1002 => {
                 self.modes.mouse_mode = if enable {
@@ -1143,7 +1161,10 @@ impl Terminal {
                 } else {
                     MouseFormat::X10
                 };
-                log::trace!("mouse format 1005 (utf8) {}", if enable { "on" } else { "off" });
+                log::trace!(
+                    "mouse format 1005 (utf8) {}",
+                    if enable { "on" } else { "off" }
+                );
             }
             1006 => {
                 self.modes.mouse_format = if enable {
@@ -1151,7 +1172,10 @@ impl Terminal {
                 } else {
                     MouseFormat::X10
                 };
-                log::trace!("mouse format 1006 (sgr) {}", if enable { "on" } else { "off" });
+                log::trace!(
+                    "mouse format 1006 (sgr) {}",
+                    if enable { "on" } else { "off" }
+                );
             }
             1015 => {
                 self.modes.mouse_format = if enable {
@@ -1370,7 +1394,9 @@ impl vte::Perform for Terminal {
                 self.wrap_pending = false;
             }
             0x09 => {
-                if self.cols == 0 { return; }
+                if self.cols == 0 {
+                    return;
+                }
                 let cur = self.cursor_col;
                 let next_tab = if cur + 1 < self.cols {
                     self.tab_stops[cur + 1..]
@@ -1454,9 +1480,7 @@ impl vte::Perform for Terminal {
                 *self = Terminal::new(cols, rows);
             }
             _ => {
-                log::trace!(
-                    "unhandled ESC: intermediates={intermediates:?}, byte=0x{byte:02x}"
-                );
+                log::trace!("unhandled ESC: intermediates={intermediates:?}, byte=0x{byte:02x}");
             }
         }
     }
@@ -1667,7 +1691,9 @@ impl vte::Perform for Terminal {
             }
             // DECSTBM — Set Top and Bottom Margins.
             ([], 'r') => {
-                if self.rows == 0 { return; }
+                if self.rows == 0 {
+                    return;
+                }
                 let top = param(0, 1) as usize;
                 let bottom = param(1, self.rows as u16) as usize;
                 self.scroll_top = top.saturating_sub(1);
@@ -1734,27 +1760,23 @@ impl vte::Perform for Terminal {
                 }
             }
             // SM — Set Mode (ANSI modes).
-            ([], 'h') => {
-                match param(0, 0) {
-                    4 => self.modes.insert_mode = true,
-                    20 => {
-                        self.modes.linefeed_mode = true;
-                        log::trace!("LNM on");
-                    }
-                    _ => {}
+            ([], 'h') => match param(0, 0) {
+                4 => self.modes.insert_mode = true,
+                20 => {
+                    self.modes.linefeed_mode = true;
+                    log::trace!("LNM on");
                 }
-            }
+                _ => {}
+            },
             // RM — Reset Mode (ANSI modes).
-            ([], 'l') => {
-                match param(0, 0) {
-                    4 => self.modes.insert_mode = false,
-                    20 => {
-                        self.modes.linefeed_mode = false;
-                        log::trace!("LNM off");
-                    }
-                    _ => {}
+            ([], 'l') => match param(0, 0) {
+                4 => self.modes.insert_mode = false,
+                20 => {
+                    self.modes.linefeed_mode = false;
+                    log::trace!("LNM off");
                 }
-            }
+                _ => {}
+            },
             // Kitty keyboard protocol: CSI > flags u — push keyboard mode.
             ([b'>'], 'u') => {
                 let flags = param(0, 0) as u32;
@@ -1837,9 +1859,7 @@ impl vte::Perform for Terminal {
                             // Query: respond with current foreground color.
                             // Use a sensible default (white-ish for dark themes).
                             log::trace!("OSC 10 query -> default fg");
-                            self.queue_response(
-                                b"\x1b]10;rgb:cccc/cccc/cccc\x1b\\".to_vec()
-                            );
+                            self.queue_response(b"\x1b]10;rgb:cccc/cccc/cccc\x1b\\".to_vec());
                         } else {
                             log::trace!("OSC 10 set fg: {s}");
                             // Setting foreground color — store for theme-aware apps.
@@ -1856,9 +1876,7 @@ impl vte::Perform for Terminal {
                             // Query: respond with current background color.
                             // Use a sensible default (dark for dark themes).
                             log::trace!("OSC 11 query -> default bg");
-                            self.queue_response(
-                                b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\".to_vec()
-                            );
+                            self.queue_response(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\".to_vec());
                         } else {
                             log::trace!("OSC 11 set bg: {s}");
                         }
@@ -1872,9 +1890,7 @@ impl vte::Perform for Terminal {
                         if s == "?" {
                             // Query: respond with cursor color.
                             log::trace!("OSC 12 query -> cursor color");
-                            self.queue_response(
-                                b"\x1b]12;rgb:cccc/cccc/cccc\x1b\\".to_vec()
-                            );
+                            self.queue_response(b"\x1b]12;rgb:cccc/cccc/cccc\x1b\\".to_vec());
                         } else {
                             log::trace!("OSC 12 set cursor color: {s}");
                         }
@@ -1915,8 +1931,7 @@ impl vte::Perform for Terminal {
                     if let Ok(s) = std::str::from_utf8(sub) {
                         match s.chars().next() {
                             Some('A') => {
-                                self.osc.prompt_start =
-                                    Some((self.cursor_col, self.cursor_row));
+                                self.osc.prompt_start = Some((self.cursor_col, self.cursor_row));
                                 log::debug!("OSC 133: prompt start");
 
                                 if self.command_history_enabled {
@@ -1935,8 +1950,7 @@ impl vte::Perform for Terminal {
                                 }
                             }
                             Some('B') => {
-                                self.osc.command_start =
-                                    Some((self.cursor_col, self.cursor_row));
+                                self.osc.command_start = Some((self.cursor_col, self.cursor_row));
                                 log::debug!("OSC 133: command start");
 
                                 if self.command_history_enabled {
@@ -1977,7 +1991,8 @@ impl vte::Perform for Terminal {
                                 if self.command_history_enabled {
                                     // Parse exit code from parameters (e.g., "D;0" or "D;1")
                                     // W4: robust exit code parsing via strip_prefix
-                                    let exit_code = s.strip_prefix('D')
+                                    let exit_code = s
+                                        .strip_prefix('D')
                                         .and_then(|r| r.strip_prefix(';'))
                                         .and_then(|r| r.parse::<i32>().ok());
 
@@ -1991,10 +2006,13 @@ impl vte::Perform for Terminal {
                                             let duration_ms = chrono::Utc::now()
                                                 .signed_duration_since(started_at)
                                                 .num_milliseconds()
-                                                .max(0) as u64;
+                                                .max(0)
+                                                as u64;
                                             let id = self.next_command_id;
                                             self.next_command_id += 1;
-                                            let cmd_text = self.pending_command_text.take()
+                                            let cmd_text = self
+                                                .pending_command_text
+                                                .take()
                                                 .unwrap_or_default();
                                             let record = CommandRecord {
                                                 id,
@@ -2046,10 +2064,18 @@ impl vte::Perform for Terminal {
                     .and_then(|b| std::str::from_utf8(b).ok())
                     .unwrap_or("");
                 if raw_data == "?" {
-                    self.clipboard_event = Some(ClipboardEvent::Query {
-                        selection,
-                    });
-                    log::trace!("OSC 52: query clipboard selection={}", &self.clipboard_event.as_ref().map(|e| match e { ClipboardEvent::Query { selection } => selection.as_str(), _ => "" }).unwrap_or(""));
+                    self.clipboard_event = Some(ClipboardEvent::Query { selection });
+                    log::trace!(
+                        "OSC 52: query clipboard selection={}",
+                        &self
+                            .clipboard_event
+                            .as_ref()
+                            .map(|e| match e {
+                                ClipboardEvent::Query { selection } => selection.as_str(),
+                                _ => "",
+                            })
+                            .unwrap_or("")
+                    );
                 } else {
                     match base64::engine::general_purpose::STANDARD.decode(raw_data) {
                         Ok(bytes) => {
@@ -2094,24 +2120,24 @@ impl vte::Perform for Terminal {
                 if payload.starts_with("File=") {
                     // Check if this is a file transfer (inline=0) or inline image.
                     let is_inline = payload.contains("inline=1");
-                    let is_non_inline = payload.contains("inline=0") || !payload.contains("inline=");
+                    let is_non_inline =
+                        payload.contains("inline=0") || !payload.contains("inline=");
 
                     if is_inline {
                         // Legacy single-sequence inline image.
                         let col = self.cursor_col;
                         let row = self.cursor_row;
                         let before = self.image_store.placements().len();
-                        image::parse_iterm2_image(
-                            &payload,
-                            &mut self.image_store,
-                            col,
-                            row,
-                        );
+                        image::parse_iterm2_image(&payload, &mut self.image_store, col, row);
                         // Advance cursor past the image so text flows below it.
                         if self.image_store.placements().len() > before {
                             self.image_store.cap_placement_size(self.cols, self.rows);
-                            let cell_rows = self.image_store.placements().last()
-                                .map(|p| p.cell_rows).unwrap_or(1);
+                            let cell_rows = self
+                                .image_store
+                                .placements()
+                                .last()
+                                .map(|p| p.cell_rows)
+                                .unwrap_or(1);
                             self.advance_cursor_past_image(cell_rows);
                         }
                     } else if is_non_inline {
@@ -2137,7 +2163,9 @@ impl vte::Perform for Terminal {
                                 }
 
                                 // Decode file data.
-                                if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64_data) {
+                                if let Ok(data) =
+                                    base64::engine::general_purpose::STANDARD.decode(b64_data)
+                                {
                                     self.file_transfer_event = Some(FileTransferEvent {
                                         name: file_name,
                                         data,
@@ -2157,19 +2185,24 @@ impl vte::Perform for Terminal {
                     // Multipart transfer: finalize.
                     let col = self.cursor_col;
                     let row = self.cursor_row;
-                    let placed = self.iterm2_accumulator.finish(
-                        &mut self.image_store,
-                        col,
-                        row,
-                    );
+                    let placed = self
+                        .iterm2_accumulator
+                        .finish(&mut self.image_store, col, row);
                     if placed {
                         self.image_store.cap_placement_size(self.cols, self.rows);
-                        let cell_rows = self.image_store.placements().last()
-                            .map(|p| p.cell_rows).unwrap_or(1);
+                        let cell_rows = self
+                            .image_store
+                            .placements()
+                            .last()
+                            .map(|p| p.cell_rows)
+                            .unwrap_or(1);
                         self.advance_cursor_past_image(cell_rows);
                     }
                 } else {
-                    log::trace!("OSC 1337: unhandled sub-command: {}", &payload[..payload.len().min(30)]);
+                    log::trace!(
+                        "OSC 1337: unhandled sub-command: {}",
+                        &payload[..payload.len().min(30)]
+                    );
                 }
             }
             _ => {
@@ -2178,13 +2211,7 @@ impl vte::Perform for Terminal {
         }
     }
 
-    fn hook(
-        &mut self,
-        params: &vte::Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        action: char,
-    ) {
+    fn hook(&mut self, params: &vte::Params, _intermediates: &[u8], _ignore: bool, action: char) {
         match action {
             'q' => {
                 // Sixel DCS: ESC P <params> q <sixel_data> ST
@@ -2206,7 +2233,8 @@ impl vte::Perform for Terminal {
             //
             // The '{' final byte introduces the font data.
             '{' => {
-                let p: Vec<u16> = params.iter()
+                let p: Vec<u16> = params
+                    .iter()
                     .map(|s| s.first().copied().unwrap_or(0))
                     .collect();
                 let pfn = p.first().copied().unwrap_or(0).min(3) as u8;
@@ -2267,8 +2295,12 @@ impl vte::Perform for Terminal {
                 image::process_sixel(&data, &mut self.image_store, col, row);
                 if self.image_store.placements().len() > before {
                     self.image_store.cap_placement_size(self.cols, self.rows);
-                    let cell_rows = self.image_store.placements().last()
-                        .map(|p| p.cell_rows).unwrap_or(1);
+                    let cell_rows = self
+                        .image_store
+                        .placements()
+                        .last()
+                        .map(|p| p.cell_rows)
+                        .unwrap_or(1);
                     self.advance_cursor_past_image(cell_rows);
                 }
             }
@@ -2325,7 +2357,8 @@ impl vte::Perform for Terminal {
                                     count = count * 10 + (row_data[i] - b'0') as usize;
                                     i += 1;
                                 }
-                                if i < row_data.len() && row_data[i] >= 0x3F && row_data[i] <= 0x7E {
+                                if i < row_data.len() && row_data[i] >= 0x3F && row_data[i] <= 0x7E
+                                {
                                     let val = row_data[i] - 0x3F;
                                     for _ in 0..count {
                                         for bit in 0..6u8 {
@@ -2533,7 +2566,10 @@ mod tests {
         feed_str(&mut term, &mut parser, "A😀B");
         assert_eq!(term.grid().cell(0, 0).c, 'A');
         let emoji_cell = term.grid().cell(1, 0);
-        eprintln!("emoji cell: c={:?} U+{:04X} width={}", emoji_cell.c, emoji_cell.c as u32, emoji_cell.width);
+        eprintln!(
+            "emoji cell: c={:?} U+{:04X} width={}",
+            emoji_cell.c, emoji_cell.c as u32, emoji_cell.width
+        );
         assert_eq!(emoji_cell.c, '😀');
         assert_eq!(emoji_cell.width, 2);
         assert_eq!(term.grid().cell(2, 0).width, 0); // continuation
@@ -2705,11 +2741,7 @@ mod tests {
         let mut parser = vte::Parser::new();
 
         // Start hyperlink: OSC 8 ; ; https://example.com ST
-        feed_str(
-            &mut term,
-            &mut parser,
-            "\x1b]8;;https://example.com\x1b\\",
-        );
+        feed_str(&mut term, &mut parser, "\x1b]8;;https://example.com\x1b\\");
         // Print some text while hyperlink is active.
         feed_str(&mut term, &mut parser, "link");
 
@@ -3182,11 +3214,15 @@ mod tests {
         let mut store = DrcsFontStore::new();
         assert!(store.is_empty());
 
-        store.set_glyph(0, 0, DrcsGlyph {
-            bitmap: vec![0xFF, 0x00],
-            width: 10,
-            height: 20,
-        });
+        store.set_glyph(
+            0,
+            0,
+            DrcsGlyph {
+                bitmap: vec![0xFF, 0x00],
+                width: 10,
+                height: 20,
+            },
+        );
 
         assert!(!store.is_empty());
         assert!(store.get_glyph(0, 0).is_some());
@@ -3205,16 +3241,24 @@ mod tests {
     #[test]
     fn test_drcs_font_store_erase_all() {
         let mut store = DrcsFontStore::new();
-        store.set_glyph(0, 0, DrcsGlyph {
-            bitmap: vec![0xFF],
-            width: 8,
-            height: 16,
-        });
-        store.set_glyph(1, 0, DrcsGlyph {
-            bitmap: vec![0xFF],
-            width: 8,
-            height: 16,
-        });
+        store.set_glyph(
+            0,
+            0,
+            DrcsGlyph {
+                bitmap: vec![0xFF],
+                width: 8,
+                height: 16,
+            },
+        );
+        store.set_glyph(
+            1,
+            0,
+            DrcsGlyph {
+                bitmap: vec![0xFF],
+                width: 8,
+                height: 16,
+            },
+        );
         assert_eq!(store.glyphs().len(), 2);
 
         store.erase_all();
