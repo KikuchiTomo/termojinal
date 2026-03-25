@@ -183,6 +183,8 @@ struct CommandPalette {
     selected: usize,      // Index into filtered
     scroll_offset: usize, // First visible item index (for scrolling)
     file_finder: FileFinderState,
+    /// Instant when error flash was triggered (orange border). None = no flash.
+    error_flash: Option<std::time::Instant>,
 }
 
 impl CommandPalette {
@@ -290,6 +292,12 @@ impl CommandPalette {
                 action: Action::About,
                 kind: CommandKind::Builtin,
             },
+            PaletteCommand {
+                name: "Quick Launch".to_string(),
+                description: "Fuzzy search tabs, panes, and workspaces (Cmd+O)".to_string(),
+                action: Action::QuickLaunch,
+                kind: CommandKind::Builtin,
+            },
         ];
         let filtered: Vec<usize> = (0..commands.len()).collect();
         Self {
@@ -302,6 +310,7 @@ impl CommandPalette {
             selected: 0,
             scroll_offset: 0,
             file_finder: FileFinderState::new(),
+            error_flash: None,
         }
     }
 
@@ -499,28 +508,53 @@ impl CommandPalette {
                             self.update_filter();
                             return PaletteResult::Consumed;
                         }
-                        // `v` on empty input → open selected in editor.
-                        if self.input.is_empty() && text.as_str() == "v" {
-                            if let Some(entry) = self.file_finder.selected_entry() {
-                                let path = entry.path.clone();
-                                return PaletteResult::OpenInEditor(path);
+                        // `v` → open in editor: use typed path if input is non-empty,
+                        // otherwise use selected entry.
+                        if text.as_str() == "v" {
+                            let path = if !self.input.is_empty() {
+                                self.resolve_input_path()
+                            } else {
+                                self.file_finder.selected_entry().map(|e| e.path.clone())
+                            };
+                            if let Some(p) = path {
+                                self.error_flash = None;
+                                return PaletteResult::OpenInEditor(p);
+                            } else {
+                                self.error_flash = Some(std::time::Instant::now());
+                                return PaletteResult::Consumed;
                             }
                         }
-                        // `e` on empty input → cd to selected directory.
-                        if self.input.is_empty() && text.as_str() == "e" {
-                            if let Some(entry) = self.file_finder.selected_entry() {
-                                let path = if entry.is_dir {
-                                    entry.path.clone()
-                                } else {
-                                    // For files, cd to parent directory.
-                                    std::path::Path::new(&entry.path)
-                                        .parent()
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_default()
-                                };
-                                if !path.is_empty() {
-                                    return PaletteResult::CdToDirectory(path);
-                                }
+                        // `e` → cd to directory: use typed path if input is non-empty,
+                        // otherwise use selected entry.
+                        if text.as_str() == "e" {
+                            let path = if !self.input.is_empty() {
+                                // Resolve the typed path and extract a directory.
+                                self.resolve_input_path().and_then(|p| {
+                                    let pp = std::path::Path::new(&p);
+                                    if pp.is_dir() {
+                                        Some(p)
+                                    } else {
+                                        pp.parent().map(|d| d.to_string_lossy().to_string())
+                                    }
+                                })
+                            } else {
+                                self.file_finder.selected_entry().map(|e| {
+                                    if e.is_dir {
+                                        e.path.clone()
+                                    } else {
+                                        std::path::Path::new(&e.path)
+                                            .parent()
+                                            .map(|p| p.to_string_lossy().to_string())
+                                            .unwrap_or_default()
+                                    }
+                                }).filter(|p| !p.is_empty())
+                            };
+                            if let Some(p) = path {
+                                self.error_flash = None;
+                                return PaletteResult::CdToDirectory(p);
+                            } else {
+                                self.error_flash = Some(std::time::Instant::now());
+                                return PaletteResult::Consumed;
                             }
                         }
                         self.input.push_str(text);
@@ -589,6 +623,279 @@ impl CommandPalette {
         }
 
         self.file_finder.update_filter(&self.input);
+    }
+
+    /// Resolve the current file finder input to an absolute path.
+    /// Tries: (1) search_root + input, (2) input as absolute path.
+    /// Returns `None` if nothing valid can be resolved.
+    fn resolve_input_path(&self) -> Option<String> {
+        if self.input.is_empty() {
+            return None;
+        }
+        let candidate = if self.input.starts_with('/') {
+            self.input.clone()
+        } else {
+            format!("{}/{}", self.file_finder.search_root, self.input)
+        };
+        let p = std::path::Path::new(&candidate);
+        if p.exists() {
+            std::fs::canonicalize(p)
+                .map(|c| c.to_string_lossy().to_string())
+                .ok()
+        } else {
+            // Try partial: parent dir exists and we have a name prefix that
+            // matches a single entry.
+            if let Some(entry) = self.file_finder.selected_entry() {
+                let ep = std::path::Path::new(&entry.path);
+                if ep.exists() {
+                    return Some(entry.path.clone());
+                }
+            }
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quick Launch — fuzzy search overlay for tabs, panes, and workspaces
+// ---------------------------------------------------------------------------
+
+/// The kind of target a Quick Launch entry refers to.
+#[derive(Clone, Copy, PartialEq)]
+enum QuickLaunchKind {
+    Workspace,
+    Tab,
+    Pane,
+}
+
+/// A single entry shown in the Quick Launch overlay.
+#[derive(Clone)]
+struct QuickLaunchEntry {
+    label: String,
+    detail: String,
+    kind: QuickLaunchKind,
+    workspace_idx: usize,
+    tab_idx: usize,
+    pane_id: Option<PaneId>,
+}
+
+/// State for the Quick Launch overlay.
+struct QuickLaunchState {
+    visible: bool,
+    input: String,
+    entries: Vec<QuickLaunchEntry>,
+    filtered: Vec<usize>,
+    selected: usize,
+    scroll_offset: usize,
+}
+
+impl QuickLaunchState {
+    fn new() -> Self {
+        Self {
+            visible: false,
+            input: String::new(),
+            entries: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+        }
+    }
+
+    fn toggle(&mut self) {
+        self.visible = !self.visible;
+        if self.visible {
+            self.input.clear();
+            self.selected = 0;
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Rebuild the entry list from current workspaces.
+    fn rebuild_entries(&mut self, workspaces: &[Workspace], workspace_infos: &[WorkspaceInfo]) {
+        self.entries.clear();
+        for (wi, ws) in workspaces.iter().enumerate() {
+            let ws_name = workspace_infos.get(wi)
+                .filter(|inf| !inf.name.is_empty())
+                .map(|inf| inf.name.clone())
+                .unwrap_or_else(|| ws.name.clone());
+            // Workspace entry.
+            self.entries.push(QuickLaunchEntry {
+                label: ws_name.clone(),
+                detail: format!("Workspace {} \u{2022} {} tab(s)", wi + 1, ws.tabs.len()),
+                kind: QuickLaunchKind::Workspace,
+                workspace_idx: wi,
+                tab_idx: 0,
+                pane_id: None,
+            });
+            // Tab entries.
+            for (ti, tab) in ws.tabs.iter().enumerate() {
+                let tab_label = if tab.display_title.is_empty() {
+                    tab.name.clone()
+                } else {
+                    tab.display_title.clone()
+                };
+                self.entries.push(QuickLaunchEntry {
+                    label: tab_label,
+                    detail: format!("{} \u{203A} Tab {} \u{2022} {} pane(s)", ws_name, ti + 1, tab.panes.len()),
+                    kind: QuickLaunchKind::Tab,
+                    workspace_idx: wi,
+                    tab_idx: ti,
+                    pane_id: None,
+                });
+                // Pane entries (only if multiple panes).
+                if tab.panes.len() > 1 {
+                    for (&pid, pane) in &tab.panes {
+                        let pane_title = if !pane.terminal.osc.title.is_empty() {
+                            pane.terminal.osc.title.clone()
+                        } else if !pane.terminal.osc.cwd.is_empty() {
+                            std::path::Path::new(&pane.terminal.osc.cwd)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("pane")
+                                .to_string()
+                        } else {
+                            format!("Pane {pid}")
+                        };
+                        self.entries.push(QuickLaunchEntry {
+                            label: pane_title,
+                            detail: format!("{} \u{203A} Tab {} \u{203A} Pane {}", ws_name, ti + 1, pid),
+                            kind: QuickLaunchKind::Pane,
+                            workspace_idx: wi,
+                            tab_idx: ti,
+                            pane_id: Some(pid),
+                        });
+                    }
+                }
+            }
+        }
+        self.update_filter();
+    }
+
+    fn update_filter(&mut self) {
+        let query = self.input.to_lowercase();
+        if query.is_empty() {
+            self.filtered = (0..self.entries.len()).collect();
+        } else {
+            self.filtered = self.entries.iter().enumerate()
+                .filter(|(_, e)| {
+                    e.label.to_lowercase().contains(&query)
+                        || e.detail.to_lowercase().contains(&query)
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        self.selected = 0;
+        self.scroll_offset = 0;
+    }
+
+    fn select_next(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = if self.selected + 1 >= self.filtered.len() { 0 } else { self.selected + 1 };
+        }
+    }
+
+    fn select_prev(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = if self.selected == 0 { self.filtered.len() - 1 } else { self.selected - 1 };
+        }
+    }
+
+    fn ensure_visible(&mut self, max_visible: usize) {
+        if max_visible == 0 { return; }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + max_visible {
+            self.scroll_offset = self.selected + 1 - max_visible;
+        }
+    }
+
+    fn selected_entry(&self) -> Option<&QuickLaunchEntry> {
+        self.filtered.get(self.selected).and_then(|&i| self.entries.get(i))
+    }
+}
+
+
+
+// ---------------------------------------------------------------------------
+// Homebrew update checker (Issue 11)
+// ---------------------------------------------------------------------------
+
+/// State for the background Homebrew update check.
+struct UpdateChecker {
+    /// If an update is available, contains the latest version string.
+    available_version: Option<String>,
+    /// Whether the check has been initiated.
+    checked: bool,
+}
+
+impl UpdateChecker {
+    fn new() -> Self {
+        Self {
+            available_version: None,
+            checked: false,
+        }
+    }
+
+    /// Spawn a background thread to check for updates via Homebrew.
+    /// Non-blocking: the result is polled later via a shared Arc<Mutex>.
+    fn start_check(result: Arc<Mutex<Option<String>>>) {
+        std::thread::Builder::new()
+            .name("brew-update-check".into())
+            .spawn(move || {
+                // Try `brew info --json=v2 termojinal` first (formula).
+                let version = Self::check_brew_formula()
+                    .or_else(Self::check_brew_cask);
+                if let Some(latest) = version {
+                    let current = env!("CARGO_PKG_VERSION");
+                    // Simple string comparison: if latest != current, update available.
+                    // Strip leading 'v' if present for comparison.
+                    let latest_clean = latest.trim_start_matches('v');
+                    if latest_clean != current && !latest_clean.is_empty() {
+                        if let Ok(mut guard) = result.lock() {
+                            *guard = Some(latest_clean.to_string());
+                        }
+                    }
+                }
+            })
+            .ok();
+    }
+
+    fn check_brew_formula() -> Option<String> {
+        let output = std::process::Command::new("brew")
+            .args(["info", "--json=v2", "termojinal"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        json["formulae"]
+            .as_array()?
+            .first()?
+            ["versions"]["stable"]
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    fn check_brew_cask() -> Option<String> {
+        let output = std::process::Command::new("brew")
+            .args(["info", "--json=v2", "--cask", "termojinal-app"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        json["casks"]
+            .as_array()?
+            .first()?
+            ["version"]
+            .as_str()
+            .map(|s| s.to_string())
     }
 }
 
@@ -2730,6 +3037,12 @@ struct AppState {
     scroll_accum: f64,
     /// Whether auto-scroll during drag selection is active (cursor outside viewport).
     selection_auto_scroll: Option<i32>,
+    /// Quick Launch overlay state.
+    quick_launch: QuickLaunchState,
+    /// Homebrew update checker state.
+    update_checker: UpdateChecker,
+    /// Shared result from background brew update check thread.
+    update_check_result: Arc<Mutex<Option<String>>>,
 }
 
 /// Terminal session info fetched from the daemon.
@@ -3637,6 +3950,9 @@ impl ApplicationHandler<UserEvent> for App {
             last_animation_redraw: std::time::Instant::now(),
             scroll_accum: 0.0,
             selection_auto_scroll: None,
+            quick_launch: QuickLaunchState::new(),
+            update_checker: UpdateChecker::new(),
+            update_check_result: Arc::new(Mutex::new(None)),
         });
 
         // Activate Quick Terminal mode if --quick-terminal was passed.
@@ -3680,6 +3996,16 @@ impl ApplicationHandler<UserEvent> for App {
         // Request notification permission if not already granted.
         #[cfg(target_os = "macos")]
         notification::request_notification_permission_if_needed();
+
+        // Start background Homebrew update check.
+        {
+            let state = self.state.as_ref().unwrap();
+            if !state.update_checker.checked {
+                let result = state.update_check_result.clone();
+                UpdateChecker::start_check(result);
+            }
+            self.state.as_mut().unwrap().update_checker.checked = true;
+        }
 
         // Enable IME after window is fully created and request initial redraw.
         let state = self.state.as_ref().unwrap();
@@ -4074,10 +4400,12 @@ impl ApplicationHandler<UserEvent> for App {
 
                 // Emacs keybindings: Ctrl+N = Down, Ctrl+P = Up (in palette/command UI)
                 let is_ctrl = state.modifiers.control_key();
-                if is_ctrl && (state.command_palette.visible || state.command_execution.is_some()) {
+                if is_ctrl && (state.command_palette.visible || state.command_execution.is_some() || state.quick_launch.visible) {
                     match &event.logical_key {
                         Key::Character(c) if c.as_str() == "n" || c.as_str() == "\x0e" => {
-                            if let Some(ref mut exec) = state.command_execution {
+                            if state.quick_launch.visible {
+                                state.quick_launch.select_next();
+                            } else if let Some(ref mut exec) = state.command_execution {
                                 exec.selected = if exec.filtered_items.is_empty() {
                                     0
                                 } else if exec.selected + 1 >= exec.filtered_items.len() {
@@ -4094,7 +4422,9 @@ impl ApplicationHandler<UserEvent> for App {
                             return;
                         }
                         Key::Character(c) if c.as_str() == "p" || c.as_str() == "\x10" => {
-                            if let Some(ref mut exec) = state.command_execution {
+                            if state.quick_launch.visible {
+                                state.quick_launch.select_prev();
+                            } else if let Some(ref mut exec) = state.command_execution {
                                 exec.selected = if exec.filtered_items.is_empty() {
                                     0
                                 } else if exec.selected == 0 {
@@ -4166,6 +4496,73 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         TimelineKeyResult::Pass => {}
                     }
+                }
+
+
+                // Quick Launch overlay intercepts keyboard input when visible.
+                if state.quick_launch.visible {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            state.quick_launch.visible = false;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            state.quick_launch.select_prev();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            state.quick_launch.select_next();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(entry) = state.quick_launch.selected_entry().cloned() {
+                                state.quick_launch.visible = false;
+                                // Navigate to the selected target.
+                                if entry.workspace_idx < state.workspaces.len() {
+                                    state.active_workspace = entry.workspace_idx;
+                                    let ws = &mut state.workspaces[entry.workspace_idx];
+                                    if entry.tab_idx < ws.tabs.len() {
+                                        ws.active_tab = entry.tab_idx;
+                                    }
+                                    if let Some(pane_id) = entry.pane_id {
+                                        let tab = &mut ws.tabs[ws.active_tab];
+                                        tab.layout = tab.layout.focus(pane_id);
+                                    }
+                                }
+                                if entry.workspace_idx < state.workspace_infos.len() {
+                                    state.workspace_infos[entry.workspace_idx].has_unread = false;
+                                }
+                                resize_all_panes(state);
+                                update_window_title(state);
+                                state.window.request_redraw();
+                            }
+                            return;
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if state.quick_launch.input.is_empty() {
+                                state.quick_launch.visible = false;
+                            } else {
+                                state.quick_launch.input.pop();
+                                state.quick_launch.update_filter();
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        _ => {
+                            if let Some(ref text) = event.text {
+                                if !text.is_empty() && !text.contains('\r') {
+                                    state.quick_launch.input.push_str(text);
+                                    state.quick_launch.update_filter();
+                                    state.window.request_redraw();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    return; // Consume all keys when Quick Launch is visible.
                 }
 
                 // Command palette intercepts ALL keyboard input when visible.
@@ -4304,6 +4701,21 @@ impl ApplicationHandler<UserEvent> for App {
             // IME events.
             WindowEvent::Ime(ime) => {
                 // Route IME to command palette/execution when visible.
+                // Route IME to Quick Launch when visible.
+                if state.quick_launch.visible {
+                    match ime {
+                        winit::event::Ime::Commit(text) => {
+                            if !text.is_empty() {
+                                state.quick_launch.input.push_str(&text);
+                                state.quick_launch.update_filter();
+                            }
+                            state.window.request_redraw();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
                 if state.command_palette.visible {
                     match ime {
                         winit::event::Ime::Commit(text) => {
@@ -6445,6 +6857,14 @@ fn dispatch_action(
             state.window.request_redraw();
             true
         }
+        Action::QuickLaunch => {
+            state.quick_launch.toggle();
+            if state.quick_launch.visible {
+                state.quick_launch.rebuild_entries(&state.workspaces, &state.workspace_infos);
+            }
+            state.window.request_redraw();
+            true
+        }
         Action::Command(name) => {
             if let Some(cmd) = state.external_commands.iter().find(|c| c.meta.name == *name) {
                 match CommandExecution::new(cmd) {
@@ -7791,9 +8211,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let cwd_display: String = {
                 let parts: Vec<&str> = cwd_short.rsplitn(3, '/').collect();
                 if parts.len() >= 2 {
-                    format!("\u{1F4C1} {}/{}", parts[1], parts[0])
+                    format!("\u{F07B} {}/{}", parts[1], parts[0])
                 } else {
-                    format!("\u{1F4C1} {cwd_short}")
+                    format!("\u{F07B} {cwd_short}")
                 }
             };
             let info_indent = text_left + cell_w * 0.5;
@@ -8141,6 +8561,17 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     if new_ws_y + cell_h <= phys_h {
         let new_ws_label = "+ New Workspace";
         state.renderer.render_text(view, new_ws_label, side_pad, new_ws_y, dim_fg, sidebar_bg);
+    }
+
+    // --- Update available notice ---
+    if let Some(ref ver) = state.update_checker.available_version {
+        let update_y = new_ws_y + cell_h + 4.0;
+        if update_y + cell_h <= phys_h {
+            let update_fg = [1.0, 0.58, 0.16, 1.0]; // orange
+            let update_label = format!("\u{F0176} v{ver} available", ver = ver);
+            let update_display: String = update_label.chars().take(max_chars).collect();
+            state.renderer.render_text(view, &update_display, side_pad, update_y, update_fg, sidebar_bg);
+        }
     }
 
     // --- Claudes Summary (bottom of sidebar) ---
@@ -8779,6 +9210,23 @@ fn render_status_bar(
 
 /// Render all panes with tab bar and sidebar.
 fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderError> {
+
+    // Poll the background brew update check result.
+    if state.update_checker.available_version.is_none() {
+        if let Ok(guard) = state.update_check_result.lock() {
+            if let Some(ref ver) = *guard {
+                let v = ver.clone();
+                drop(guard);
+                log::info!("update available via Homebrew: v{v} (current: {})", env!("CARGO_PKG_VERSION"));
+                state.update_checker.available_version = Some(v.clone());
+                // Send a desktop notification about the update.
+                let title = "Termojinal Update Available";
+                let body = format!("v{} is available (current: v{}). Run: brew upgrade termojinal", v, env!("CARGO_PKG_VERSION"));
+                notification::send_notification(title, &body, false);
+            }
+        }
+    }
+
     let size = state.window.inner_size();
     let phys_w = size.width as f32;
     let phys_h = size.height as f32;
@@ -8962,6 +9410,11 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
         render_command_palette(state, &view, phys_w, phys_h);
     }
 
+    // Render Quick Launch overlay if visible.
+    if state.quick_launch.visible {
+        render_quick_launch(state, &view, phys_w, phys_h);
+    }
+
     // Render command timeline overlay if visible.
     if state.timeline_visible {
         render_command_timeline(state, &view, phys_w, phys_h);
@@ -9121,9 +9574,22 @@ fn render_command_palette(
 
     // Draw box background and border using SDF rounded rectangle.
     let box_bg = color_or(&pc.bg, [0.12, 0.12, 0.16, 0.95]);
-    let border_color = color_or(&pc.border_color, [0.3, 0.3, 0.4, 1.0]);
+    let default_border = color_or(&pc.border_color, [0.3, 0.3, 0.4, 1.0]);
+    // Error flash: orange border for 400ms after invalid e/v action.
+    let error_flash_active = state.command_palette.error_flash
+        .map(|t| t.elapsed().as_millis() < 400)
+        .unwrap_or(false);
+    let border_color = if error_flash_active {
+        [1.0, 0.58, 0.16, 1.0] // orange
+    } else {
+        // Clear expired flash.
+        if state.command_palette.error_flash.is_some() {
+            state.command_palette.error_flash = None;
+        }
+        default_border
+    };
     let corner_radius = pc.corner_radius;
-    let border_width = pc.border_width;
+    let border_width = if error_flash_active { pc.border_width.max(2.0) } else { pc.border_width };
     let shadow_radius = pc.shadow_radius;
     let shadow_opacity = pc.shadow_opacity;
 
@@ -9286,6 +9752,130 @@ fn render_command_palette(
             }
         }
     }
+}
+
+
+/// Render the Quick Launch overlay (fuzzy search for tabs/panes/workspaces).
+fn render_quick_launch(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    phys_w: f32,
+    phys_h: f32,
+) {
+    let cell_size = state.renderer.cell_size();
+    let cell_w = cell_size.width;
+    let cell_h = cell_size.height;
+
+    let pc = &state.config.palette;
+
+    // 1. Semi-transparent overlay.
+    let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
+    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+
+    // 2. Centered floating box.
+    let max_visible_items: usize = 12;
+    let box_w = (phys_w * pc.width_ratio).min(phys_w - 40.0).max(200.0);
+    let item_count = state.quick_launch.filtered.len();
+    let visible_items = item_count.min(max_visible_items);
+    let rows_needed = 1 + visible_items.max(1);
+    let box_h = ((rows_needed as f32) * cell_h * 1.5 + cell_h).min(pc.max_height);
+    let box_x = (phys_w - box_w) / 2.0;
+    let box_y = (phys_h * 0.18).min(phys_h - box_h - 20.0).max(20.0);
+
+    let box_bg = color_or(&pc.bg, [0.12, 0.12, 0.16, 0.95]);
+    let border_color = [0.35, 0.55, 0.90, 1.0]; // blue accent to distinguish from command palette
+    let corner_radius = pc.corner_radius;
+    let border_width = pc.border_width;
+    let shadow_radius = pc.shadow_radius;
+    let shadow_opacity = pc.shadow_opacity;
+
+    let rect = RoundedRect {
+        rect: [box_x, box_y, box_w, box_h],
+        color: box_bg,
+        border_color,
+        params: [corner_radius, border_width, shadow_radius, shadow_opacity],
+    };
+    state.renderer.submit_rounded_rects(view, &[rect]);
+
+    // 3. Input field.
+    let input_y = box_y + cell_h * 0.25;
+    let input_x = box_x + cell_w;
+    let max_chars = ((box_w - cell_w * 2.0) / cell_w).max(1.0) as usize;
+    let palette_input_fg = color_or(&pc.input_fg, [0.92, 0.92, 0.95, 1.0]);
+
+    let prompt = format!("\u{F002} {}", state.quick_launch.input); // magnifying glass icon
+    let prompt_display: String = prompt.chars().take(max_chars).collect();
+    state.renderer.render_text(view, &prompt_display, input_x, input_y, palette_input_fg, box_bg);
+
+    // Separator line.
+    let sep_y = input_y + cell_h + 2.0;
+    let sep_color = color_or(&pc.separator_color, [0.2, 0.2, 0.3, 1.0]);
+    state.renderer.submit_separator(
+        view,
+        (box_x + cell_w * 0.5) as u32,
+        sep_y as u32,
+        (box_w - cell_w) as u32,
+        1,
+        sep_color,
+    );
+
+    // 4. Result list.
+    let list_start_y = sep_y + 4.0;
+    let selected_bg = color_or(&pc.selected_bg, [0.22, 0.22, 0.32, 1.0]);
+    let cmd_fg = color_or(&pc.command_fg, [0.8, 0.8, 0.84, 1.0]);
+    let desc_fg = color_or(&pc.description_fg, [0.5, 0.5, 0.55, 1.0]);
+
+    let ql = &mut state.quick_launch;
+    ql.ensure_visible(max_visible_items);
+    let scroll_offset = ql.scroll_offset;
+    let row_h = cell_h * 1.5; // extra space for detail line
+
+    for (vi, &entry_idx) in ql.filtered.iter().enumerate().skip(scroll_offset).take(max_visible_items) {
+        let row = vi - scroll_offset;
+        let item_y = list_start_y + (row as f32) * row_h;
+        if item_y + row_h > box_y + box_h { break; }
+
+        let is_selected = vi == ql.selected;
+        let bg = if is_selected { selected_bg } else { box_bg };
+
+        if is_selected {
+            let sel_rect = RoundedRect {
+                rect: [box_x + 1.0, item_y, box_w - 2.0, row_h],
+                color: selected_bg,
+                border_color: [0.0; 4],
+                params: [4.0, 0.0, 0.0, 0.0],
+            };
+            state.renderer.submit_rounded_rects(view, &[sel_rect]);
+        }
+
+        let entry = &ql.entries[entry_idx];
+        // Kind icon.
+        let (kind_icon, kind_fg) = match entry.kind {
+            QuickLaunchKind::Workspace => ("\u{F0219} ", [0.55, 0.75, 0.95, 1.0]), // workspace icon
+            QuickLaunchKind::Tab => ("\u{F03E2} ", [0.75, 0.70, 0.95, 1.0]),       // tab icon
+            QuickLaunchKind::Pane => ("\u{F0668} ", [0.65, 0.85, 0.70, 1.0]),      // pane icon
+        };
+        state.renderer.render_text(view, kind_icon, input_x, item_y, kind_fg, bg);
+
+        let label_display: String = entry.label.chars().take(max_chars.saturating_sub(3)).collect();
+        let fg = if is_selected { palette_input_fg } else { cmd_fg };
+        state.renderer.render_text(view, &label_display, input_x + cell_w * 3.0, item_y, fg, bg);
+
+        // Detail line (smaller, dimmed).
+        let detail_display: String = entry.detail.chars().take(max_chars.saturating_sub(4)).collect();
+        state.renderer.render_text(view, &detail_display, input_x + cell_w * 3.0, item_y + cell_h * 0.85, desc_fg, bg);
+    }
+
+    if ql.filtered.is_empty() {
+        let empty_fg = [0.5, 0.5, 0.55, 1.0];
+        state.renderer.render_text(view, "No matching items", input_x, list_start_y, empty_fg, box_bg);
+    }
+
+    // Hint at bottom.
+    let hint = "\u{21B5} Jump  \u{2191}\u{2193} Navigate  esc Close";
+    let hint_y = box_y + box_h - cell_h * 0.8;
+    let hint_fg = [0.4, 0.4, 0.5, 0.7];
+    state.renderer.render_text(view, hint, input_x, hint_y, hint_fg, box_bg);
 }
 
 /// Render the command execution UI as an overlay (replaces normal palette content).

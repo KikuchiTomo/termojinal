@@ -94,6 +94,8 @@ pub enum Action {
     CommandTimeline,
     /// Create a named snapshot of the current terminal state.
     CreateSnapshot,
+    /// Open the Quick Launch overlay (fuzzy search for tabs/panes/workspaces).
+    QuickLaunch,
 }
 
 /// 3-layer keybinding configuration.
@@ -135,6 +137,9 @@ impl Default for KeybindingConfig {
 
         // Command palette
         normal.insert("cmd+shift+p".to_string(), Action::CommandPalette);
+
+        // Quick Launch (fuzzy search for tabs/panes/workspaces)
+        normal.insert("cmd+o".to_string(), Action::QuickLaunch);
 
         // Settings
         normal.insert("cmd+,".to_string(), Action::OpenSettings);
@@ -513,6 +518,7 @@ mod tests {
             Action::LastCommand,
             Action::CommandTimeline,
             Action::CreateSnapshot,
+            Action::QuickLaunch,
         ];
 
         for action in &actions {
