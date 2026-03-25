@@ -64,6 +64,11 @@ pub enum AppIpcRequest {
     FocusPane { pane_id: u64 },
     /// Toggle zoom on a pane.
     ZoomPane { pane_id: Option<u64> },
+    /// Extract the focused pane of a tab into a new tab.
+    ExtractPaneToTab {
+        workspace: Option<usize>,
+        tab: Option<usize>,
+    },
 
     // --- Terminal ---
     /// Send keystrokes to a pane.
@@ -634,6 +639,14 @@ mod tests {
             AppIpcRequest::FocusPane { pane_id: 5 },
             AppIpcRequest::ZoomPane { pane_id: Some(3) },
             AppIpcRequest::ZoomPane { pane_id: None },
+            AppIpcRequest::ExtractPaneToTab {
+                workspace: Some(0),
+                tab: Some(0),
+            },
+            AppIpcRequest::ExtractPaneToTab {
+                workspace: None,
+                tab: None,
+            },
             // Terminal
             AppIpcRequest::SendKeys {
                 pane_id: Some(1),
@@ -780,6 +793,13 @@ mod tests {
             (AppIpcRequest::ClosePane { pane_id: None }, "close_pane"),
             (AppIpcRequest::FocusPane { pane_id: 0 }, "focus_pane"),
             (AppIpcRequest::ZoomPane { pane_id: None }, "zoom_pane"),
+            (
+                AppIpcRequest::ExtractPaneToTab {
+                    workspace: None,
+                    tab: None,
+                },
+                "extract_pane_to_tab",
+            ),
             (
                 AppIpcRequest::SendKeys {
                     pane_id: None,

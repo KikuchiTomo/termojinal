@@ -96,6 +96,8 @@ pub enum Action {
     CreateSnapshot,
     /// Open the Quick Launch overlay (fuzzy search for tabs/panes/workspaces).
     QuickLaunch,
+    /// Extract the focused pane into a new tab.
+    ExtractPaneToTab,
 }
 
 /// 3-layer keybinding configuration.
@@ -189,8 +191,11 @@ impl Default for KeybindingConfig {
         normal.insert("cmd+shift+up".to_string(), Action::FirstCommand);
         normal.insert("cmd+shift+down".to_string(), Action::LastCommand);
 
+        // Pane management: extract pane to new tab
+        normal.insert("cmd+shift+t".to_string(), Action::ExtractPaneToTab);
+
         // Time travel: timeline UI
-        normal.insert("cmd+shift+t".to_string(), Action::CommandTimeline);
+        normal.insert("cmd+shift+h".to_string(), Action::CommandTimeline);
 
         // Time travel: named snapshots (no default keybinding until fully implemented)
 
@@ -519,6 +524,7 @@ mod tests {
             Action::CommandTimeline,
             Action::CreateSnapshot,
             Action::QuickLaunch,
+            Action::ExtractPaneToTab,
         ];
 
         for action in &actions {

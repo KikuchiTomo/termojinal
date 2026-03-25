@@ -1936,6 +1936,29 @@ struct TabDrag {
 }
 
 // ---------------------------------------------------------------------------
+// Drop zone for tab-to-pane drag
+// ---------------------------------------------------------------------------
+
+/// Which side of a pane the dragged tab will be dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropZone {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// State for a tab being dragged into a pane area (pane split mode).
+struct TabPaneDrag {
+    /// Index of the tab being dragged (in the active workspace).
+    tab_idx: usize,
+    /// Target pane ID under the cursor.
+    target_pane: PaneId,
+    /// Which drop zone the cursor is in.
+    zone: DropZone,
+}
+
+// ---------------------------------------------------------------------------
 // Scrollbar drag state
 // ---------------------------------------------------------------------------
 
@@ -2973,6 +2996,8 @@ struct AppState {
     /// Application start time for animation calculations.
     app_start_time: std::time::Instant,
     tab_drag: Option<TabDrag>,
+    /// Tab-to-pane drag state: active when a tab is being dragged into a pane area.
+    tab_pane_drag: Option<TabPaneDrag>,
     config: TermojinalConfig,
     status_cache: StatusCache,
     /// Per-pane git info cache (updated from async collector).
@@ -3922,6 +3947,7 @@ impl ApplicationHandler<UserEvent> for App {
             agent_infos: vec![AgentSessionInfo::default()],
             app_start_time: std::time::Instant::now(),
             tab_drag: None,
+            tab_pane_drag: None,
             config: cfg.clone(),
             status_cache: StatusCache::new(),
             pane_git_cache: PaneGitCache::new(),
@@ -4894,11 +4920,77 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
-                // --- Tab drag active: check for reordering (Feature 4) ---
-                if let Some(ref drag) = state.tab_drag {
-                    let drag_idx = drag.tab_idx;
-                    let drag_start_x = drag.start_x;
+
+                // --- Tab-to-pane drag active: update drop zone preview ---
+                if state.tab_pane_drag.is_some() {
                     let cx = position.x as f32;
+                    let cy = position.y as f32;
+                    let pane_rects = active_pane_rects(state);
+                    // Find which pane the cursor is over.
+                    let mut found = false;
+                    for (pid, rect) in &pane_rects {
+                        if cx >= rect.x && cx < rect.x + rect.w
+                            && cy >= rect.y && cy < rect.y + rect.h
+                        {
+                            let zone = compute_drop_zone(cx, cy, &rect);
+                            let drag_tab_idx = state.tab_pane_drag.as_ref().unwrap().tab_idx;
+                            state.tab_pane_drag = Some(TabPaneDrag {
+                                tab_idx: drag_tab_idx,
+                                target_pane: *pid,
+                                zone,
+                            });
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        // Cursor is outside all panes — check if back in tab bar.
+                        let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+                        if cy < tab_bar_h {
+                            // Re-enter tab bar reorder mode.
+                            let drag_tab_idx = state.tab_pane_drag.as_ref().unwrap().tab_idx;
+                            state.tab_drag = Some(TabDrag {
+                                tab_idx: drag_tab_idx,
+                                start_x: position.x,
+                            });
+                            state.tab_pane_drag = None;
+                        }
+                    }
+                    state.window.request_redraw();
+                    return;
+                }
+
+                // --- Tab drag active: check for reordering or transition to pane split ---
+                if state.tab_drag.is_some() {
+                    let drag_idx = state.tab_drag.as_ref().unwrap().tab_idx;
+                    let drag_start_x = state.tab_drag.as_ref().unwrap().start_x;
+                    let cx = position.x as f32;
+                    let cy = position.y as f32;
+                    let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+
+                    // If cursor has moved below the tab bar, transition to pane split mode.
+                    // Only allow this when there are at least 2 tabs (last tab cannot be dragged out).
+                    if cy >= tab_bar_h && active_ws(state).tabs.len() > 1 {
+                        state.tab_drag = None;
+                        // Find the pane under the cursor and compute the drop zone.
+                        let pane_rects = active_pane_rects(state);
+                        for (pid, rect) in &pane_rects {
+                            if cx >= rect.x && cx < rect.x + rect.w
+                                && cy >= rect.y && cy < rect.y + rect.h
+                            {
+                                let zone = compute_drop_zone(cx, cy, rect);
+                                state.tab_pane_drag = Some(TabPaneDrag {
+                                    tab_idx: drag_idx,
+                                    target_pane: *pid,
+                                    zone,
+                                });
+                                break;
+                            }
+                        }
+                        state.window.request_redraw();
+                        return;
+                    }
+
                     let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
                     let local_cx = cx - sidebar_w;
                     let cell_w = state.renderer.cell_size().width;
@@ -5111,6 +5203,55 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if state.scrollbar_drag.is_some() {
                         state.scrollbar_drag = None;
+                        state.window.request_redraw();
+                        break 'mouse_input;
+                    }
+                    if let Some(drag) = state.tab_pane_drag.take() {
+                        // Execute the tab-to-pane split.
+                        let ws = active_ws(state);
+                        // Ensure the source tab still exists and is not the only tab.
+                        if drag.tab_idx < ws.tabs.len() && ws.tabs.len() > 1 {
+                            let (direction, insert_first) = match drag.zone {
+                                DropZone::Left => (SplitDirection::Horizontal, true),
+                                DropZone::Right => (SplitDirection::Horizontal, false),
+                                DropZone::Top => (SplitDirection::Vertical, true),
+                                DropZone::Bottom => (SplitDirection::Vertical, false),
+                            };
+                            // Take all panes from the dragged tab.
+                            let ws = active_ws_mut(state);
+                            let source_tab = ws.tabs.remove(drag.tab_idx);
+                            // Fix active_tab index after removal.
+                            if ws.active_tab >= ws.tabs.len() {
+                                ws.active_tab = ws.tabs.len().saturating_sub(1);
+                            } else if ws.active_tab > drag.tab_idx {
+                                ws.active_tab -= 1;
+                            }
+                            // Insert each pane from the source tab into the target pane's layout.
+                            let pane_ids: Vec<PaneId> = source_tab.layout.pane_ids();
+                            let mut first_inserted = None;
+                            for pid in &pane_ids {
+                                let tab = active_tab_mut(state);
+                                tab.layout = tab.layout.split_insert(
+                                    if first_inserted.is_some() { first_inserted.unwrap() } else { drag.target_pane },
+                                    direction,
+                                    *pid,
+                                    insert_first,
+                                );
+                                if first_inserted.is_none() {
+                                    first_inserted = Some(*pid);
+                                }
+                            }
+                            // Move panes from source tab into the active tab's pane map.
+                            for (pid, pane) in source_tab.panes {
+                                active_tab_mut(state).panes.insert(pid, pane);
+                            }
+                            // Focus the first inserted pane.
+                            if let Some(fid) = first_inserted {
+                                let tab = active_tab_mut(state);
+                                tab.layout = tab.layout.focus(fid);
+                            }
+                            resize_all_panes(state);
+                        }
                         state.window.request_redraw();
                         break 'mouse_input;
                     }
@@ -6956,6 +7097,44 @@ fn dispatch_action(
             }
             true
         }
+        Action::ExtractPaneToTab => {
+            let tab = active_tab(state);
+            let focused_id = tab.layout.focused();
+            // Only extract if the tab has more than one pane.
+            if tab.layout.pane_count() <= 1 {
+                return true;
+            }
+            // Extract the focused pane from the current tab's layout.
+            let extract_result = tab.layout.extract_pane(focused_id);
+            if let Some((remaining_layout, extracted_layout)) = extract_result {
+                // Update the current tab's layout (pane removed).
+                let tab = active_tab_mut(state);
+                // Remove the pane from the current tab's pane map.
+                let pane = tab.panes.remove(&focused_id);
+                tab.layout = remaining_layout;
+
+                // Create a new tab with the extracted pane.
+                if let Some(pane) = pane {
+                    let mut panes = HashMap::new();
+                    panes.insert(focused_id, pane);
+                    let fmt = state.config.tab_bar.format.clone();
+                    let ws = active_ws_mut(state);
+                    let tab_num = ws.tabs.len() + 1;
+                    let new_tab = Tab {
+                        layout: extracted_layout,
+                        panes,
+                        name: format!("Tab {tab_num}"),
+                        display_title: format_tab_title(&fmt, "", "", tab_num),
+                    };
+                    ws.tabs.push(new_tab);
+                    ws.active_tab = ws.tabs.len() - 1;
+                }
+                resize_all_panes(state);
+                update_window_title(state);
+                state.window.request_redraw();
+            }
+            true
+        }
         Action::UnreadJump
         | Action::OpenSettings => {
             log::debug!("unhandled action: {:?}", action);
@@ -7047,6 +7226,29 @@ fn detach_all_ptys(state: &mut AppState) {
                 pane.pty.detach();
             }
         }
+    }
+}
+
+/// Compute the drop zone for a cursor position within a pane rect.
+///
+/// Layout (no dead zone):
+/// - Top 20%: Top
+/// - Bottom 20%: Bottom
+/// - Middle 60%, left half: Left
+/// - Middle 60%, right half: Right
+fn compute_drop_zone(cx: f32, cy: f32, rect: &termojinal_layout::Rect) -> DropZone {
+    let rel_y = (cy - rect.y) / rect.h;
+    if rel_y < 0.2 {
+        return DropZone::Top;
+    }
+    if rel_y > 0.8 {
+        return DropZone::Bottom;
+    }
+    let rel_x = (cx - rect.x) / rect.w;
+    if rel_x < 0.5 {
+        DropZone::Left
+    } else {
+        DropZone::Right
     }
 }
 
@@ -9368,6 +9570,26 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
         }
     }
 
+    // Draw drop zone preview when a tab is being dragged into a pane.
+    if let Some(ref drag) = state.tab_pane_drag {
+        if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == drag.target_pane) {
+            // Compute the preview rectangle based on the drop zone.
+            let (zx, zy, zw, zh) = match drag.zone {
+                DropZone::Top => (rect.x, rect.y, rect.w, rect.h * 0.5),
+                DropZone::Bottom => (rect.x, rect.y + rect.h * 0.5, rect.w, rect.h * 0.5),
+                DropZone::Left => (rect.x, rect.y, rect.w * 0.5, rect.h),
+                DropZone::Right => (rect.x + rect.w * 0.5, rect.y, rect.w * 0.5, rect.h),
+            };
+            let inset = 4.0_f32;
+            state.renderer.submit_rounded_rects(&view, &[RoundedRect {
+                rect: [zx + inset, zy + inset, (zw - inset * 2.0).max(1.0), (zh - inset * 2.0).max(1.0)],
+                color: [0.2, 0.5, 1.0, 0.18],
+                border_color: [0.2, 0.5, 1.0, 0.4],
+                params: [8.0, 2.0, 0.0, 0.0], // corner_radius, border_width, no shadow
+            }]);
+        }
+    }
+
     // Update IME cursor position for the focused pane.
     if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == focused_id) {
         if let Some(fp) = state.workspaces[ws_idx].tabs[tab_idx].panes.get(&focused_id) {
@@ -11484,6 +11706,11 @@ fn handle_app_ipc_request(
 
         AppIpcRequest::ZoomPane { .. } => {
             dispatch_action(state, &Action::ZoomPane, proxy, buffers, event_loop);
+            AppIpcResponse::ok_empty()
+        }
+
+        AppIpcRequest::ExtractPaneToTab { .. } => {
+            dispatch_action(state, &Action::ExtractPaneToTab, proxy, buffers, event_loop);
             AppIpcResponse::ok_empty()
         }
 

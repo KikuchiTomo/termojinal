@@ -140,6 +140,68 @@ impl Node {
         }
     }
 
+    /// Insert an existing pane next to a target pane.
+    ///
+    /// `insert_first` controls the placement:
+    /// - `true`: the inserted pane becomes the first (left/top) child
+    /// - `false`: the inserted pane becomes the second (right/bottom) child
+    fn split_insert(
+        &self,
+        target: PaneId,
+        dir: SplitDirection,
+        insert_id: PaneId,
+        insert_first: bool,
+    ) -> (Node, bool) {
+        match self {
+            Node::Leaf(id) if *id == target => {
+                let (first, second) = if insert_first {
+                    (Box::new(Node::Leaf(insert_id)), Box::new(Node::Leaf(*id)))
+                } else {
+                    (Box::new(Node::Leaf(*id)), Box::new(Node::Leaf(insert_id)))
+                };
+                let new_node = Node::Split {
+                    direction: dir,
+                    ratio: 0.5,
+                    first,
+                    second,
+                };
+                (new_node, true)
+            }
+            Node::Leaf(_) => (self.clone(), false),
+            Node::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                let (new_first, found) =
+                    first.split_insert(target, dir, insert_id, insert_first);
+                if found {
+                    return (
+                        Node::Split {
+                            direction: *direction,
+                            ratio: *ratio,
+                            first: Box::new(new_first),
+                            second: second.clone(),
+                        },
+                        true,
+                    );
+                }
+                let (new_second, found) =
+                    second.split_insert(target, dir, insert_id, insert_first);
+                (
+                    Node::Split {
+                        direction: *direction,
+                        ratio: *ratio,
+                        first: first.clone(),
+                        second: Box::new(new_second),
+                    },
+                    found,
+                )
+            }
+        }
+    }
+
     /// Close a pane. Returns `None` if the pane was the only leaf at root level,
     /// otherwise returns the new subtree.
     fn close(&self, target: PaneId) -> Option<Node> {
@@ -403,6 +465,34 @@ impl LayoutTree {
             },
             new_id,
         )
+    }
+
+    /// Insert an existing pane next to `target` in the given direction.
+    ///
+    /// Unlike [`split`], this does not generate a new pane ID; it uses
+    /// `insert_id` which must already exist in the caller's pane map.
+    ///
+    /// `insert_first` controls placement:
+    /// - `true`:  inserted pane becomes the first (left/top) child
+    /// - `false`: inserted pane becomes the second (right/bottom) child
+    ///
+    /// Returns the new tree with focus set to the inserted pane.
+    pub fn split_insert(
+        &self,
+        target: PaneId,
+        direction: SplitDirection,
+        insert_id: PaneId,
+        insert_first: bool,
+    ) -> Self {
+        let (new_root, _found) =
+            self.root
+                .split_insert(target, direction, insert_id, insert_first);
+        Self {
+            root: new_root,
+            next_id: self.next_id,
+            focused: insert_id,
+            zoomed: false,
+        }
     }
 
     /// Close a pane. Returns `None` if it was the last pane.
@@ -1159,5 +1249,68 @@ mod tests {
     fn clamp_ratio_tiny_total() {
         // Total smaller than 2 * min -> returns 0.5
         assert!((clamp_ratio(0.8, 80.0, 50.0) - 0.5).abs() < 0.01);
+    }
+
+    // -- split_insert -------------------------------------------------------
+
+    #[test]
+    fn split_insert_places_pane_first() {
+        let tree = LayoutTree::new(0);
+        // Insert pane 10 to the LEFT of pane 0 (insert_first=true, Horizontal)
+        let tree = tree.split_insert(0, SplitDirection::Horizontal, 10, true);
+        assert_eq!(tree.pane_count(), 2);
+        assert!(tree.contains(0));
+        assert!(tree.contains(10));
+        assert_eq!(tree.focused(), 10);
+        // Pane 10 should be on the left (first), pane 0 on the right
+        let rects = tree.panes(800.0, 600.0);
+        let r10 = rects.iter().find(|(id, _)| *id == 10).unwrap().1;
+        let r0 = rects.iter().find(|(id, _)| *id == 0).unwrap().1;
+        assert!(r10.x < r0.x, "inserted pane should be to the left");
+    }
+
+    #[test]
+    fn split_insert_places_pane_second() {
+        let tree = LayoutTree::new(0);
+        // Insert pane 10 to the RIGHT of pane 0 (insert_first=false, Horizontal)
+        let tree = tree.split_insert(0, SplitDirection::Horizontal, 10, false);
+        assert_eq!(tree.pane_count(), 2);
+        let rects = tree.panes(800.0, 600.0);
+        let r10 = rects.iter().find(|(id, _)| *id == 10).unwrap().1;
+        let r0 = rects.iter().find(|(id, _)| *id == 0).unwrap().1;
+        assert!(r10.x > r0.x, "inserted pane should be to the right");
+    }
+
+    #[test]
+    fn split_insert_vertical() {
+        let tree = LayoutTree::new(0);
+        // Insert pane 10 ABOVE pane 0 (insert_first=true, Vertical)
+        let tree = tree.split_insert(0, SplitDirection::Vertical, 10, true);
+        let rects = tree.panes(800.0, 600.0);
+        let r10 = rects.iter().find(|(id, _)| *id == 10).unwrap().1;
+        let r0 = rects.iter().find(|(id, _)| *id == 0).unwrap().1;
+        assert!(r10.y < r0.y, "inserted pane should be above");
+    }
+
+    // -- extract_pane -------------------------------------------------------
+
+    #[test]
+    fn extract_pane_from_two_pane_tree() {
+        let tree = LayoutTree::new(0);
+        let (tree, pid) = tree.split(0, SplitDirection::Horizontal);
+        assert_eq!(tree.pane_count(), 2);
+        let (remaining, extracted) = tree.extract_pane(pid).unwrap();
+        assert_eq!(remaining.pane_count(), 1);
+        assert!(remaining.contains(0));
+        assert!(!remaining.contains(pid));
+        assert_eq!(extracted.pane_count(), 1);
+        assert!(extracted.contains(pid));
+        assert_eq!(extracted.focused(), pid);
+    }
+
+    #[test]
+    fn extract_only_pane_returns_none() {
+        let tree = LayoutTree::new(0);
+        assert!(tree.extract_pane(0).is_none());
     }
 }
