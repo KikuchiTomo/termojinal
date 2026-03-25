@@ -6,7 +6,8 @@ use termojinal_ipc::keybinding::Action;
 use termojinal_layout::PaneId;
 use winit::keyboard::{Key, NamedKey};
 
-use crate::{Workspace, WorkspaceInfo};
+use crate::workspace::WorkspaceInfo;
+use crate::Workspace;
 
 pub(crate) struct PaletteCommand {
     pub(crate) name: String,
