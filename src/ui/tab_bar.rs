@@ -96,14 +96,8 @@ pub(crate) fn handle_tab_bar_click(state: &mut AppState) -> TabBarClickResult {
             if local_cx >= close_zone_start {
                 return TabBarClickResult::CloseTab(i);
             }
-            // Switch to the clicked tab.
-            let ws = active_ws_mut(state);
-            if ws.active_tab != i {
-                ws.active_tab = i;
-                resize_all_panes(state);
-                update_window_title(state);
-                state.window.request_redraw();
-            }
+            // Return the tab index — the caller will decide whether to
+            // switch immediately (on release) or start a drag.
             return TabBarClickResult::Tab(i);
         }
         tab_x += tab_w;

@@ -709,6 +709,7 @@ impl ApplicationHandler<UserEvent> for App {
             agent_infos: vec![AgentSessionInfo::default()],
             app_start_time: std::time::Instant::now(),
             tab_drag: None,
+            pending_tab_click: None,
             tab_pane_drag: None,
             config: cfg.clone(),
             status_cache: StatusCache::new(),
@@ -1804,6 +1805,25 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
+                // --- Pending tab click: check if mouse moved beyond drag threshold ---
+                if let Some(ref pending) = state.pending_tab_click {
+                    let dx = position.x - pending.start_x;
+                    let dy = position.y - pending.start_y;
+                    if dx * dx + dy * dy > 25.0 {
+                        // Threshold exceeded (5px) — promote to tab drag.
+                        let tab_idx = pending.tab_idx;
+                        let start_x = pending.start_x;
+                        state.pending_tab_click = None;
+                        state.tab_drag = Some(TabDrag {
+                            tab_idx,
+                            start_x,
+                        });
+                    }
+                    // While pending, consume the move event (don't start selection etc.).
+                    state.window.request_redraw();
+                    return;
+                }
+
                 // --- Tab-to-pane drag active: update drop zone preview ---
                 if state.tab_pane_drag.is_some() {
                     let cx = position.x as f32;
@@ -2183,6 +2203,17 @@ impl ApplicationHandler<UserEvent> for App {
                         state.window.request_redraw();
                         break 'mouse_input;
                     }
+                    if let Some(pending) = state.pending_tab_click.take() {
+                        // Mouse released within drag threshold — treat as a click (tab switch).
+                        let ws = active_ws_mut(state);
+                        if ws.active_tab != pending.tab_idx {
+                            ws.active_tab = pending.tab_idx;
+                            resize_all_panes(state);
+                            update_window_title(state);
+                        }
+                        state.window.request_redraw();
+                        break 'mouse_input;
+                    }
                     if state.tab_drag.is_some() {
                         state.tab_drag = None;
                         state.window.request_redraw();
@@ -2261,9 +2292,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if tab_bar_h > 0.0 && cy < tab_bar_h {
                         match handle_tab_bar_click(state) {
                             TabBarClickResult::Tab(tab_idx) => {
-                                state.tab_drag = Some(TabDrag {
+                                state.pending_tab_click = Some(PendingTabClick {
                                     tab_idx,
                                     start_x: state.cursor_pos.0,
+                                    start_y: state.cursor_pos.1,
                                 });
                             }
                             TabBarClickResult::CloseTab(tab_idx) => {

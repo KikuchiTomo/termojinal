@@ -306,6 +306,16 @@ pub(crate) struct TabDrag {
     pub(crate) start_x: f64,
 }
 
+/// Pending tab click state: records a mouse-down on a tab before we know
+/// whether it will become a click (tab switch) or a drag.
+pub(crate) struct PendingTabClick {
+    /// Index of the tab that was pressed.
+    pub(crate) tab_idx: usize,
+    /// Mouse position when mouse-down occurred.
+    pub(crate) start_x: f64,
+    pub(crate) start_y: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Drop zone for tab-to-pane drag
 // ---------------------------------------------------------------------------
@@ -414,6 +424,8 @@ pub(crate) struct AppState {
     /// Application start time for animation calculations.
     pub(crate) app_start_time: std::time::Instant,
     pub(crate) tab_drag: Option<TabDrag>,
+    /// Pending tab click: mouse-down recorded but not yet committed as click or drag.
+    pub(crate) pending_tab_click: Option<PendingTabClick>,
     /// Tab-to-pane drag state: active when a tab is being dragged into a pane area.
     pub(crate) tab_pane_drag: Option<TabPaneDrag>,
     pub(crate) config: TermojinalConfig,
