@@ -8,11 +8,13 @@ mod notification;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use config::{color_or, format_tab_title, load_config, parse_hex_color, resolve_theme, TermojinalConfig};
+use config::{
+    color_or, format_tab_title, load_config, parse_hex_color, resolve_theme, TermojinalConfig,
+};
 
 use serde_json::json;
 use termojinal_ipc::app_protocol::{AppIpcRequest, AppIpcResponse};
@@ -92,7 +94,9 @@ impl ClaudesDashboard {
     }
 
     fn ensure_visible(&mut self, max_visible: usize) {
-        if max_visible == 0 { return; }
+        if max_visible == 0 {
+            return;
+        }
         if self.selected_idx < self.scroll_offset {
             self.scroll_offset = self.selected_idx;
         } else if self.selected_idx >= self.scroll_offset + max_visible {
@@ -124,7 +128,6 @@ struct DashboardEntry {
 // Command Palette
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Daemon Connection (synchronous, for GUI thread)
 // ---------------------------------------------------------------------------
@@ -150,7 +153,9 @@ impl DaemonHandle {
         use std::os::unix::net::UnixStream;
 
         let mut stream = UnixStream::connect(&self.socket_path).ok()?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
         let msg = format!("{}\n", req);
         stream.write_all(msg.as_bytes()).ok()?;
         let mut line = String::new();
@@ -159,7 +164,13 @@ impl DaemonHandle {
     }
 
     /// Create a session on the daemon. Returns (session_id, name, pid).
-    fn create_session(&self, shell: &str, cwd: &str, cols: u16, rows: u16) -> Option<(String, String, i32)> {
+    fn create_session(
+        &self,
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Option<(String, String, i32)> {
         let req = json!({
             "type": "create_session",
             "shell": shell,
@@ -211,9 +222,9 @@ struct PaletteCommand {
 
 #[derive(Clone, Copy, PartialEq)]
 enum CommandKind {
-    Builtin,          // Built-in termojinal command
-    Plugin,           // External command (unsigned/unverified)
-    PluginVerified,   // External command (signed & verified)
+    Builtin,        // Built-in termojinal command
+    Plugin,         // External command (unsigned/unverified)
+    PluginVerified, // External command (signed & verified)
 }
 
 enum PaletteResult {
@@ -287,7 +298,11 @@ impl FileFinderState {
                 let path = entry.path().to_string_lossy().to_string();
                 let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 let ffe = FileFinderEntry { name, path, is_dir };
-                if is_dir { dirs.push(ffe); } else { files.push(ffe); }
+                if is_dir {
+                    dirs.push(ffe);
+                } else {
+                    files.push(ffe);
+                }
             }
             dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -315,22 +330,34 @@ impl FileFinderState {
 
     fn select_next(&mut self) {
         if !self.filtered.is_empty() {
-            self.selected = if self.selected + 1 >= self.filtered.len() { 0 } else { self.selected + 1 };
+            self.selected = if self.selected + 1 >= self.filtered.len() {
+                0
+            } else {
+                self.selected + 1
+            };
         }
     }
 
     fn select_prev(&mut self) {
         if !self.filtered.is_empty() {
-            self.selected = if self.selected == 0 { self.filtered.len() - 1 } else { self.selected - 1 };
+            self.selected = if self.selected == 0 {
+                self.filtered.len() - 1
+            } else {
+                self.selected - 1
+            };
         }
     }
 
     fn selected_entry(&self) -> Option<&FileFinderEntry> {
-        self.filtered.get(self.selected).and_then(|&i| self.entries.get(i))
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.entries.get(i))
     }
 
     fn ensure_visible(&mut self, max_visible: usize) {
-        if max_visible == 0 { return; }
+        if max_visible == 0 {
+            return;
+        }
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         } else if self.selected >= self.scroll_offset + max_visible {
@@ -343,7 +370,7 @@ struct CommandPalette {
     visible: bool,
     mode: PaletteMode,
     input: String,
-    preedit: String,       // IME preedit text (displayed but not committed)
+    preedit: String, // IME preedit text (displayed but not committed)
     commands: Vec<PaletteCommand>,
     filtered: Vec<usize>, // Indices into commands
     selected: usize,      // Index into filtered
@@ -710,16 +737,19 @@ impl CommandPalette {
                                     }
                                 })
                             } else {
-                                self.file_finder.selected_entry().map(|e| {
-                                    if e.is_dir {
-                                        e.path.clone()
-                                    } else {
-                                        std::path::Path::new(&e.path)
-                                            .parent()
-                                            .map(|p| p.to_string_lossy().to_string())
-                                            .unwrap_or_default()
-                                    }
-                                }).filter(|p| !p.is_empty())
+                                self.file_finder
+                                    .selected_entry()
+                                    .map(|e| {
+                                        if e.is_dir {
+                                            e.path.clone()
+                                        } else {
+                                            std::path::Path::new(&e.path)
+                                                .parent()
+                                                .map(|p| p.to_string_lossy().to_string())
+                                                .unwrap_or_default()
+                                        }
+                                    })
+                                    .filter(|p| !p.is_empty())
                             };
                             if let Some(p) = path {
                                 self.error_flash = None;
@@ -886,7 +916,8 @@ impl QuickLaunchState {
     fn rebuild_entries(&mut self, workspaces: &[Workspace], workspace_infos: &[WorkspaceInfo]) {
         self.entries.clear();
         for (wi, ws) in workspaces.iter().enumerate() {
-            let ws_name = workspace_infos.get(wi)
+            let ws_name = workspace_infos
+                .get(wi)
                 .filter(|inf| !inf.name.is_empty())
                 .map(|inf| inf.name.clone())
                 .unwrap_or_else(|| ws.name.clone());
@@ -908,7 +939,12 @@ impl QuickLaunchState {
                 };
                 self.entries.push(QuickLaunchEntry {
                     label: tab_label,
-                    detail: format!("{} \u{203A} Tab {} \u{2022} {} pane(s)", ws_name, ti + 1, tab.panes.len()),
+                    detail: format!(
+                        "{} \u{203A} Tab {} \u{2022} {} pane(s)",
+                        ws_name,
+                        ti + 1,
+                        tab.panes.len()
+                    ),
                     kind: QuickLaunchKind::Tab,
                     workspace_idx: wi,
                     tab_idx: ti,
@@ -930,7 +966,12 @@ impl QuickLaunchState {
                         };
                         self.entries.push(QuickLaunchEntry {
                             label: pane_title,
-                            detail: format!("{} \u{203A} Tab {} \u{203A} Pane {}", ws_name, ti + 1, pid),
+                            detail: format!(
+                                "{} \u{203A} Tab {} \u{203A} Pane {}",
+                                ws_name,
+                                ti + 1,
+                                pid
+                            ),
                             kind: QuickLaunchKind::Pane,
                             workspace_idx: wi,
                             tab_idx: ti,
@@ -948,7 +989,10 @@ impl QuickLaunchState {
         if query.is_empty() {
             self.filtered = (0..self.entries.len()).collect();
         } else {
-            self.filtered = self.entries.iter().enumerate()
+            self.filtered = self
+                .entries
+                .iter()
+                .enumerate()
                 .filter(|(_, e)| {
                     e.label.to_lowercase().contains(&query)
                         || e.detail.to_lowercase().contains(&query)
@@ -962,18 +1006,28 @@ impl QuickLaunchState {
 
     fn select_next(&mut self) {
         if !self.filtered.is_empty() {
-            self.selected = if self.selected + 1 >= self.filtered.len() { 0 } else { self.selected + 1 };
+            self.selected = if self.selected + 1 >= self.filtered.len() {
+                0
+            } else {
+                self.selected + 1
+            };
         }
     }
 
     fn select_prev(&mut self) {
         if !self.filtered.is_empty() {
-            self.selected = if self.selected == 0 { self.filtered.len() - 1 } else { self.selected - 1 };
+            self.selected = if self.selected == 0 {
+                self.filtered.len() - 1
+            } else {
+                self.selected - 1
+            };
         }
     }
 
     fn ensure_visible(&mut self, max_visible: usize) {
-        if max_visible == 0 { return; }
+        if max_visible == 0 {
+            return;
+        }
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         } else if self.selected >= self.scroll_offset + max_visible {
@@ -982,11 +1036,11 @@ impl QuickLaunchState {
     }
 
     fn selected_entry(&self) -> Option<&QuickLaunchEntry> {
-        self.filtered.get(self.selected).and_then(|&i| self.entries.get(i))
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.entries.get(i))
     }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Homebrew update checker (Issue 11)
@@ -1015,8 +1069,7 @@ impl UpdateChecker {
             .name("brew-update-check".into())
             .spawn(move || {
                 // Try `brew info --json=v2 termojinal` first (formula).
-                let version = Self::check_brew_formula()
-                    .or_else(Self::check_brew_cask);
+                let version = Self::check_brew_formula().or_else(Self::check_brew_cask);
                 if let Some(latest) = version {
                     let current = env!("CARGO_PKG_VERSION");
                     // Simple string comparison: if latest != current, update available.
@@ -1043,10 +1096,7 @@ impl UpdateChecker {
             return None;
         }
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        json["formulae"]
-            .as_array()?
-            .first()?
-            ["versions"]["stable"]
+        json["formulae"].as_array()?.first()?["versions"]["stable"]
             .as_str()
             .map(|s| s.to_string())
     }
@@ -1062,10 +1112,7 @@ impl UpdateChecker {
             return None;
         }
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        json["casks"]
-            .as_array()?
-            .first()?
-            ["version"]
+        json["casks"].as_array()?.first()?["version"]
             .as_str()
             .map(|s| s.to_string())
     }
@@ -1235,7 +1282,11 @@ impl Selection {
             }
 
             // Trim trailing spaces.
-            while row_cells.last().map_or(false, |c| c.c == ' ' && c.fg == termojinal_vt::Color::Default && c.bg == termojinal_vt::Color::Default) {
+            while row_cells.last().map_or(false, |c| {
+                c.c == ' '
+                    && c.fg == termojinal_vt::Color::Default
+                    && c.bg == termojinal_vt::Color::Default
+            }) {
                 row_cells.pop();
             }
             rows.push(row_cells);
@@ -1287,11 +1338,14 @@ impl SearchState {
                 row_chars.push(c);
             }
             // Simple substring search (case-insensitive).
-            let row_lower: Vec<char> = row_chars.iter().map(|c| {
-                let mut buf = [0u8; 4];
-                let s = c.encode_utf8(&mut buf);
-                s.to_lowercase().chars().next().unwrap_or(*c)
-            }).collect();
+            let row_lower: Vec<char> = row_chars
+                .iter()
+                .map(|c| {
+                    let mut buf = [0u8; 4];
+                    let s = c.encode_utf8(&mut buf);
+                    s.to_lowercase().chars().next().unwrap_or(*c)
+                })
+                .collect();
             for start_col in 0..row_lower.len() {
                 if start_col + qlen > row_lower.len() {
                     break;
@@ -1372,10 +1426,9 @@ impl AsyncWorkspaceRefresher {
                         let (lock, cvar) = &*wake;
                         let mut nudged = lock.lock().unwrap();
                         if !*nudged {
-                            let (mut g, _) = cvar.wait_timeout(
-                                nudged,
-                                std::time::Duration::from_secs(3),
-                            ).unwrap();
+                            let (mut g, _) = cvar
+                                .wait_timeout(nudged, std::time::Duration::from_secs(3))
+                                .unwrap();
                             *g = false;
                         } else {
                             *nudged = false;
@@ -1390,9 +1443,7 @@ impl AsyncWorkspaceRefresher {
 
                     if !pending.is_empty() {
                         // Process each workspace request.
-                        let mut new_results = {
-                            res.lock().unwrap().clone()
-                        };
+                        let mut new_results = { res.lock().unwrap().clone() };
                         // Ensure capacity.
                         while new_results.len() <= pending.iter().map(|r| r.wi).max().unwrap_or(0) {
                             new_results.push(WorkspaceInfo::new());
@@ -1413,7 +1464,9 @@ impl AsyncWorkspaceRefresher {
                             let old_name = new_results[wi].name.clone();
                             let old_branch = new_results[wi].git_branch.clone();
                             refresh_workspace_info(&mut new_results[wi], &cwd, request.pty_pid);
-                            if new_results[wi].name != old_name || new_results[wi].git_branch != old_branch {
+                            if new_results[wi].name != old_name
+                                || new_results[wi].git_branch != old_branch
+                            {
                                 changed = true;
                             }
                         }
@@ -1435,7 +1488,12 @@ impl AsyncWorkspaceRefresher {
             })
             .expect("failed to spawn workspace refresher thread");
 
-        Self { results, requests, daemon_sessions, notify }
+        Self {
+            results,
+            requests,
+            daemon_sessions,
+            notify,
+        }
     }
 
     /// Submit refresh requests (called from render thread — non-blocking).
@@ -1453,12 +1511,18 @@ impl AsyncWorkspaceRefresher {
 
     /// Get latest workspace infos (called from render thread — non-blocking).
     fn get_results(&self) -> Vec<WorkspaceInfo> {
-        self.results.try_lock().map(|r| r.clone()).unwrap_or_default()
+        self.results
+            .try_lock()
+            .map(|r| r.clone())
+            .unwrap_or_default()
     }
 
     /// Get latest daemon sessions (called from render thread — non-blocking).
     fn get_daemon_sessions(&self) -> Vec<DaemonSessionInfo> {
-        self.daemon_sessions.try_lock().map(|r| r.clone()).unwrap_or_default()
+        self.daemon_sessions
+            .try_lock()
+            .map(|r| r.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -1548,12 +1612,12 @@ impl Default for AgentSessionInfo {
 
 /// Rotating palette for workspace indicator dots (Arc browser inspired).
 const WORKSPACE_COLORS: [[f32; 4]; 6] = [
-    [0.29, 0.62, 1.0, 1.0],   // blue
-    [0.55, 0.82, 0.33, 1.0],  // green
-    [1.0, 0.58, 0.26, 1.0],   // orange
-    [0.87, 0.44, 0.85, 1.0],  // purple
-    [1.0, 0.42, 0.42, 1.0],   // red
-    [0.36, 0.84, 0.77, 1.0],  // teal
+    [0.29, 0.62, 1.0, 1.0],  // blue
+    [0.55, 0.82, 0.33, 1.0], // green
+    [1.0, 0.58, 0.26, 1.0],  // orange
+    [0.87, 0.44, 0.85, 1.0], // purple
+    [1.0, 0.42, 0.42, 1.0],  // red
+    [0.36, 0.84, 0.77, 1.0], // teal
 ];
 
 /// Refresh workspace info by running git commands and detecting ports.
@@ -1582,7 +1646,11 @@ fn refresh_workspace_info(info: &mut WorkspaceInfo, cwd: &str, pty_pid: Option<i
     {
         if output.status.success() {
             let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            info.git_branch = if branch.is_empty() { None } else { Some(branch) };
+            info.git_branch = if branch.is_empty() {
+                None
+            } else {
+                Some(branch)
+            };
         } else {
             info.git_branch = None;
         }
@@ -1611,7 +1679,14 @@ fn refresh_workspace_info(info: &mut WorkspaceInfo, cwd: &str, pty_pid: Option<i
     info.git_ahead = 0;
     info.git_behind = 0;
     if let Ok(output) = std::process::Command::new("git")
-        .args(["-C", cwd, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+        .args([
+            "-C",
+            cwd,
+            "rev-list",
+            "--left-right",
+            "--count",
+            "HEAD...@{upstream}",
+        ])
         .output()
     {
         if output.status.success() {
@@ -1675,30 +1750,56 @@ fn query_daemon_sessions() -> Vec<DaemonSessionInfo> {
     let Ok(mut stream) = UnixStream::connect(&sock_path) else {
         return Vec::new();
     };
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok();
     let req = serde_json::json!({"type": "list_session_details"});
     let msg = format!("{}\n", req);
     if stream.write_all(msg.as_bytes()).is_err() {
         return Vec::new();
     }
     let mut line = String::new();
-    if std::io::BufReader::new(&stream).read_line(&mut line).is_err() {
+    if std::io::BufReader::new(&stream)
+        .read_line(&mut line)
+        .is_err()
+    {
         return Vec::new();
     }
     let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line) else {
         return Vec::new();
     };
-    let Some(sessions) = resp.get("data").and_then(|d| d.get("sessions")).and_then(|s| s.as_array()) else {
+    let Some(sessions) = resp
+        .get("data")
+        .and_then(|d| d.get("sessions"))
+        .and_then(|s| s.as_array())
+    else {
         return Vec::new();
     };
-    sessions.iter().filter_map(|s| {
-        let id = s.get("id")?.as_str()?.to_string();
-        let shell = s.get("shell").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let pid = s.get("pid").and_then(|v| v.as_i64()).map(|p| p as i32);
-        let pane_id = s.get("pane_id").and_then(|v| v.as_u64());
-        Some(DaemonSessionInfo { id, shell, cwd, pid, pane_id })
-    }).collect()
+    sessions
+        .iter()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?.to_string();
+            let shell = s
+                .get("shell")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cwd = s
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let pid = s.get("pid").and_then(|v| v.as_i64()).map(|p| p as i32);
+            let pane_id = s.get("pane_id").and_then(|v| v.as_u64());
+            Some(DaemonSessionInfo {
+                id,
+                shell,
+                cwd,
+                pid,
+                pane_id,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1750,7 +1851,9 @@ impl AsyncStatusCollector {
                         let (lock, cvar) = &*wake;
                         let mut nudged = lock.lock().unwrap();
                         if !*nudged {
-                            let (mut g, _) = cvar.wait_timeout(nudged, std::time::Duration::from_secs(2)).unwrap();
+                            let (mut g, _) = cvar
+                                .wait_timeout(nudged, std::time::Duration::from_secs(2))
+                                .unwrap();
                             *g = false;
                         } else {
                             *nudged = false;
@@ -1761,7 +1864,9 @@ impl AsyncStatusCollector {
                         let r = req.lock().unwrap();
                         (r.0, r.1.clone())
                     };
-                    if pid == 0 { continue; }
+                    if pid == 0 {
+                        continue;
+                    }
 
                     // Resolve CWD: prefer OSC 7, fallback to lsof.
                     let cwd = if !osc_cwd.is_empty() {
@@ -1801,7 +1906,11 @@ impl AsyncStatusCollector {
             })
             .expect("failed to spawn status collector thread");
 
-        Self { snapshot, request, notify }
+        Self {
+            snapshot,
+            request,
+            notify,
+        }
     }
 
     /// Update the request (called from render thread — non-blocking).
@@ -1834,7 +1943,9 @@ impl AsyncStatusCollector {
         {
             if out.status.success() {
                 let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if b != "HEAD" { s.git_branch = b; }
+                if b != "HEAD" {
+                    s.git_branch = b;
+                }
             }
         }
         // Worktree.
@@ -1845,7 +1956,10 @@ impl AsyncStatusCollector {
             if out.status.success() {
                 let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 s.git_worktree = std::path::Path::new(&p)
-                    .file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
             }
         }
         // Stash.
@@ -1855,12 +1969,21 @@ impl AsyncStatusCollector {
         {
             if out.status.success() {
                 s.git_stash = String::from_utf8_lossy(&out.stdout)
-                    .lines().filter(|l| !l.is_empty()).count();
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .count();
             }
         }
         // Ahead/behind.
         if let Ok(out) = std::process::Command::new("git")
-            .args(["-C", cwd, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+            .args([
+                "-C",
+                cwd,
+                "rev-list",
+                "--left-right",
+                "--count",
+                "HEAD...@{upstream}",
+            ])
             .output()
         {
             if out.status.success() {
@@ -1878,8 +2001,15 @@ impl AsyncStatusCollector {
             .output()
         {
             if out.status.success() {
-                for line in String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.is_empty()) {
-                    if line.starts_with("??") { s.git_untracked += 1; } else { s.git_dirty += 1; }
+                for line in String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                {
+                    if line.starts_with("??") {
+                        s.git_untracked += 1;
+                    } else {
+                        s.git_dirty += 1;
+                    }
                 }
             }
         }
@@ -1991,9 +2121,7 @@ struct StatusCache {
 impl StatusCache {
     fn new() -> Self {
         let user = std::env::var("USER").unwrap_or_default();
-        let host = gethostname::gethostname()
-            .to_string_lossy()
-            .to_string();
+        let host = gethostname::gethostname().to_string_lossy().to_string();
         let shell = std::env::var("SHELL")
             .ok()
             .and_then(|s| {
@@ -2339,24 +2467,24 @@ fn load_tree_root(tree: &mut DirectoryTreeState, root: &str) {
 fn file_extension_color(name: &str) -> [f32; 4] {
     let ext = name.rsplit('.').next().unwrap_or("");
     match ext {
-        "rs" => [1.0, 0.6, 0.2, 1.0],           // orange — Rust
+        "rs" => [1.0, 0.6, 0.2, 1.0], // orange — Rust
         "toml" | "json" | "yaml" | "yml" => [0.9, 0.85, 0.4, 1.0], // yellow — config
-        "md" => [0.5, 0.7, 1.0, 1.0],            // blue — markdown
-        "js" | "jsx" => [0.95, 0.85, 0.3, 1.0],  // yellow — JavaScript
-        "ts" | "tsx" => [0.3, 0.6, 0.95, 1.0],   // blue — TypeScript
-        "py" => [0.4, 0.75, 0.6, 1.0],           // blue-green — Python
-        "c" | "h" => [0.6, 0.6, 0.9, 1.0],       // light purple — C
+        "md" => [0.5, 0.7, 1.0, 1.0], // blue — markdown
+        "js" | "jsx" => [0.95, 0.85, 0.3, 1.0], // yellow — JavaScript
+        "ts" | "tsx" => [0.3, 0.6, 0.95, 1.0], // blue — TypeScript
+        "py" => [0.4, 0.75, 0.6, 1.0], // blue-green — Python
+        "c" | "h" => [0.6, 0.6, 0.9, 1.0], // light purple — C
         "cpp" | "cc" | "cxx" | "hpp" => [0.7, 0.5, 0.85, 1.0], // purple — C++
-        "go" => [0.3, 0.8, 0.85, 1.0],           // cyan — Go
-        "rb" => [0.9, 0.3, 0.3, 1.0],            // red — Ruby
-        "java" => [0.9, 0.55, 0.3, 1.0],         // orange — Java
-        "swift" => [1.0, 0.5, 0.25, 1.0],        // orange — Swift
+        "go" => [0.3, 0.8, 0.85, 1.0], // cyan — Go
+        "rb" => [0.9, 0.3, 0.3, 1.0], // red — Ruby
+        "java" => [0.9, 0.55, 0.3, 1.0], // orange — Java
+        "swift" => [1.0, 0.5, 0.25, 1.0], // orange — Swift
         "sh" | "bash" | "zsh" => [0.5, 0.8, 0.4, 1.0], // green — shell
         "html" | "htm" => [0.9, 0.45, 0.3, 1.0], // red-orange — HTML
         "css" | "scss" | "sass" => [0.35, 0.6, 0.95, 1.0], // blue — CSS
-        "lock" => [0.4, 0.4, 0.45, 0.7],         // dim grey — lock files
+        "lock" => [0.4, 0.4, 0.45, 0.7], // dim grey — lock files
         "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" => [0.7, 0.55, 0.85, 1.0], // purple — image
-        _ => [0.6, 0.6, 0.65, 1.0],              // default
+        _ => [0.6, 0.6, 0.65, 1.0], // default
     }
 }
 
@@ -2377,46 +2505,46 @@ fn file_icon(name: &str) -> &'static str {
     }
     let ext = name.rsplit('.').next().unwrap_or("");
     match ext {
-        "rs" => "\u{E7A8} ",                              //  Rust
-        "c" | "h" => "\u{E61E} ",                         //  C
-        "cpp" | "cc" | "cxx" | "hpp" | "hh" => "\u{E61D} ", //  C++
-        "go" => "\u{E626} ",                               //  Go
-        "py" => "\u{E73C} ",                               //  Python
-        "rb" => "\u{E739} ",                               //  Ruby
-        "java" => "\u{E738} ",                             //  Java
-        "js" | "mjs" | "cjs" => "\u{E781} ",              //  JavaScript
-        "jsx" => "\u{E7BA} ",                              //  React
-        "ts" | "mts" | "cts" => "\u{E628} ",              //  TypeScript
-        "tsx" => "\u{E7BA} ",                              //  React (TS)
-        "swift" => "\u{E755} ",                            //  Swift
-        "kt" | "kts" => "\u{E634} ",                      //  Kotlin
-        "html" | "htm" => "\u{E736} ",                     //  HTML
-        "css" => "\u{E749} ",                              //  CSS
-        "scss" | "sass" => "\u{E74B} ",                    //  Sass
-        "json" => "\u{E60B} ",                             //  JSON
-        "yaml" | "yml" => "\u{E6A8} ",                    //  YAML
-        "toml" => "\u{E615} ",                             //  Config
-        "xml" => "\u{F05C0} ",                             // 󰗀 XML
-        "md" | "mdx" => "\u{E73E} ",                      //  Markdown
-        "txt" => "\u{F0219} ",                             // 󰈙 Text
-        "sh" | "bash" => "\u{E795} ",                      //  Shell
-        "zsh" => "\u{E795} ",                              //  Shell
-        "fish" => "\u{E795} ",                             //  Shell
-        "vim" | "vimrc" => "\u{E62B} ",                   //  Vim
-        "lua" => "\u{E620} ",                              //  Lua
-        "sql" => "\u{E706} ",                              //  SQL
-        "graphql" | "gql" => "\u{E662} ",                 //  GraphQL
-        "docker" => "\u{E7B0} ",                           //  Docker
+        "rs" => "\u{E7A8} ",                                                    //  Rust
+        "c" | "h" => "\u{E61E} ",                                               //  C
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" => "\u{E61D} ",                     //  C++
+        "go" => "\u{E626} ",                                                    //  Go
+        "py" => "\u{E73C} ",                                                    //  Python
+        "rb" => "\u{E739} ",                                                    //  Ruby
+        "java" => "\u{E738} ",                                                  //  Java
+        "js" | "mjs" | "cjs" => "\u{E781} ",                                    //  JavaScript
+        "jsx" => "\u{E7BA} ",                                                   //  React
+        "ts" | "mts" | "cts" => "\u{E628} ",                                    //  TypeScript
+        "tsx" => "\u{E7BA} ",                                                   //  React (TS)
+        "swift" => "\u{E755} ",                                                 //  Swift
+        "kt" | "kts" => "\u{E634} ",                                            //  Kotlin
+        "html" | "htm" => "\u{E736} ",                                          //  HTML
+        "css" => "\u{E749} ",                                                   //  CSS
+        "scss" | "sass" => "\u{E74B} ",                                         //  Sass
+        "json" => "\u{E60B} ",                                                  //  JSON
+        "yaml" | "yml" => "\u{E6A8} ",                                          //  YAML
+        "toml" => "\u{E615} ",                                                  //  Config
+        "xml" => "\u{F05C0} ",                                                  // 󰗀 XML
+        "md" | "mdx" => "\u{E73E} ",                                            //  Markdown
+        "txt" => "\u{F0219} ",                                                  // 󰈙 Text
+        "sh" | "bash" => "\u{E795} ",                                           //  Shell
+        "zsh" => "\u{E795} ",                                                   //  Shell
+        "fish" => "\u{E795} ",                                                  //  Shell
+        "vim" | "vimrc" => "\u{E62B} ",                                         //  Vim
+        "lua" => "\u{E620} ",                                                   //  Lua
+        "sql" => "\u{E706} ",                                                   //  SQL
+        "graphql" | "gql" => "\u{E662} ",                                       //  GraphQL
+        "docker" => "\u{E7B0} ",                                                //  Docker
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" => "\u{F03E} ", //  Image
-        "svg" => "\u{F0721} ",                             // 󰜡 SVG
-        "pdf" => "\u{F0226} ",                             // 󰈦 PDF
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" => "\u{F0187} ", // 󰆧 Archive
-        "wasm" => "\u{E6A1} ",                            //  WebAssembly
-        "lock" => "\u{F023} ",                             //  Lock
-        "log" => "\u{F0219} ",                             // 󰈙 Log
-        "env" => "\u{F0462} ",                             // 󰑢 Env
-        "gitignore" => "\u{E702} ",                       //  Git
-        _ => "\u{F016} ",                                  //  Generic file
+        "svg" => "\u{F0721} ",                                                  // 󰜡 SVG
+        "pdf" => "\u{F0226} ",                                                  // 󰈦 PDF
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" => "\u{F0187} ",     // 󰆧 Archive
+        "wasm" => "\u{E6A1} ",                                                  //  WebAssembly
+        "lock" => "\u{F023} ",                                                  //  Lock
+        "log" => "\u{F0219} ",                                                  // 󰈙 Log
+        "env" => "\u{F0462} ",                                                  // 󰑢 Env
+        "gitignore" => "\u{E702} ",                                             //  Git
+        _ => "\u{F016} ",                                                       //  Generic file
     }
 }
 
@@ -2447,13 +2575,19 @@ fn update_tree_root_for_focused_pane(state: &mut AppState) {
             // 2. lsof process inspection (works even without shell integration).
             let pty_cwd = pane.and_then(|p| {
                 let pid = p.shell_pid;
-                if pid > 0 { get_child_cwd(pid) } else { None }
+                if pid > 0 {
+                    get_child_cwd(pid)
+                } else {
+                    None
+                }
             });
             if let Some(cwd) = pty_cwd {
                 cwd
             } else {
                 // 3. Cached workspace info CWD.
-                state.workspace_infos.get(wi)
+                state
+                    .workspace_infos
+                    .get(wi)
                     .map(|inf| inf.cwd.clone())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| {
@@ -2547,7 +2681,11 @@ fn dir_tree_find_match_path(tree: &mut DirectoryTreeState, query: &str) {
                     continue;
                 }
             }
-            if tree.entries[idx].name.to_lowercase().starts_with(&seg_lower) {
+            if tree.entries[idx]
+                .name
+                .to_lowercase()
+                .starts_with(&seg_lower)
+            {
                 found_idx = Some(idx);
                 break;
             }
@@ -2636,7 +2774,8 @@ fn toggle_tree_entry(tree: &mut DirectoryTreeState, index: usize) {
         }
     } else {
         // Expand: load children and insert them after this entry.
-        let children = read_directory_entries(&tree.entries[index].path, tree.entries[index].depth + 1);
+        let children =
+            read_directory_entries(&tree.entries[index].path, tree.entries[index].depth + 1);
         tree.entries[index].expanded = true;
         tree.entries[index].children_loaded = true;
         let insert_at = index + 1;
@@ -2649,9 +2788,13 @@ fn toggle_tree_entry(tree: &mut DirectoryTreeState, index: usize) {
 /// Move selection down in the directory tree.
 fn dir_tree_move_down(state: &mut AppState) {
     let wi = state.active_workspace;
-    if wi >= state.dir_trees.len() { return; }
+    if wi >= state.dir_trees.len() {
+        return;
+    }
     let tree = &mut state.dir_trees[wi];
-    if tree.entries.is_empty() { return; }
+    if tree.entries.is_empty() {
+        return;
+    }
     if tree.selected + 1 < tree.entries.len() {
         tree.selected += 1;
         // Scroll if needed — use dynamic visible lines, fall back to config.
@@ -2670,9 +2813,13 @@ fn dir_tree_move_down(state: &mut AppState) {
 /// Move selection up in the directory tree.
 fn dir_tree_move_up(state: &mut AppState) {
     let wi = state.active_workspace;
-    if wi >= state.dir_trees.len() { return; }
+    if wi >= state.dir_trees.len() {
+        return;
+    }
     let tree = &mut state.dir_trees[wi];
-    if tree.entries.is_empty() { return; }
+    if tree.entries.is_empty() {
+        return;
+    }
     if tree.selected > 0 {
         tree.selected -= 1;
         if tree.selected < tree.scroll_offset {
@@ -2685,14 +2832,19 @@ fn dir_tree_move_up(state: &mut AppState) {
 /// Expand the selected directory entry (or move into it if already expanded).
 fn dir_tree_expand(state: &mut AppState) {
     let wi = state.active_workspace;
-    if wi >= state.dir_trees.len() { return; }
+    if wi >= state.dir_trees.len() {
+        return;
+    }
     let idx = state.dir_trees[wi].selected;
-    if idx >= state.dir_trees[wi].entries.len() { return; }
+    if idx >= state.dir_trees[wi].entries.len() {
+        return;
+    }
     if state.dir_trees[wi].entries[idx].is_dir {
         if state.dir_trees[wi].entries[idx].expanded {
             // Already expanded: move to first child.
             if idx + 1 < state.dir_trees[wi].entries.len()
-                && state.dir_trees[wi].entries[idx + 1].depth > state.dir_trees[wi].entries[idx].depth
+                && state.dir_trees[wi].entries[idx + 1].depth
+                    > state.dir_trees[wi].entries[idx].depth
             {
                 state.dir_trees[wi].selected = idx + 1;
             }
@@ -2706,9 +2858,13 @@ fn dir_tree_expand(state: &mut AppState) {
 /// Collapse the selected directory entry (or move to parent if already collapsed/is a file).
 fn dir_tree_collapse(state: &mut AppState) {
     let wi = state.active_workspace;
-    if wi >= state.dir_trees.len() { return; }
+    if wi >= state.dir_trees.len() {
+        return;
+    }
     let idx = state.dir_trees[wi].selected;
-    if idx >= state.dir_trees[wi].entries.len() { return; }
+    if idx >= state.dir_trees[wi].entries.len() {
+        return;
+    }
 
     if state.dir_trees[wi].entries[idx].is_dir && state.dir_trees[wi].entries[idx].expanded {
         // Collapse this directory.
@@ -2749,7 +2905,9 @@ fn palette_open_in_editor(
     state: &mut AppState,
     path: &str,
     proxy: &winit::event_loop::EventLoopProxy<UserEvent>,
-    pty_buffers: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PaneId, std::collections::VecDeque<Vec<u8>>>>>,
+    pty_buffers: &std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<PaneId, std::collections::VecDeque<Vec<u8>>>>,
+    >,
 ) {
     // Resolve editor.
     let cfg_editor = state.config.directory_tree.editor.clone();
@@ -2764,15 +2922,32 @@ fn palette_open_in_editor(
     let tab_cwd = if file_path.is_dir() {
         path.to_string()
     } else {
-        file_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+        file_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
     };
-    if tab_cwd.is_empty() { return; }
+    if tab_cwd.is_empty() {
+        return;
+    }
 
     // Compute pane dimensions.
     let cell_size = state.renderer.cell_size();
-    let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
-    let status_bar_h = if state.config.status_bar.enabled { state.config.status_bar.height } else { 0.0 };
+    let tab_bar_h = if tab_bar_visible(state) {
+        state.config.tab_bar.height
+    } else {
+        0.0
+    };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
+    let status_bar_h = if state.config.status_bar.enabled {
+        state.config.status_bar.height
+    } else {
+        0.0
+    };
     let (sw, sh) = state.renderer.surface_size();
     let phys_w = sw as f32;
     let phys_h = sh as f32;
@@ -2787,7 +2962,16 @@ fn palette_open_in_editor(
     state.next_pane_id += 1;
     let time_travel_cfg = Some(&state.config.time_travel);
 
-    match spawn_pane(pane_id, cols, rows, proxy, pty_buffers, Some(tab_cwd), time_travel_cfg, cjk_width) {
+    match spawn_pane(
+        pane_id,
+        cols,
+        rows,
+        proxy,
+        pty_buffers,
+        Some(tab_cwd),
+        time_travel_cfg,
+        cjk_width,
+    ) {
         Ok(pane) => {
             let cmd = format!("{} {}\n", editor, shell_escape(path));
             let _ = daemon_pty_write(&pane.session_id, cmd.as_bytes());
@@ -2819,9 +3003,13 @@ fn palette_open_in_editor(
 
 fn dir_tree_cd(state: &mut AppState) {
     let wi = state.active_workspace;
-    if wi >= state.dir_trees.len() { return; }
+    if wi >= state.dir_trees.len() {
+        return;
+    }
     let idx = state.dir_trees[wi].selected;
-    if idx >= state.dir_trees[wi].entries.len() { return; }
+    if idx >= state.dir_trees[wi].entries.len() {
+        return;
+    }
 
     let entry = &state.dir_trees[wi].entries[idx];
     let path = if entry.is_dir {
@@ -2855,9 +3043,13 @@ fn dir_tree_open_in_editor(
     buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
 ) {
     let wi = state.active_workspace;
-    if wi >= state.dir_trees.len() { return; }
+    if wi >= state.dir_trees.len() {
+        return;
+    }
     let idx = state.dir_trees[wi].selected;
-    if idx >= state.dir_trees[wi].entries.len() { return; }
+    if idx >= state.dir_trees[wi].entries.len() {
+        return;
+    }
 
     let entry_path = state.dir_trees[wi].entries[idx].path.clone();
     let entry_is_dir = state.dir_trees[wi].entries[idx].is_dir;
@@ -2886,13 +3078,26 @@ fn dir_tree_open_in_editor(
     let size = state.window.inner_size();
     let phys_w = size.width as f32;
     let phys_h = size.height as f32;
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
     let cw = (phys_w - sidebar_w).max(1.0);
     let ch = (phys_h - state.config.tab_bar.height).max(1.0);
     let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
 
     let cjk_width = state.renderer.cjk_width;
-    match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), cjk_width) {
+    match spawn_pane(
+        new_id,
+        cols.max(1),
+        rows.max(1),
+        proxy,
+        buffers,
+        cwd,
+        Some(&state.config.time_travel),
+        cjk_width,
+    ) {
         Ok(pane) => {
             // Immediately write the editor command to the PTY so it starts
             // before the user sees the tab (prevents flicker).
@@ -2938,7 +3143,6 @@ fn dir_tree_open_in_editor(
 // ---------------------------------------------------------------------------
 // Sidebar / tab bar constants
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Quick Terminal runtime state
@@ -3136,9 +3340,9 @@ fn tick_quick_terminal_animation(state: &mut AppState) -> bool {
 /// Bring the application to the front on macOS.
 #[cfg(target_os = "macos")]
 fn activate_app() {
-    use objc2::{class, msg_send, msg_send_id};
     use objc2::rc::Id;
     use objc2::runtime::NSObject;
+    use objc2::{class, msg_send, msg_send_id};
 
     unsafe {
         let cls = class!(NSApplication);
@@ -3266,7 +3470,9 @@ struct DaemonSessionInfo {
 /// Update session_to_workspace mapping after a workspace at `removed_idx` is removed.
 /// Removes entries pointing to the removed workspace and decrements indices above it.
 fn cleanup_session_to_workspace(state: &mut AppState, removed_idx: usize) {
-    state.session_to_workspace.retain(|_, idx| *idx != removed_idx);
+    state
+        .session_to_workspace
+        .retain(|_, idx| *idx != removed_idx);
     for idx in state.session_to_workspace.values_mut() {
         if *idx > removed_idx {
             *idx -= 1;
@@ -3418,8 +3624,16 @@ fn effective_status_bar_height(state: &AppState) -> f32 {
 
 /// Returns (content_x, content_y, content_w, content_h) in physical pixels.
 fn content_area(state: &AppState, phys_w: f32, phys_h: f32) -> (f32, f32, f32, f32) {
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
-    let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
+    let tab_bar_h = if tab_bar_visible(state) {
+        state.config.tab_bar.height
+    } else {
+        0.0
+    };
     let status_bar_h = effective_status_bar_height(state);
     let content_x = sidebar_w;
     let content_y = tab_bar_h;
@@ -3531,14 +3745,10 @@ fn validate_dir(path: &str) -> Option<String> {
 fn resolve_new_pane_cwd(state: &AppState) -> Option<String> {
     match state.config.pane.working_directory {
         config::PaneWorkingDirectory::Inherit => focused_pane_cwd(state),
-        config::PaneWorkingDirectory::Home => {
-            std::env::var("HOME").ok().or_else(|| {
-                dirs::home_dir().map(|p| p.to_string_lossy().to_string())
-            })
-        }
-        config::PaneWorkingDirectory::Fixed => {
-            validate_dir(&state.config.pane.fixed_directory)
-        }
+        config::PaneWorkingDirectory::Home => std::env::var("HOME")
+            .ok()
+            .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string())),
+        config::PaneWorkingDirectory::Fixed => validate_dir(&state.config.pane.fixed_directory),
     }
 }
 
@@ -3562,16 +3772,16 @@ fn resolve_startup_cwd(config: &config::TermojinalConfig) -> Option<String> {
         config::StartupMode::Default | config::StartupMode::Fixed => {
             // Use $HOME so the terminal doesn't inherit the
             // (often meaningless) parent-process CWD (e.g. "/" from Finder).
-            std::env::var("HOME").ok().or_else(|| {
-                dirs::home_dir().map(|p| p.to_string_lossy().to_string())
-            })
+            std::env::var("HOME")
+                .ok()
+                .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
         }
         config::StartupMode::Restore => {
             load_last_cwd().or_else(|| {
                 // If no saved CWD, fall back to $HOME.
-                std::env::var("HOME").ok().or_else(|| {
-                    dirs::home_dir().map(|p| p.to_string_lossy().to_string())
-                })
+                std::env::var("HOME")
+                    .ok()
+                    .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
             })
         }
     }
@@ -3579,8 +3789,7 @@ fn resolve_startup_cwd(config: &config::TermojinalConfig) -> Option<String> {
 
 /// State file path for persisting last CWD.
 fn last_cwd_path() -> std::path::PathBuf {
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     data_dir.join("termojinal").join("last_cwd.txt")
 }
 
@@ -3627,11 +3836,18 @@ fn spawn_pane(
     // Create session on the daemon.
     let (session_id, _name, shell_pid) = daemon
         .create_session(&shell, cwd_str, cols, rows)
-        .ok_or_else(|| termojinal_pty::PtyError::Open(
-            "failed to create session on daemon (is termojinald running?)".to_string()
-        ))?;
+        .ok_or_else(|| {
+            termojinal_pty::PtyError::Open(
+                "failed to create session on daemon (is termojinald running?)".to_string(),
+            )
+        })?;
 
-    log::info!("pane {id}: daemon session={}, shell={}, pid={}", session_id, shell, shell_pid);
+    log::info!(
+        "pane {id}: daemon session={}, shell={}, pid={}",
+        session_id,
+        shell,
+        shell_pid
+    );
 
     let mut terminal = Terminal::new(cols as usize, rows as usize);
     terminal.set_cjk_width(cjk_width);
@@ -3697,8 +3913,6 @@ fn spawn_pane(
     })
 }
 
-
-
 /// Write data to a pane's PTY via the daemon (fire-and-forget, synchronous).
 fn daemon_pty_write(session_id: &str, data: &[u8]) {
     termojinal_ipc::daemon_connection::daemon_pty_write(session_id, data);
@@ -3728,7 +3942,10 @@ fn daemon_socket_path() -> String {
 
 /// Convert a winit KeyEvent + modifiers into the keybinding string format
 /// used by termojinal-ipc (e.g., "cmd+d", "ctrl+c", "cmd+shift+enter").
-fn key_to_binding_string(event: &winit::event::KeyEvent, modifiers: ModifiersState) -> Option<String> {
+fn key_to_binding_string(
+    event: &winit::event::KeyEvent,
+    modifiers: ModifiersState,
+) -> Option<String> {
     let mut parts = Vec::new();
 
     if modifiers.super_key() {
@@ -3805,10 +4022,7 @@ fn key_to_binding_string(event: &winit::event::KeyEvent, modifiers: ModifiersSta
 // Keyboard → PTY byte translation
 // ---------------------------------------------------------------------------
 
-fn key_to_bytes(
-    event: &winit::event::KeyEvent,
-    modifiers: ModifiersState,
-) -> Option<Vec<u8>> {
+fn key_to_bytes(event: &winit::event::KeyEvent, modifiers: ModifiersState) -> Option<Vec<u8>> {
     // Ctrl+key → control codes.
     if modifiers.control_key() {
         if let Key::Character(ref c) = event.logical_key {
@@ -3906,10 +4120,17 @@ impl ApplicationHandler<UserEvent> for App {
 
         let opacity = self.config.as_ref().map_or(1.0, |c| c.window.opacity);
         let transparent = opacity < 1.0;
-        log::info!("config present={}, opacity={opacity}, transparent={transparent}",
-                   self.config.is_some());
+        log::info!(
+            "config present={}, opacity={opacity}, transparent={transparent}",
+            self.config.is_some()
+        );
         if let Some(c) = &self.config {
-            log::info!("config font.size={}, window={}x{}", c.font.size, c.window.width, c.window.height);
+            log::info!(
+                "config font.size={}, window={}x{}",
+                c.font.size,
+                c.window.width,
+                c.window.height
+            );
         }
 
         let attrs = WindowAttributes::default()
@@ -3982,7 +4203,10 @@ impl ApplicationHandler<UserEvent> for App {
         // Resolve CJK ambiguous width setting from config and propagate to
         // renderer and atlas so that character widths are consistent everywhere.
         let cjk_width = crate::config::resolve_ambiguous_width(&cfg.font.ambiguous_width);
-        log::info!("CJK ambiguous width: {cjk_width} (setting={:?})", cfg.font.ambiguous_width);
+        log::info!(
+            "CJK ambiguous width: {cjk_width} (setting={:?})",
+            cfg.font.ambiguous_width
+        );
         renderer.cjk_width = cjk_width;
         renderer.atlas_set_cjk_width(cjk_width);
 
@@ -3994,7 +4218,11 @@ impl ApplicationHandler<UserEvent> for App {
         // see — preventing a SIGWINCH resize (which causes an extra newline
         // and the zsh `%` marker on startup).
         let initial_sidebar_w = cfg.sidebar.width;
-        let initial_tab_bar_h = if cfg.tab_bar.always_show { cfg.tab_bar.height } else { 0.0 };
+        let initial_tab_bar_h = if cfg.tab_bar.always_show {
+            cfg.tab_bar.height
+        } else {
+            0.0
+        };
         let cell_h = renderer.cell_size().height;
         let bar_pad = 4.0_f32;
         let initial_status_bar_h = if cfg.status_bar.enabled {
@@ -4005,14 +4233,27 @@ impl ApplicationHandler<UserEvent> for App {
         let content_w = (phys_w - initial_sidebar_w).max(1.0);
         let content_h = (phys_h - initial_tab_bar_h - initial_status_bar_h).max(1.0);
         let (cols, rows) = renderer.grid_size_raw(content_w as u32, content_h as u32);
-        log::info!("window {}x{} -> grid {cols}x{rows}", size.width, size.height);
+        log::info!(
+            "window {}x{} -> grid {cols}x{rows}",
+            size.width,
+            size.height
+        );
 
         // Create the initial pane (id 0) in the first workspace, first tab.
         let initial_id: PaneId = 0;
         let layout = LayoutTree::new(initial_id);
 
         let startup_cwd = resolve_startup_cwd(&cfg);
-        let pane = match spawn_pane(initial_id, cols, rows, &self.proxy, &self.pty_buffers, startup_cwd, Some(&cfg.time_travel), cjk_width) {
+        let pane = match spawn_pane(
+            initial_id,
+            cols,
+            rows,
+            &self.proxy,
+            &self.pty_buffers,
+            startup_cwd,
+            Some(&cfg.time_travel),
+            cjk_width,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 log::error!("failed to spawn initial pane: {e}");
@@ -4134,8 +4375,12 @@ impl ApplicationHandler<UserEvent> for App {
                     log::info!("high refresh rate display detected: {}Hz", refresh / 1000);
                     // Try Mailbox first (low latency), fall back to Immediate.
                     // If neither is supported, keep the default Fifo.
-                    if state.renderer.try_set_present_mode(wgpu::PresentMode::Mailbox)
-                        || state.renderer.try_set_present_mode(wgpu::PresentMode::Immediate)
+                    if state
+                        .renderer
+                        .try_set_present_mode(wgpu::PresentMode::Mailbox)
+                        || state
+                            .renderer
+                            .try_set_present_mode(wgpu::PresentMode::Immediate)
                     {
                         log::info!("using low-latency present mode");
                     }
@@ -4184,21 +4429,15 @@ impl ApplicationHandler<UserEvent> for App {
         {
             let focused_id = active_tab(state).layout.focused();
             if let Some(pane) = active_tab(state).panes.get(&focused_id) {
-                state.status_collector.update_request(
-                    pane.shell_pid,
-                    &pane.terminal.osc.cwd,
-                );
+                state
+                    .status_collector
+                    .update_request(pane.shell_pid, &pane.terminal.osc.cwd);
             }
         }
         state.window.request_redraw();
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = &mut self.state else {
             return;
         };
@@ -4298,12 +4537,18 @@ impl ApplicationHandler<UserEvent> for App {
                         state.window.request_redraw();
                     } else if is_enter {
                         // Jump to the selected pane.
-                        if let Some(entry) = state.claudes_dashboard.entries.get(state.claudes_dashboard.selected_idx) {
+                        if let Some(entry) = state
+                            .claudes_dashboard
+                            .entries
+                            .get(state.claudes_dashboard.selected_idx)
+                        {
                             let target_pane_id = entry.pane_id;
                             let target_ws = entry.workspace_idx;
                             state.claudes_dashboard.visible = false;
                             // Switch workspace if needed.
-                            if target_ws < state.workspaces.len() && target_ws != state.active_workspace {
+                            if target_ws < state.workspaces.len()
+                                && target_ws != state.active_workspace
+                            {
                                 state.active_workspace = target_ws;
                                 resize_all_panes(state);
                                 update_window_title(state);
@@ -4394,14 +4639,18 @@ impl ApplicationHandler<UserEvent> for App {
                                 (KeyCode::KeyY, true) => Some(Key::Character("Y".into())),
                                 (KeyCode::KeyN, false) => Some(Key::Character("n".into())),
                                 (KeyCode::KeyN, true) => Some(Key::Character("N".into())),
-                                (KeyCode::KeyA, _) => Some(Key::Character(if shift { "A" } else { "a" }.into())),
-                                (KeyCode::Escape, _) => Some(Key::Named(winit::keyboard::NamedKey::Escape)),
+                                (KeyCode::KeyA, _) => {
+                                    Some(Key::Character(if shift { "A" } else { "a" }.into()))
+                                }
+                                (KeyCode::Escape, _) => {
+                                    Some(Key::Named(winit::keyboard::NamedKey::Escape))
+                                }
                                 _ => None,
                             };
                             if let Some(key) = mapped {
                                 let active_ws = state.active_workspace;
                                 let pane_sessions: std::collections::HashMap<u64, String> = {
-                                let mut m = std::collections::HashMap::new();
+                                    let mut m = std::collections::HashMap::new();
                                     for ws in &state.workspaces {
                                         for tab in &ws.tabs {
                                             for (pid, pane) in &tab.panes {
@@ -4411,11 +4660,10 @@ impl ApplicationHandler<UserEvent> for App {
                                     }
                                     m
                                 };
-                                let key_result = state.allow_flow.process_key(
-                                    &key,
-                                    active_ws,
-                                    &pane_sessions,
-                                );
+                                let key_result =
+                                    state
+                                        .allow_flow
+                                        .process_key(&key, active_ws, &pane_sessions);
                                 match key_result {
                                     crate::allow_flow::AllowFlowKeyResult::NotConsumed => {}
                                     crate::allow_flow::AllowFlowKeyResult::Consumed => {
@@ -4424,10 +4672,16 @@ impl ApplicationHandler<UserEvent> for App {
                                     }
                                     crate::allow_flow::AllowFlowKeyResult::Resolved(decisions) => {
                                         for (req_id, decision) in &decisions {
-                                            if let Some((tx, _alive)) = state.pending_ipc_responses.remove(req_id) {
+                                            if let Some((tx, _alive)) =
+                                                state.pending_ipc_responses.remove(req_id)
+                                            {
                                                 let decision_str = match decision {
-                                                    termojinal_claude::AllowDecision::Allow => "allow",
-                                                    termojinal_claude::AllowDecision::Deny => "deny",
+                                                    termojinal_claude::AllowDecision::Allow => {
+                                                        "allow"
+                                                    }
+                                                    termojinal_claude::AllowDecision::Deny => {
+                                                        "deny"
+                                                    }
                                                 };
                                                 let _ = tx.send(AppIpcResponse::ok(
                                                     serde_json::json!({"decision": decision_str}),
@@ -4438,11 +4692,15 @@ impl ApplicationHandler<UserEvent> for App {
                                         // a workspace, transition agent from WaitingForPermission to Running.
                                         for wi in 0..state.agent_infos.len() {
                                             if state.agent_infos[wi].active
-                                                && matches!(state.agent_infos[wi].state, AgentState::WaitingForPermission)
+                                                && matches!(
+                                                    state.agent_infos[wi].state,
+                                                    AgentState::WaitingForPermission
+                                                )
                                                 && !state.allow_flow.has_pending_for_workspace(wi)
                                             {
                                                 state.agent_infos[wi].state = AgentState::Running;
-                                                state.agent_infos[wi].last_updated = std::time::Instant::now();
+                                                state.agent_infos[wi].last_updated =
+                                                    std::time::Instant::now();
                                             }
                                         }
                                         state.window.request_redraw();
@@ -4457,7 +4715,11 @@ impl ApplicationHandler<UserEvent> for App {
                 // Suppress raw key events during IME composition (but not when palette is open).
                 let focused_id = active_tab(state).layout.focused();
                 if !state.command_palette.visible {
-                    if active_tab(state).panes.get(&focused_id).map_or(false, |p| p.preedit.is_some()) {
+                    if active_tab(state)
+                        .panes
+                        .get(&focused_id)
+                        .map_or(false, |p| p.preedit.is_some())
+                    {
                         return;
                     }
                 }
@@ -4515,7 +4777,9 @@ impl ApplicationHandler<UserEvent> for App {
                             Key::Character(c) if c.as_str() == "j" && !is_ctrl => {
                                 dir_tree_move_down(state);
                             }
-                            Key::Character(c) if is_ctrl && (c.as_str() == "n" || c.as_str() == "\x0e") => {
+                            Key::Character(c)
+                                if is_ctrl && (c.as_str() == "n" || c.as_str() == "\x0e") =>
+                            {
                                 dir_tree_move_down(state);
                             }
                             // Move up: Arrow Up, k, Ctrl+P
@@ -4525,16 +4789,23 @@ impl ApplicationHandler<UserEvent> for App {
                             Key::Character(c) if c.as_str() == "k" && !is_ctrl => {
                                 dir_tree_move_up(state);
                             }
-                            Key::Character(c) if is_ctrl && (c.as_str() == "p" || c.as_str() == "\x10") => {
+                            Key::Character(c)
+                                if is_ctrl && (c.as_str() == "p" || c.as_str() == "\x10") =>
+                            {
                                 dir_tree_move_up(state);
                             }
                             // Expand: Arrow Right, l, Ctrl+F
                             Key::Named(NamedKey::ArrowRight) | Key::Character(_)
-                                if matches!(&event.logical_key, Key::Named(NamedKey::ArrowRight))
-                                   || (matches!(&event.logical_key, Key::Character(c) if c.as_str() == "l" && !is_ctrl)) => {
+                                if matches!(
+                                    &event.logical_key,
+                                    Key::Named(NamedKey::ArrowRight)
+                                ) || (matches!(&event.logical_key, Key::Character(c) if c.as_str() == "l" && !is_ctrl)) =>
+                            {
                                 dir_tree_expand(state);
                             }
-                            Key::Character(c) if is_ctrl && (c.as_str() == "f" || c.as_str() == "\x06") => {
+                            Key::Character(c)
+                                if is_ctrl && (c.as_str() == "f" || c.as_str() == "\x06") =>
+                            {
                                 dir_tree_expand(state);
                             }
                             // Collapse: Arrow Left, h, Ctrl+B
@@ -4544,7 +4815,9 @@ impl ApplicationHandler<UserEvent> for App {
                             Key::Character(c) if c.as_str() == "h" && !is_ctrl => {
                                 dir_tree_collapse(state);
                             }
-                            Key::Character(c) if is_ctrl && (c.as_str() == "b" || c.as_str() == "\x02") => {
+                            Key::Character(c)
+                                if is_ctrl && (c.as_str() == "b" || c.as_str() == "\x02") =>
+                            {
                                 dir_tree_collapse(state);
                             }
                             // Enter: toggle expand/collapse (directories) or open (files)
@@ -4552,10 +4825,16 @@ impl ApplicationHandler<UserEvent> for App {
                                 let wi2 = state.active_workspace;
                                 if wi2 < state.dir_trees.len() {
                                     let sel = state.dir_trees[wi2].selected;
-                                    if sel < state.dir_trees[wi2].entries.len() && state.dir_trees[wi2].entries[sel].is_dir {
+                                    if sel < state.dir_trees[wi2].entries.len()
+                                        && state.dir_trees[wi2].entries[sel].is_dir
+                                    {
                                         toggle_tree_entry(&mut state.dir_trees[wi2], sel);
                                     } else {
-                                        dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
+                                        dir_tree_open_in_editor(
+                                            state,
+                                            &self.proxy,
+                                            &self.pty_buffers,
+                                        );
                                     }
                                 }
                                 state.window.request_redraw();
@@ -4619,7 +4898,11 @@ impl ApplicationHandler<UserEvent> for App {
 
                 // Emacs keybindings: Ctrl+N = Down, Ctrl+P = Up (in palette/command UI)
                 let is_ctrl = state.modifiers.control_key();
-                if is_ctrl && (state.command_palette.visible || state.command_execution.is_some() || state.quick_launch.visible) {
+                if is_ctrl
+                    && (state.command_palette.visible
+                        || state.command_execution.is_some()
+                        || state.quick_launch.visible)
+                {
                     match &event.logical_key {
                         Key::Character(c) if c.as_str() == "n" || c.as_str() == "\x0e" => {
                             if state.quick_launch.visible {
@@ -4703,7 +4986,8 @@ impl ApplicationHandler<UserEvent> for App {
                             let focused_id = active_tab(state).layout.focused();
                             if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
                                 let cmd_with_newline = format!("{}\n", cmd_text);
-                                let _ = daemon_pty_write(&pane.session_id, cmd_with_newline.as_bytes());
+                                let _ =
+                                    daemon_pty_write(&pane.session_id, cmd_with_newline.as_bytes());
                             }
                             state.window.request_redraw();
                             return;
@@ -4716,7 +5000,6 @@ impl ApplicationHandler<UserEvent> for App {
                         TimelineKeyResult::Pass => {}
                     }
                 }
-
 
                 // Quick Launch overlay intercepts keyboard input when visible.
                 if state.quick_launch.visible {
@@ -4986,21 +5269,20 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                             let active_ws = state.active_workspace;
                             let pane_sessions: std::collections::HashMap<u64, String> = {
-                            let mut m = std::collections::HashMap::new();
-                                    for ws in &state.workspaces {
-                                        for tab in &ws.tabs {
-                                            for (pid, pane) in &tab.panes {
-                                                m.insert(*pid, pane.session_id.clone());
-                                            }
+                                let mut m = std::collections::HashMap::new();
+                                for ws in &state.workspaces {
+                                    for tab in &ws.tabs {
+                                        for (pid, pane) in &tab.panes {
+                                            m.insert(*pid, pane.session_id.clone());
                                         }
                                     }
-                                    m
-                                };
-                            let key_result = state.allow_flow.process_key(
-                                &key,
-                                active_ws,
-                                &pane_sessions,
-                            );
+                                }
+                                m
+                            };
+                            let key_result =
+                                state
+                                    .allow_flow
+                                    .process_key(&key, active_ws, &pane_sessions);
                             match key_result {
                                 crate::allow_flow::AllowFlowKeyResult::NotConsumed => {}
                                 crate::allow_flow::AllowFlowKeyResult::Consumed => {
@@ -5009,7 +5291,9 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                                 crate::allow_flow::AllowFlowKeyResult::Resolved(decisions) => {
                                     for (req_id, decision) in &decisions {
-                                        if let Some((tx, _alive)) = state.pending_ipc_responses.remove(req_id) {
+                                        if let Some((tx, _alive)) =
+                                            state.pending_ipc_responses.remove(req_id)
+                                        {
                                             let decision_str = match decision {
                                                 termojinal_claude::AllowDecision::Allow => "allow",
                                                 termojinal_claude::AllowDecision::Deny => "deny",
@@ -5021,11 +5305,15 @@ impl ApplicationHandler<UserEvent> for App {
                                     }
                                     for wi in 0..state.agent_infos.len() {
                                         if state.agent_infos[wi].active
-                                            && matches!(state.agent_infos[wi].state, AgentState::WaitingForPermission)
+                                            && matches!(
+                                                state.agent_infos[wi].state,
+                                                AgentState::WaitingForPermission
+                                            )
                                             && !state.allow_flow.has_pending_for_workspace(wi)
                                         {
                                             state.agent_infos[wi].state = AgentState::Running;
-                                            state.agent_infos[wi].last_updated = std::time::Instant::now();
+                                            state.agent_infos[wi].last_updated =
+                                                std::time::Instant::now();
                                         }
                                     }
                                     state.window.request_redraw();
@@ -5070,7 +5358,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
 
             // --- Mouse events ---
-
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor_pos = (position.x, position.y);
 
@@ -5096,13 +5383,20 @@ impl ApplicationHandler<UserEvent> for App {
                     let new_scroll = {
                         let tab = active_tab(state);
                         tab.panes.get(&pane_id).and_then(|pane| {
-                            state.renderer.scrollbar_geometry(&pane.terminal).map(|geo| {
-                                let desired_thumb_top = local_y - grab_offset;
-                                let total_lines = geo.scrollback_len + geo.rows;
-                                let frac = (desired_thumb_top / geo.total_height).clamp(0.0, 1.0);
-                                let new_offset = geo.scrollback_len as f32 - frac * total_lines as f32;
-                                (new_offset.round() as isize).clamp(0, geo.scrollback_len as isize) as usize
-                            })
+                            state
+                                .renderer
+                                .scrollbar_geometry(&pane.terminal)
+                                .map(|geo| {
+                                    let desired_thumb_top = local_y - grab_offset;
+                                    let total_lines = geo.scrollback_len + geo.rows;
+                                    let frac =
+                                        (desired_thumb_top / geo.total_height).clamp(0.0, 1.0);
+                                    let new_offset =
+                                        geo.scrollback_len as f32 - frac * total_lines as f32;
+                                    (new_offset.round() as isize)
+                                        .clamp(0, geo.scrollback_len as isize)
+                                        as usize
+                                })
                         })
                     };
                     // Then, apply the scroll offset mutably.
@@ -5116,7 +5410,6 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
-
                 // --- Tab-to-pane drag active: update drop zone preview ---
                 if state.tab_pane_drag.is_some() {
                     let cx = position.x as f32;
@@ -5125,8 +5418,10 @@ impl ApplicationHandler<UserEvent> for App {
                     // Find which pane the cursor is over.
                     let mut found = false;
                     for (pid, rect) in &pane_rects {
-                        if cx >= rect.x && cx < rect.x + rect.w
-                            && cy >= rect.y && cy < rect.y + rect.h
+                        if cx >= rect.x
+                            && cx < rect.x + rect.w
+                            && cy >= rect.y
+                            && cy < rect.y + rect.h
                         {
                             let zone = compute_drop_zone(cx, cy, &rect);
                             let drag_tab_idx = state.tab_pane_drag.as_ref().unwrap().tab_idx;
@@ -5141,7 +5436,11 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if !found {
                         // Cursor is outside all panes — check if back in tab bar.
-                        let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+                        let tab_bar_h = if tab_bar_visible(state) {
+                            state.config.tab_bar.height
+                        } else {
+                            0.0
+                        };
                         if cy < tab_bar_h {
                             // Re-enter tab bar reorder mode.
                             let drag_tab_idx = state.tab_pane_drag.as_ref().unwrap().tab_idx;
@@ -5162,7 +5461,11 @@ impl ApplicationHandler<UserEvent> for App {
                     let drag_start_x = state.tab_drag.as_ref().unwrap().start_x;
                     let cx = position.x as f32;
                     let cy = position.y as f32;
-                    let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+                    let tab_bar_h = if tab_bar_visible(state) {
+                        state.config.tab_bar.height
+                    } else {
+                        0.0
+                    };
 
                     // If cursor has moved below the tab bar, transition to pane split mode.
                     // Only allow this when there are at least 2 tabs (last tab cannot be dragged out).
@@ -5171,8 +5474,10 @@ impl ApplicationHandler<UserEvent> for App {
                         // Find the pane under the cursor and compute the drop zone.
                         let pane_rects = active_pane_rects(state);
                         for (pid, rect) in &pane_rects {
-                            if cx >= rect.x && cx < rect.x + rect.w
-                                && cy >= rect.y && cy < rect.y + rect.h
+                            if cx >= rect.x
+                                && cx < rect.x + rect.w
+                                && cy >= rect.y
+                                && cy < rect.y + rect.h
                             {
                                 let zone = compute_drop_zone(cx, cy, rect);
                                 state.tab_pane_drag = Some(TabPaneDrag {
@@ -5187,7 +5492,11 @@ impl ApplicationHandler<UserEvent> for App {
                         return;
                     }
 
-                    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                    let sidebar_w = if state.sidebar_visible {
+                        state.sidebar_width
+                    } else {
+                        0.0
+                    };
                     let local_cx = cx - sidebar_w;
                     let cell_w = state.renderer.cell_size().width;
                     let max_tab_w = state.config.tab_bar.max_width;
@@ -5196,7 +5505,12 @@ impl ApplicationHandler<UserEvent> for App {
                     let mut tab_x: f32 = 0.0;
                     let mut target_idx = drag_idx;
                     for (i, tab) in ws.tabs.iter().enumerate() {
-                        let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
+                        let tab_w = compute_tab_width(
+                            &tab.display_title,
+                            cell_w,
+                            max_tab_w,
+                            state.config.tab_bar.min_tab_width,
+                        );
                         if local_cx >= tab_x && local_cx < tab_x + tab_w {
                             target_idx = i;
                             break;
@@ -5237,10 +5551,18 @@ impl ApplicationHandler<UserEvent> for App {
                     let size = state.window.inner_size();
                     let phys_w = size.width as f32;
                     let phys_h = size.height as f32;
-                    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                    let sidebar_w = if state.sidebar_visible {
+                        state.sidebar_width
+                    } else {
+                        0.0
+                    };
                     let ws = &state.workspaces[state.active_workspace];
                     let show_tab_bar = state.config.tab_bar.always_show || ws.tabs.len() > 1;
-                    let tab_bar_h = if show_tab_bar { state.config.tab_bar.height } else { 0.0 };
+                    let tab_bar_h = if show_tab_bar {
+                        state.config.tab_bar.height
+                    } else {
+                        0.0
+                    };
                     let cw = (phys_w - sidebar_w).max(1.0);
                     let ch = (phys_h - tab_bar_h).max(1.0);
                     let actual_dim = match drag.direction {
@@ -5264,8 +5586,8 @@ impl ApplicationHandler<UserEvent> for App {
 
                     // Check sidebar edge first (Feature 1).
                     let sep_tol = state.config.pane.separator_tolerance;
-                    let near_sidebar_edge = state.sidebar_visible
-                        && (mx - state.sidebar_width).abs() < sep_tol;
+                    let near_sidebar_edge =
+                        state.sidebar_visible && (mx - state.sidebar_width).abs() < sep_tol;
 
                     if near_sidebar_edge {
                         state.window.set_cursor(CursorIcon::ColResize);
@@ -5277,8 +5599,16 @@ impl ApplicationHandler<UserEvent> for App {
                         state.window.set_cursor(icon);
                     } else {
                         // Context-aware cursor: sidebar → pointer, tab bar → pointer/hand, pane → text
-                        let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
-                        let tab_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+                        let sidebar_w = if state.sidebar_visible {
+                            state.sidebar_width
+                        } else {
+                            0.0
+                        };
+                        let tab_h = if tab_bar_visible(state) {
+                            state.config.tab_bar.height
+                        } else {
+                            0.0
+                        };
                         if mx < sidebar_w {
                             state.window.set_cursor(CursorIcon::Pointer);
                         } else if my < tab_h {
@@ -5289,12 +5619,16 @@ impl ApplicationHandler<UserEvent> for App {
                             // Check if cursor is over a scrollbar in any pane.
                             let mut on_scrollbar = false;
                             for (pid, rect) in &pane_rects {
-                                if mx >= rect.x && mx < rect.x + rect.w
-                                    && my >= rect.y && my < rect.y + rect.h
+                                if mx >= rect.x
+                                    && mx < rect.x + rect.w
+                                    && my >= rect.y
+                                    && my < rect.y + rect.h
                                 {
                                     let tab = active_tab(state);
                                     if let Some(pane) = tab.panes.get(pid) {
-                                        if let Some(geo) = state.renderer.scrollbar_geometry(&pane.terminal) {
+                                        if let Some(geo) =
+                                            state.renderer.scrollbar_geometry(&pane.terminal)
+                                        {
                                             let local_x = mx - rect.x;
                                             if local_x >= geo.track_x {
                                                 on_scrollbar = true;
@@ -5321,12 +5655,10 @@ impl ApplicationHandler<UserEvent> for App {
                         // Handle mouse motion reporting for the terminal.
                         if pane.terminal.modes.mouse_mode == MouseMode::AnyMotion
                             || (pane.terminal.modes.mouse_mode == MouseMode::ButtonMotion
-                                && pane
-                                    .selection
-                                    .as_ref()
-                                    .map_or(false, |s| s.active))
+                                && pane.selection.as_ref().map_or(false, |s| s.active))
                         {
-                            if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == focused_id)
+                            if let Some((_, rect)) =
+                                pane_rects.iter().find(|(id, _)| *id == focused_id)
                             {
                                 // Subtract in f64 to avoid rounding the cursor
                                 // position before the subtraction, then floor to
@@ -5352,10 +5684,13 @@ impl ApplicationHandler<UserEvent> for App {
 
                                     // Auto-scroll when cursor is above or below the pane.
                                     sel_auto_scroll = Some(if local_y < 0.0 {
-                                        let speed = ((-local_y / cell_size.height).ceil() as i32).max(1);
+                                        let speed =
+                                            ((-local_y / cell_size.height).ceil() as i32).max(1);
                                         Some(speed)
                                     } else if local_y > pane_h {
-                                        let speed = (((local_y - pane_h) / cell_size.height).ceil() as i32).max(1);
+                                        let speed = (((local_y - pane_h) / cell_size.height).ceil()
+                                            as i32)
+                                            .max(1);
                                         Some(-speed)
                                     } else {
                                         None
@@ -5428,7 +5763,11 @@ impl ApplicationHandler<UserEvent> for App {
                             for pid in &pane_ids {
                                 let tab = active_tab_mut(state);
                                 tab.layout = tab.layout.split_insert(
-                                    if first_inserted.is_some() { first_inserted.unwrap() } else { drag.target_pane },
+                                    if first_inserted.is_some() {
+                                        first_inserted.unwrap()
+                                    } else {
+                                        drag.target_pane
+                                    },
                                     direction,
                                     *pid,
                                     insert_first,
@@ -5490,7 +5829,8 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         // Handle deferred "open in editor" from double-click on file.
                         let wi = state.active_workspace;
-                        if wi < state.dir_trees.len() && state.dir_trees[wi].pending_open_in_editor {
+                        if wi < state.dir_trees.len() && state.dir_trees[wi].pending_open_in_editor
+                        {
                             state.dir_trees[wi].pending_open_in_editor = false;
                             dir_tree_open_in_editor(state, &self.proxy, &self.pty_buffers);
                         }
@@ -5503,7 +5843,11 @@ impl ApplicationHandler<UserEvent> for App {
                     let wi = state.active_workspace;
                     if wi < state.dir_trees.len() && state.dir_trees[wi].focused {
                         let cx = state.cursor_pos.0 as f32;
-                        let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                        let sidebar_w = if state.sidebar_visible {
+                            state.sidebar_width
+                        } else {
+                            0.0
+                        };
                         if cx >= sidebar_w {
                             state.dir_trees[wi].focused = false;
                             state.dir_trees[wi].find_active = false;
@@ -5515,7 +5859,11 @@ impl ApplicationHandler<UserEvent> for App {
 
                 // --- Priority 0.5: Check if click is in the tab bar area (Feature 4: tab drag) ---
                 if btn_state == ElementState::Pressed && button == MouseButton::Left {
-                    let tab_bar_h = if tab_bar_visible(state) { state.config.tab_bar.height } else { 0.0 };
+                    let tab_bar_h = if tab_bar_visible(state) {
+                        state.config.tab_bar.height
+                    } else {
+                        0.0
+                    };
                     let cy = state.cursor_pos.1 as f32;
                     if tab_bar_h > 0.0 && cy < tab_bar_h {
                         match handle_tab_bar_click(state) {
@@ -5539,11 +5887,7 @@ impl ApplicationHandler<UserEvent> for App {
                                     state.window.request_redraw();
                                 } else {
                                     // Last tab — close focused pane instead.
-                                    close_focused_pane(
-                                        state,
-                                        &self.pty_buffers,
-                                        event_loop,
-                                    );
+                                    close_focused_pane(state, &self.pty_buffers, event_loop);
                                 }
                             }
                             TabBarClickResult::NewTab => {
@@ -5596,12 +5940,15 @@ impl ApplicationHandler<UserEvent> for App {
                     let cy = state.cursor_pos.1 as f32;
                     let mut handled = false;
                     for (pid, rect) in &pane_rects {
-                        if cx >= rect.x && cx < rect.x + rect.w
-                            && cy >= rect.y && cy < rect.y + rect.h
+                        if cx >= rect.x
+                            && cx < rect.x + rect.w
+                            && cy >= rect.y
+                            && cy < rect.y + rect.h
                         {
                             let tab = active_tab(state);
                             if let Some(pane) = tab.panes.get(pid) {
-                                if let Some(geo) = state.renderer.scrollbar_geometry(&pane.terminal) {
+                                if let Some(geo) = state.renderer.scrollbar_geometry(&pane.terminal)
+                                {
                                     let local_x = cx - rect.x;
                                     let local_y = cy - rect.y;
                                     if local_x >= geo.track_x {
@@ -5619,9 +5966,13 @@ impl ApplicationHandler<UserEvent> for App {
                                             let thumb_h = geo.thumb_bottom - geo.thumb_top;
                                             let total_lines = geo.scrollback_len + geo.rows;
                                             let desired_thumb_top = local_y - thumb_h / 2.0;
-                                            let frac = (desired_thumb_top / geo.total_height).clamp(0.0, 1.0);
-                                            let new_offset = geo.scrollback_len as f32 - frac * total_lines as f32;
-                                            let new_offset = (new_offset.round() as isize).clamp(0, geo.scrollback_len as isize) as usize;
+                                            let frac = (desired_thumb_top / geo.total_height)
+                                                .clamp(0.0, 1.0);
+                                            let new_offset = geo.scrollback_len as f32
+                                                - frac * total_lines as f32;
+                                            let new_offset = (new_offset.round() as isize)
+                                                .clamp(0, geo.scrollback_len as isize)
+                                                as usize;
                                             let tab = active_tab_mut(state);
                                             if let Some(pane) = tab.panes.get_mut(pid) {
                                                 pane.terminal.set_scroll_offset(new_offset);
@@ -5665,7 +6016,9 @@ impl ApplicationHandler<UserEvent> for App {
                             {
                                 let target_pane = *pid;
                                 let tab = active_tab(state);
-                                if let Some((remaining, _extracted)) = tab.layout.extract_pane(target_pane) {
+                                if let Some((remaining, _extracted)) =
+                                    tab.layout.extract_pane(target_pane)
+                                {
                                     // Remove the pane from current tab and create a new tab with it.
                                     let pane = active_tab_mut(state).panes.remove(&target_pane);
                                     active_tab_mut(state).layout = remaining;
@@ -5687,7 +6040,12 @@ impl ApplicationHandler<UserEvent> for App {
                                         ws.tabs.push(new_tab);
                                         let new_tab_idx = ws.tabs.len() - 1;
                                         ws.active_tab = new_tab_idx;
-                                        update_tab_title(&mut ws.tabs[new_tab_idx], &fmt, tab_num, &fb_cwd);
+                                        update_tab_title(
+                                            &mut ws.tabs[new_tab_idx],
+                                            &fmt,
+                                            tab_num,
+                                            &fb_cwd,
+                                        );
                                     }
                                     resize_all_panes(state);
                                     state.window.request_redraw();
@@ -5712,19 +6070,21 @@ impl ApplicationHandler<UserEvent> for App {
                     let tab = active_tab(state);
                     let focused_id = tab.layout.focused();
                     if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == focused_id) {
-                        if cx >= rect.x && cx < rect.x + rect.w
-                            && cy >= rect.y && cy < rect.y + rect.h
+                        if cx >= rect.x
+                            && cx < rect.x + rect.w
+                            && cy >= rect.y
+                            && cy < rect.y + rect.h
                         {
                             let local_x = ((cx - rect.x) as f32).max(0.0);
                             let local_y = ((cy - rect.y) as f32).max(0.0);
                             let click_col = (local_x / cell_size.width).floor() as usize;
                             let click_row = (local_y / cell_size.height).floor() as usize;
                             if let Some(pane) = tab.panes.get(&focused_id) {
-                                if let Some(target) = extract_clickable_target(&pane.terminal, click_row, click_col) {
+                                if let Some(target) =
+                                    extract_clickable_target(&pane.terminal, click_row, click_col)
+                                {
                                     log::info!("Option+click: opening {target}");
-                                    let _ = std::process::Command::new("open")
-                                        .arg(&target)
-                                        .spawn();
+                                    let _ = std::process::Command::new("open").arg(&target).spawn();
                                     break 'mouse_input;
                                 }
                             }
@@ -5769,8 +6129,7 @@ impl ApplicationHandler<UserEvent> for App {
                             MouseButton::Right => 2,
                             _ => return,
                         };
-                        if let Some((_, rect)) =
-                            pane_rects.iter().find(|(id, _)| *id == focused_id)
+                        if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == focused_id)
                         {
                             // Subtract in f64 to avoid rounding before subtraction.
                             let local_x = ((cursor_pos.0 - rect.x as f64) as f32).max(0.0);
@@ -5783,8 +6142,7 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     } else {
                         // Selection mode.
-                        if let Some((_, rect)) =
-                            pane_rects.iter().find(|(id, _)| *id == focused_id)
+                        if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == focused_id)
                         {
                             // cursor_pos is in physical pixels (from CursorMoved PhysicalPosition).
                             // rect and cell_size are also in physical pixels.
@@ -5852,10 +6210,17 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 // --- File tree mouse scroll ---
                 // If cursor is over sidebar and directory tree is visible, scroll the tree.
-                let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+                let sidebar_w = if state.sidebar_visible {
+                    state.sidebar_width
+                } else {
+                    0.0
+                };
                 if state.cursor_pos.0 < sidebar_w as f64 {
                     let wi = state.active_workspace;
-                    if wi < state.dir_trees.len() && state.dir_trees[wi].visible && !state.dir_trees[wi].entries.is_empty() {
+                    if wi < state.dir_trees.len()
+                        && state.dir_trees[wi].visible
+                        && !state.dir_trees[wi].entries.is_empty()
+                    {
                         let cell_h_f = state.renderer.cell_size().height as f64;
                         let scroll_lines = match delta {
                             winit::event::MouseScrollDelta::LineDelta(_, y) => y as i32,
@@ -5872,11 +6237,14 @@ impl ApplicationHandler<UserEvent> for App {
                             };
                             if scroll_lines > 0 {
                                 // Scroll up.
-                                tree.scroll_offset = tree.scroll_offset.saturating_sub(scroll_lines as usize);
+                                tree.scroll_offset =
+                                    tree.scroll_offset.saturating_sub(scroll_lines as usize);
                             } else {
                                 // Scroll down.
                                 let max_offset = tree.entries.len().saturating_sub(max_visible);
-                                tree.scroll_offset = (tree.scroll_offset + scroll_lines.unsigned_abs() as usize).min(max_offset);
+                                tree.scroll_offset = (tree.scroll_offset
+                                    + scroll_lines.unsigned_abs() as usize)
+                                    .min(max_offset);
                             }
                             state.window.request_redraw();
                             return;
@@ -5906,7 +6274,6 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 let tab = active_tab_mut(state);
                 if let Some(pane) = tab.panes.get_mut(&focused_id) {
-
                     if pane.terminal.modes.mouse_mode != MouseMode::None {
                         // Forward scroll as mouse events.
                         // Scroll up = button 64, scroll down = button 65.
@@ -5914,10 +6281,8 @@ impl ApplicationHandler<UserEvent> for App {
                             if let Some((_, rect)) =
                                 pane_rects.iter().find(|(id, _)| *id == focused_id)
                             {
-                                let local_x =
-                                    ((cursor_pos.0 - rect.x as f64) as f32).max(0.0);
-                                let local_y =
-                                    ((cursor_pos.1 - rect.y as f64) as f32).max(0.0);
+                                let local_x = ((cursor_pos.0 - rect.x as f64) as f32).max(0.0);
+                                let local_y = ((cursor_pos.1 - rect.y as f64) as f32).max(0.0);
                                 let col = (local_x / cell_size.width).floor() as usize;
                                 let row = (local_y / cell_size.height).floor() as usize;
                                 let count = lines.unsigned_abs();
@@ -6061,9 +6426,7 @@ impl ApplicationHandler<UserEvent> for App {
                 } else {
                     // Not yet time — schedule a wake-up for the remaining duration.
                     let next = state.last_animation_redraw + interval;
-                    event_loop.set_control_flow(
-                        winit::event_loop::ControlFlow::WaitUntil(next),
-                    );
+                    event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next));
                 }
             }
         }
@@ -6114,9 +6477,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // update the directory tree root if needed.  This avoids calling
                 // update_tree_root_for_focused_pane on every render frame.
                 if let Some(wi) = found_ws_idx {
-                    if wi == state.active_workspace && wi < state.dir_trees.len() && state.dir_trees[wi].visible {
+                    if wi == state.active_workspace
+                        && wi < state.dir_trees.len()
+                        && state.dir_trees[wi].visible
+                    {
                         let focused_id = active_tab(state).layout.focused();
-                        let osc_cwd = active_tab(state).panes.get(&focused_id)
+                        let osc_cwd = active_tab(state)
+                            .panes
+                            .get(&focused_id)
                             .map(|p| p.terminal.osc.cwd.clone())
                             .unwrap_or_default();
                         if !osc_cwd.is_empty() && osc_cwd != state.dir_trees[wi].last_resolved_cwd {
@@ -6129,7 +6497,8 @@ impl ApplicationHandler<UserEvent> for App {
                 'outer_clip: for ws in &mut state.workspaces {
                     for tab in &mut ws.tabs {
                         if let Some(pane) = tab.panes.get_mut(&pane_id) {
-                            if let Some(ref clipboard_event) = pane.terminal.clipboard_event.take() {
+                            if let Some(ref clipboard_event) = pane.terminal.clipboard_event.take()
+                            {
                                 match clipboard_event {
                                     ClipboardEvent::Set { data, .. } => {
                                         if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -6144,7 +6513,10 @@ impl ApplicationHandler<UserEvent> for App {
                                                     .encode(text.as_bytes());
                                                 let response =
                                                     format!("\x1b]52;{selection};{b64}\x07");
-                                                let _ = daemon_pty_write(&pane.session_id, response.as_bytes());
+                                                let _ = daemon_pty_write(
+                                                    &pane.session_id,
+                                                    response.as_bytes(),
+                                                );
                                             }
                                         }
                                     }
@@ -6161,7 +6533,7 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(pane) = tab.panes.get_mut(&pane_id) {
                             if pane.terminal.has_pending_responses() {
                                 for response_data in pane.terminal.drain_responses() {
-                                    let _ = pane.pty.write(&response_data);
+                                    daemon_pty_write(&pane.session_id, &response_data);
                                 }
                             }
                             break 'outer_resp;
@@ -6179,7 +6551,9 @@ impl ApplicationHandler<UserEvent> for App {
                     'outer_osc: for ws in &mut state.workspaces {
                         for tab in &mut ws.tabs {
                             if let Some(pane) = tab.panes.get_mut(&pane_id) {
-                                if let Some(notification) = pane.terminal.osc.last_notification.take() {
+                                if let Some(notification) =
+                                    pane.terminal.osc.last_notification.take()
+                                {
                                     // Send desktop notification if enabled and window not focused.
                                     if state.config.notifications.enabled
                                         && !state.window.has_focus()
@@ -6191,7 +6565,9 @@ impl ApplicationHandler<UserEvent> for App {
                                         );
                                     }
                                     if let Some(_req) = state.allow_flow.engine.process_osc(
-                                        pane_id, ws_idx, &notification
+                                        pane_id,
+                                        ws_idx,
+                                        &notification,
                                     ) {
                                         state.allow_flow.pane_hint_visible = true;
                                         has_notification = true;
@@ -6215,15 +6591,22 @@ impl ApplicationHandler<UserEvent> for App {
                                             (0..grid.cols())
                                                 .map(|col| {
                                                     let c = grid.cell(col, row_idx).c;
-                                                    if c == '\0' { ' ' } else { c }
+                                                    if c == '\0' {
+                                                        ' '
+                                                    } else {
+                                                        c
+                                                    }
                                                 })
                                                 .collect::<String>()
                                         })
                                         .collect();
-                                    let line_refs: Vec<&str> = visible_lines.iter().map(|s| s.as_str()).collect();
-                                    if let Some(_req) = state.allow_flow.engine.process_output(
-                                        pane_id, ws_idx, &line_refs
-                                    ) {
+                                    let line_refs: Vec<&str> =
+                                        visible_lines.iter().map(|s| s.as_str()).collect();
+                                    if let Some(_req) = state
+                                        .allow_flow
+                                        .engine
+                                        .process_output(pane_id, ws_idx, &line_refs)
+                                    {
                                         state.allow_flow.pane_hint_visible = true;
                                     }
                                     break 'outer_scan;
@@ -6245,7 +6628,12 @@ impl ApplicationHandler<UserEvent> for App {
                     for ws in &mut state.workspaces {
                         for (ti, tab) in ws.tabs.iter_mut().enumerate() {
                             if tab.panes.contains_key(&pane_id) {
-                                update_tab_title(tab, &fmt, ti + 1, &state.pane_git_cache.cwd.clone());
+                                update_tab_title(
+                                    tab,
+                                    &fmt,
+                                    ti + 1,
+                                    &state.pane_git_cache.cwd.clone(),
+                                );
                             }
                         }
                     }
@@ -6300,7 +6688,9 @@ impl ApplicationHandler<UserEvent> for App {
                                 // remaining panes in the workspace being removed.
                                 {
                                     let ws = &state.workspaces[ws_idx];
-                                    let pane_ids: Vec<PaneId> = ws.tabs.iter()
+                                    let pane_ids: Vec<PaneId> = ws
+                                        .tabs
+                                        .iter()
                                         .flat_map(|t| t.panes.keys().copied())
                                         .collect();
                                     if let Ok(mut bufs) = self.pty_buffers.lock() {
@@ -6478,7 +6868,10 @@ fn scroll_to_search_match(state: &mut AppState) {
     let ws_idx = state.active_workspace;
     let tab_idx = state.workspaces[ws_idx].active_tab;
     let focused_id = state.workspaces[ws_idx].tabs[tab_idx].layout.focused();
-    if let Some(pane) = state.workspaces[ws_idx].tabs[tab_idx].panes.get_mut(&focused_id) {
+    if let Some(pane) = state.workspaces[ws_idx].tabs[tab_idx]
+        .panes
+        .get_mut(&focused_id)
+    {
         let half = rows / 2;
         let new_offset = match_row.saturating_sub(half);
         pane.terminal.set_scroll_offset(new_offset);
@@ -6494,9 +6887,12 @@ fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> Se
         Key::Named(NamedKey::Escape) => {
             return SearchKeyResult::Dismiss;
         }
-        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+        Key::Named(NamedKey::Enter)
+        | Key::Named(NamedKey::ArrowDown)
+        | Key::Named(NamedKey::ArrowUp) => {
             let go_prev = matches!(&event.logical_key, Key::Named(NamedKey::ArrowUp))
-                || (matches!(&event.logical_key, Key::Named(NamedKey::Enter)) && state.modifiers.shift_key());
+                || (matches!(&event.logical_key, Key::Named(NamedKey::Enter))
+                    && state.modifiers.shift_key());
             if let Some(ref mut search) = state.search {
                 if go_prev {
                     search.prev_match();
@@ -6516,8 +6912,8 @@ fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> Se
             return SearchKeyResult::Consumed;
         }
         // Ctrl+N / Ctrl+P: navigate matches (same as arrow keys).
-        Key::Character(c) if state.modifiers.control_key()
-            && (c.as_str() == "n" || c.as_str() == "\x0e") =>
+        Key::Character(c)
+            if state.modifiers.control_key() && (c.as_str() == "n" || c.as_str() == "\x0e") =>
         {
             if let Some(ref mut search) = state.search {
                 search.next_match();
@@ -6525,8 +6921,8 @@ fn handle_search_key(state: &mut AppState, event: &winit::event::KeyEvent) -> Se
             scroll_to_search_match(state);
             return SearchKeyResult::Consumed;
         }
-        Key::Character(c) if state.modifiers.control_key()
-            && (c.as_str() == "p" || c.as_str() == "\x10") =>
+        Key::Character(c)
+            if state.modifiers.control_key() && (c.as_str() == "p" || c.as_str() == "\x10") =>
         {
             if let Some(ref mut search) = state.search {
                 search.prev_match();
@@ -6579,8 +6975,14 @@ fn handle_timeline_key(state: &mut AppState, event: &winit::event::KeyEvent) -> 
         .panes
         .get(&focused_id)
         .map(|p| {
-            p.terminal.command_history().iter().enumerate().rev()
-                .filter(|(_, cmd)| filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter))
+            p.terminal
+                .command_history()
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, cmd)| {
+                    filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter)
+                })
                 .count()
         })
         .unwrap_or(0);
@@ -6603,8 +7005,13 @@ fn handle_timeline_key(state: &mut AppState, event: &winit::event::KeyEvent) -> 
             // Only clone the single selected record for Enter action.
             let result = active_tab(state).panes.get(&focused_id).and_then(|p| {
                 let history = p.terminal.command_history();
-                let filtered: Vec<usize> = history.iter().enumerate().rev()
-                    .filter(|(_, cmd)| filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter))
+                let filtered: Vec<usize> = history
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, cmd)| {
+                        filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter)
+                    })
                     .map(|(i, _)| i)
                     .collect();
                 filtered.get(state.timeline_selected).map(|&cmd_idx| {
@@ -6648,8 +7055,15 @@ fn search_in_focused_pane(state: &mut AppState) {
     let focused_id = state.workspaces[ws_idx].tabs[tab_idx].layout.focused();
     // We need to get a reference to the grid, then run search.
     // Build search matches from grid data, then update state.search.
-    let query = state.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
-    if let Some(pane) = state.workspaces[ws_idx].tabs[tab_idx].panes.get(&focused_id) {
+    let query = state
+        .search
+        .as_ref()
+        .map(|s| s.query.clone())
+        .unwrap_or_default();
+    if let Some(pane) = state.workspaces[ws_idx].tabs[tab_idx]
+        .panes
+        .get(&focused_id)
+    {
         let grid = pane.terminal.grid();
         // Perform inline search to avoid borrow issues.
         let mut matches = Vec::new();
@@ -6713,8 +7127,7 @@ fn dispatch_action(
             let next_id = state.next_pane_id;
             let tab = active_tab_mut(state);
             tab.layout.set_next_id(next_id);
-            let (new_layout, new_id) =
-                tab.layout.split(focused_id, SplitDirection::Horizontal);
+            let (new_layout, new_id) = tab.layout.split(focused_id, SplitDirection::Horizontal);
             tab.layout = new_layout;
             state.next_pane_id = new_id + 1;
             let pane_rects = active_pane_rects(state);
@@ -6723,9 +7136,17 @@ fn dispatch_action(
                 .find(|(id, _)| *id == new_id)
                 .map(|(_, r)| *r);
             if let Some(rect) = new_rect {
-                let (cols, rows) =
-                    state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
+                let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
+                match spawn_pane(
+                    new_id,
+                    cols.max(1),
+                    rows.max(1),
+                    proxy,
+                    buffers,
+                    cwd,
+                    Some(&state.config.time_travel),
+                    state.renderer.cjk_width,
+                ) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -6743,8 +7164,7 @@ fn dispatch_action(
             let next_id = state.next_pane_id;
             let tab = active_tab_mut(state);
             tab.layout.set_next_id(next_id);
-            let (new_layout, new_id) =
-                tab.layout.split(focused_id, SplitDirection::Vertical);
+            let (new_layout, new_id) = tab.layout.split(focused_id, SplitDirection::Vertical);
             tab.layout = new_layout;
             state.next_pane_id = new_id + 1;
             let pane_rects = active_pane_rects(state);
@@ -6753,9 +7173,17 @@ fn dispatch_action(
                 .find(|(id, _)| *id == new_id)
                 .map(|(_, r)| *r);
             if let Some(rect) = new_rect {
-                let (cols, rows) =
-                    state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
+                let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
+                match spawn_pane(
+                    new_id,
+                    cols.max(1),
+                    rows.max(1),
+                    proxy,
+                    buffers,
+                    cwd,
+                    Some(&state.config.time_travel),
+                    state.renderer.cjk_width,
+                ) {
                     Ok(pane) => {
                         active_tab_mut(state).panes.insert(new_id, pane);
                     }
@@ -6813,11 +7241,24 @@ fn dispatch_action(
             let phys_w = size.width as f32;
             let phys_h = size.height as f32;
             // When we add a new tab, the workspace will have >1 tabs, so tab bar will appear.
-            let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+            let sidebar_w = if state.sidebar_visible {
+                state.sidebar_width
+            } else {
+                0.0
+            };
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = (phys_h - state.config.tab_bar.height).max(1.0);
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
+            match spawn_pane(
+                new_id,
+                cols.max(1),
+                rows.max(1),
+                proxy,
+                buffers,
+                cwd,
+                Some(&state.config.time_travel),
+                state.renderer.cjk_width,
+            ) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -6847,7 +7288,9 @@ fn dispatch_action(
             let pane_info = {
                 let tab = active_tab(state);
                 let focused_id = tab.layout.focused();
-                tab.panes.get(&focused_id).map(|p| (focused_id, p.shell_pid))
+                tab.panes
+                    .get(&focused_id)
+                    .map(|p| (focused_id, p.shell_pid))
             };
             if let Some((pane_id, pid)) = pane_info {
                 if let Some(proc_name) = detect_foreground_child(pid) {
@@ -6869,11 +7312,24 @@ fn dispatch_action(
             let size = state.window.inner_size();
             let phys_w = size.width as f32;
             let phys_h = size.height as f32;
-            let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+            let sidebar_w = if state.sidebar_visible {
+                state.sidebar_width
+            } else {
+                0.0
+            };
             let cw = (phys_w - sidebar_w).max(1.0);
             let ch = phys_h.max(1.0); // Single tab, no tab bar
             let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(new_id, cols.max(1), rows.max(1), proxy, buffers, cwd, Some(&state.config.time_travel), state.renderer.cjk_width) {
+            match spawn_pane(
+                new_id,
+                cols.max(1),
+                rows.max(1),
+                proxy,
+                buffers,
+                cwd,
+                Some(&state.config.time_travel),
+                state.renderer.cjk_width,
+            ) {
                 Ok(pane) => {
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
@@ -6972,7 +7428,8 @@ fn dispatch_action(
                             }
                         }
                         None
-                    }).unwrap_or_else(|| {
+                    })
+                    .unwrap_or_else(|| {
                         std::env::current_dir()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| "/".to_string())
@@ -7096,7 +7553,11 @@ fn dispatch_action(
                         // lsof fallback for CWD detection.
                         let pty_cwd = pane.and_then(|p| {
                             let pid = p.shell_pid;
-                            if pid > 0 { get_child_cwd(pid) } else { None }
+                            if pid > 0 {
+                                get_child_cwd(pid)
+                            } else {
+                                None
+                            }
                         });
                         pty_cwd.unwrap_or_else(|| {
                             std::env::current_dir()
@@ -7139,7 +7600,8 @@ fn dispatch_action(
             true
         }
         Action::FontIncrease => {
-            let new_size = (state.font_size + state.config.font.size_step).min(state.config.font.max_size);
+            let new_size =
+                (state.font_size + state.config.font.size_step).min(state.config.font.max_size);
             if let Err(e) = state.renderer.set_font_size(new_size) {
                 log::error!("failed to increase font size: {e}");
             } else {
@@ -7193,13 +7655,19 @@ fn dispatch_action(
         Action::QuickLaunch => {
             state.quick_launch.toggle();
             if state.quick_launch.visible {
-                state.quick_launch.rebuild_entries(&state.workspaces, &state.workspace_infos);
+                state
+                    .quick_launch
+                    .rebuild_entries(&state.workspaces, &state.workspace_infos);
             }
             state.window.request_redraw();
             true
         }
         Action::Command(name) => {
-            if let Some(cmd) = state.external_commands.iter().find(|c| c.meta.name == *name) {
+            if let Some(cmd) = state
+                .external_commands
+                .iter()
+                .find(|c| c.meta.name == *name)
+            {
                 match CommandExecution::new(cmd) {
                     Ok(exec) => {
                         state.command_execution = Some(exec);
@@ -7335,8 +7803,7 @@ fn dispatch_action(
             }
             true
         }
-        Action::UnreadJump
-        | Action::OpenSettings => {
+        Action::UnreadJump | Action::OpenSettings => {
             log::debug!("unhandled action: {:?}", action);
             true
         }
@@ -7350,8 +7817,7 @@ fn resize_all_panes(state: &mut AppState) {
     let cell_h = cell_size.height as u32;
     let pane_rects = active_pane_rects(state);
     for (pid, rect) in &pane_rects {
-        let (cols, rows) =
-            state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
+        let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
         let cols = cols.max(1);
         let rows = rows.max(1);
         let tab = active_tab_mut(state);
@@ -7387,10 +7853,7 @@ fn find_separator(
             if (r1_right - r2.x).abs() <= 2.0 {
                 let y_top = r1.y.max(r2.y);
                 let y_bot = (r1.y + r1.h).min(r2.y + r2.h);
-                if y_bot > y_top
-                    && my >= y_top
-                    && my <= y_bot
-                    && (mx - r1_right).abs() <= threshold
+                if y_bot > y_top && my >= y_top && my <= y_bot && (mx - r1_right).abs() <= threshold
                 {
                     return Some((SplitDirection::Horizontal, *id1));
                 }
@@ -7417,16 +7880,8 @@ fn find_separator(
 /// Detach all PTY handles from the GUI so that shells survive the GUI exit.
 /// The daemon keeps tracking these sessions; users can reconnect later or
 /// use `tm kill --all` to terminate them.
-fn detach_all_ptys(state: &mut AppState) {
-    for ws in &mut state.workspaces {
-        for tab in &mut ws.tabs {
-            for (_, pane) in tab.panes.iter_mut() {
-                // Mark the PTY as detached so its Drop impl does not close
-                // the master fd and send SIGHUP to the child process.
-                pane.pty.detach();
-            }
-        }
-    }
+fn detach_all_ptys(_state: &mut AppState) {
+    // No-op: daemon owns PTYs, GUI exit does not affect sessions.
 }
 
 /// Compute the drop zone for a cursor position within a pane rect.
@@ -7486,7 +7941,9 @@ fn close_focused_pane(
                     // remaining panes in the workspace being removed.
                     {
                         let ws = &state.workspaces[removed_idx];
-                        let pane_ids: Vec<PaneId> = ws.tabs.iter()
+                        let pane_ids: Vec<PaneId> = ws
+                            .tabs
+                            .iter()
                             .flat_map(|t| t.panes.keys().copied())
                             .collect();
                         if let Ok(mut bufs) = buffers.lock() {
@@ -7529,7 +7986,11 @@ fn close_focused_pane(
 
 /// Determine the cursor icon for a position within the tab bar.
 fn tab_bar_cursor(state: &AppState, mx: f32, _my: f32) -> CursorIcon {
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
     let local_cx = mx - sidebar_w;
     if local_cx < 0.0 {
         return CursorIcon::Default;
@@ -7541,7 +8002,12 @@ fn tab_bar_cursor(state: &AppState, mx: f32, _my: f32) -> CursorIcon {
     let mut tab_x: f32 = 0.0;
 
     for tab in ws.tabs.iter() {
-        let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
+        let tab_w = compute_tab_width(
+            &tab.display_title,
+            cell_w,
+            max_tab_w,
+            state.config.tab_bar.min_tab_width,
+        );
         if local_cx >= tab_x && local_cx < tab_x + tab_w {
             // Check if over close button (rightmost 1.5 cells)
             let close_start = tab_x + tab_w - 1.5 * cell_w;
@@ -7584,7 +8050,9 @@ fn compute_tab_width(title: &str, cell_w: f32, max_width: f32, min_width: f32) -
 /// ellipsis if truncation occurs.
 /// Escape a path for safe use in shell commands.
 fn shell_escape(s: &str) -> String {
-    if s.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-') {
+    if s.chars()
+        .all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-')
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
@@ -7664,9 +8132,8 @@ fn extract_clickable_target(
                 .map(|e| start_byte + e)
                 .unwrap_or(row_text.len());
             // Trim trailing punctuation that is unlikely to be part of the URL.
-            let url = row_text[start_byte..end_byte].trim_end_matches(|c: char| {
-                matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':')
-            });
+            let url = row_text[start_byte..end_byte]
+                .trim_end_matches(|c: char| matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':'));
             // Check if the click position falls within this URL.
             if click_char_idx >= start_byte && click_char_idx < start_byte + url.len() {
                 return Some(url.to_string());
@@ -7690,9 +8157,8 @@ fn extract_clickable_target(
             }
             let candidate: String = chars[start..end].iter().collect();
             // Trim trailing punctuation.
-            let candidate = candidate.trim_end_matches(|c: char| {
-                matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':')
-            });
+            let candidate = candidate
+                .trim_end_matches(|c: char| matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':'));
             // Accept if it looks like an absolute path.
             if candidate.starts_with('/') && candidate.len() > 1 {
                 return Some(candidate.to_string());
@@ -7715,7 +8181,11 @@ fn extract_clickable_target(
 /// Returns a `TabBarClickResult` describing what was clicked.
 fn handle_tab_bar_click(state: &mut AppState) -> TabBarClickResult {
     let cx = state.cursor_pos.0 as f32;
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
     let local_cx = cx - sidebar_w;
     if local_cx < 0.0 {
         return TabBarClickResult::None;
@@ -7726,7 +8196,12 @@ fn handle_tab_bar_click(state: &mut AppState) -> TabBarClickResult {
     let ws = active_ws(state);
     let mut tab_x: f32 = 0.0;
     for (i, tab) in ws.tabs.iter().enumerate() {
-        let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
+        let tab_w = compute_tab_width(
+            &tab.display_title,
+            cell_w,
+            max_tab_w,
+            state.config.tab_bar.min_tab_width,
+        );
         if local_cx >= tab_x && local_cx < tab_x + tab_w {
             // Check if click is on the close button (rightmost 1.5 cells of the tab).
             let close_zone_start = tab_x + tab_w - 1.5 * cell_w;
@@ -7779,7 +8254,9 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
         // CWD line
         // Use the cached CWD (resolved from OSC 7 or lsof fallback)
         // instead of reading osc.cwd directly, which may be empty.
-        let ws_cwd = state.workspace_infos.get(i)
+        let ws_cwd = state
+            .workspace_infos
+            .get(i)
             .map(|inf| inf.cwd.clone())
             .unwrap_or_default();
         if !ws_cwd.is_empty() {
@@ -7825,7 +8302,10 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             } else {
                 // Click on active workspace outside tree — check if it's the CWD line to toggle tree.
                 let cwd_line_y = entry_y + cell_h; // after name line
-                if !ws_cwd.is_empty() && cy >= cwd_line_y && cy < cwd_line_y + info_line_gap + cell_h {
+                if !ws_cwd.is_empty()
+                    && cy >= cwd_line_y
+                    && cy < cwd_line_y + info_line_gap + cell_h
+                {
                     return Some(Action::ToggleDirectoryTree);
                 }
             }
@@ -7860,7 +8340,8 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                         // Double-click detection.
                         let now = Instant::now();
                         let dbl_ms = state.config.directory_tree.double_click_ms;
-                        let is_double_click = state.dir_trees[i].last_click_time
+                        let is_double_click = state.dir_trees[i]
+                            .last_click_time
                             .map(|t| now.duration_since(t).as_millis() < dbl_ms as u128)
                             .unwrap_or(false)
                             && state.dir_trees[i].last_click_index == Some(entry_idx);
@@ -7875,7 +8356,8 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                                 // Double-click on directory: cd to it.
                                 let path = state.dir_trees[i].entries[entry_idx].path.clone();
                                 let focused_id = active_tab(state).layout.focused();
-                                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
+                                if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id)
+                                {
                                     let cmd = format!("cd {}\n", shell_escape(&path));
                                     let _ = daemon_pty_write(&pane.session_id, cmd.as_bytes());
                                 }
@@ -7918,10 +8400,15 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
             break;
         }
         if state.agent_infos[wi].active {
-            let running_sub_count = state.agent_infos[wi].subagents.iter()
+            let running_sub_count = state.agent_infos[wi]
+                .subagents
+                .iter()
                 .filter(|s| matches!(s.state, AgentState::Running))
                 .count();
-            claude_click_entries.push(ClickClaudeEntry { wi, running_sub_count });
+            claude_click_entries.push(ClickClaudeEntry {
+                wi,
+                running_sub_count,
+            });
         }
     }
 
@@ -7946,7 +8433,10 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
         let sessions_total_h = if state.claudes_collapsed {
             header_h
         } else {
-            let entries_h: f32 = claude_click_entries.iter().map(|e| compute_click_entry_h(e)).sum();
+            let entries_h: f32 = claude_click_entries
+                .iter()
+                .map(|e| compute_click_entry_h(e))
+                .sum();
             let gaps_h = (claude_click_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
             header_h + entries_h + gaps_h
         };
@@ -7981,7 +8471,9 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                             state.window.request_redraw();
                         }
                         // Focus the specific pane where the agent is running.
-                        if let Some(target_pane) = state.agent_infos.get(entry.wi).and_then(|a| a.pane_id) {
+                        if let Some(target_pane) =
+                            state.agent_infos.get(entry.wi).and_then(|a| a.pane_id)
+                        {
                             if entry.wi >= state.workspaces.len() {
                                 return None;
                             }
@@ -7995,7 +8487,8 @@ fn handle_sidebar_click(state: &mut AppState) -> Option<Action> {
                             }
                             if let Some(tab_idx) = found_tab {
                                 ws.active_tab = tab_idx;
-                                ws.tabs[tab_idx].layout = ws.tabs[tab_idx].layout.focus(target_pane);
+                                ws.tabs[tab_idx].layout =
+                                    ws.tabs[tab_idx].layout.focus(target_pane);
                             }
                         }
                         return None;
@@ -8025,7 +8518,11 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let cell_w = state.renderer.cell_size().width;
     let cell_h = state.renderer.cell_size().height;
     let max_tab_w = state.config.tab_bar.max_width;
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
     let bar_x = sidebar_w as u32;
     let bar_w = (phys_w - sidebar_w).max(0.0) as u32;
     let bar_h_f = state.config.tab_bar.height;
@@ -8035,12 +8532,24 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let tab_pad_y = state.config.tab_bar.padding_y;
 
     // Draw tab bar background.
-    state.renderer.submit_separator(view, bar_x, 0, bar_w, bar_h, tab_bar_bg);
+    state
+        .renderer
+        .submit_separator(view, bar_x, 0, bar_w, bar_h, tab_bar_bg);
 
     // Draw bottom border if enabled.
     if state.config.tab_bar.bottom_border {
-        let border_color = color_or(&state.config.tab_bar.bottom_border_color, [0.16, 0.16, 0.20, 1.0]);
-        state.renderer.submit_separator(view, bar_x, bar_h.saturating_sub(1), bar_w, 1, border_color);
+        let border_color = color_or(
+            &state.config.tab_bar.bottom_border_color,
+            [0.16, 0.16, 0.20, 1.0],
+        );
+        state.renderer.submit_separator(
+            view,
+            bar_x,
+            bar_h.saturating_sub(1),
+            bar_w,
+            1,
+            border_color,
+        );
     }
 
     // Draw each tab in the current workspace.
@@ -8052,7 +8561,12 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
     let text_y = (bar_h_f - cell_h) / 2.0;
 
     for (i, tab) in ws.tabs.iter().enumerate() {
-        let tab_w = compute_tab_width(&tab.display_title, cell_w, max_tab_w, state.config.tab_bar.min_tab_width);
+        let tab_w = compute_tab_width(
+            &tab.display_title,
+            cell_w,
+            max_tab_w,
+            state.config.tab_bar.min_tab_width,
+        );
         let is_active = i == active_tab_idx;
 
         // Draw tab background (active tab is brighter).
@@ -8087,12 +8601,15 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
             let dot_r = dot_d / 2.0;
             let dot_cx = tab_x + tab_pad_x + cell_w * 0.5;
             let dot_cy = text_y.max(0.0) + cell_h * 0.5;
-            state.renderer.submit_rounded_rects(view, &[RoundedRect {
-                rect: [dot_cx - dot_r, dot_cy - dot_r, dot_d, dot_d],
-                color: accent_color,
-                border_color: [0.0; 4],
-                params: [dot_r, 0.0, 0.0, 0.0],
-            }]);
+            state.renderer.submit_rounded_rects(
+                view,
+                &[RoundedRect {
+                    rect: [dot_cx - dot_r, dot_cy - dot_r, dot_d, dot_d],
+                    color: accent_color,
+                    border_color: [0.0; 4],
+                    params: [dot_r, 0.0, 0.0, 0.0],
+                }],
+            );
             cell_w * 1.5 // dot + gap
         } else {
             0.0
@@ -8101,16 +8618,21 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
         // Title text.
         let text_x = tab_x + tab_pad_x + dot_offset;
         // Truncate title if it won't fit (leave room for close button).
-        let avail_chars =
-            ((tab_w - 3.5 * cell_w - dot_offset) / cell_w).max(1.0) as usize;
+        let avail_chars = ((tab_w - 3.5 * cell_w - dot_offset) / cell_w).max(1.0) as usize;
         let display: String = if tab.display_title.len() > avail_chars {
-            let mut s: String = tab.display_title.chars().take(avail_chars.saturating_sub(1)).collect();
+            let mut s: String = tab
+                .display_title
+                .chars()
+                .take(avail_chars.saturating_sub(1))
+                .collect();
             s.push('\u{2026}'); // ellipsis
             s
         } else {
             tab.display_title.clone()
         };
-        state.renderer.render_text(view, &display, text_x, text_y.max(0.0), fg, bg);
+        state
+            .renderer
+            .render_text(view, &display, text_x, text_y.max(0.0), fg, bg);
 
         // Close button: show `\u{00d7}` (always for active tab, area is always clickable).
         if is_active || num_tabs > 1 {
@@ -8144,14 +8666,9 @@ fn render_tab_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32) {
 
     // Draw `+` new-tab button after all tabs.
     let plus_x = tab_x + (state.config.tab_bar.new_tab_button_width - cell_w) / 2.0;
-    state.renderer.render_text(
-        view,
-        "+",
-        plus_x,
-        text_y.max(0.0),
-        new_tab_fg,
-        tab_bar_bg,
-    );
+    state
+        .renderer
+        .render_text(view, "+", plus_x, text_y.max(0.0), new_tab_fg, tab_bar_bg);
 }
 
 /// Render the sidebar showing workspaces with rich information.
@@ -8190,7 +8707,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     let info_line_gap = sc.info_line_gap;
 
     // --- Draw sidebar background (full height) ---
-    state.renderer.submit_separator(view, 0, 0, sidebar_w as u32, phys_h as u32, sidebar_bg);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, sidebar_w as u32, phys_h as u32, sidebar_bg);
 
     // --- Refresh workspace info ---
     while state.workspace_infos.len() < state.workspaces.len() {
@@ -8212,13 +8731,17 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     // Ensure trees with enabled=true get loaded if entries are still empty.
     if state.config.directory_tree.enabled {
         for wi in 0..state.workspaces.len() {
-            if wi >= state.dir_trees.len() { break; }
+            if wi >= state.dir_trees.len() {
+                break;
+            }
             if state.dir_trees[wi].visible && state.dir_trees[wi].entries.is_empty() {
                 let cwd = {
                     let ws = &state.workspaces[wi];
                     let tab = &ws.tabs[ws.active_tab];
                     let fid = tab.layout.focused();
-                    let osc_cwd = tab.panes.get(&fid)
+                    let osc_cwd = tab
+                        .panes
+                        .get(&fid)
                         .map(|p| p.terminal.osc.cwd.clone())
                         .unwrap_or_default();
                     if osc_cwd.is_empty() {
@@ -8319,7 +8842,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 // Detect session change: if session_id changed, clear stale
                 // title from the previous session so the new session gets its
                 // own title (from monitor or IPC).
-                let session_changed = agent.session_id.as_ref()
+                let session_changed = agent
+                    .session_id
+                    .as_ref()
                     .map(|old| old != &cs.session_id)
                     .unwrap_or(false);
                 if session_changed {
@@ -8341,16 +8866,28 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     termojinal_claude::monitor::SessionState::Running => AgentState::Running,
                     termojinal_claude::monitor::SessionState::Idle => AgentState::Idle,
                     termojinal_claude::monitor::SessionState::Done => AgentState::Inactive,
-                    termojinal_claude::monitor::SessionState::WaitingForPermission => AgentState::WaitingForPermission,
+                    termojinal_claude::monitor::SessionState::WaitingForPermission => {
+                        AgentState::WaitingForPermission
+                    }
                 };
                 agent.subagent_count = cs.subagents.len();
-                agent.subagents = cs.subagents.iter().map(|sa| SubAgentInfo {
-                    title: if sa.description.is_empty() { sa.agent_type.clone() } else { sa.description.clone() },
-                    state: match sa.state {
-                        termojinal_claude::monitor::SessionState::Running => AgentState::Running,
-                        _ => AgentState::Inactive,
-                    },
-                }).collect();
+                agent.subagents = cs
+                    .subagents
+                    .iter()
+                    .map(|sa| SubAgentInfo {
+                        title: if sa.description.is_empty() {
+                            sa.agent_type.clone()
+                        } else {
+                            sa.description.clone()
+                        },
+                        state: match sa.state {
+                            termojinal_claude::monitor::SessionState::Running => {
+                                AgentState::Running
+                            }
+                            _ => AgentState::Inactive,
+                        },
+                    })
+                    .collect();
                 agent.last_updated = Instant::now();
             }
         }
@@ -8360,8 +8897,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             if !still_active && state.agent_infos[wi].active {
                 // Only mark inactive if it was monitor-tracked (has session_id).
                 if state.agent_infos[wi].session_id.is_some() {
-                    let is_perm_wait = matches!(state.agent_infos[wi].state, AgentState::WaitingForPermission)
-                        && state.allow_flow.has_pending_for_workspace(wi);
+                    let is_perm_wait = matches!(
+                        state.agent_infos[wi].state,
+                        AgentState::WaitingForPermission
+                    ) && state.allow_flow.has_pending_for_workspace(wi);
                     if !is_perm_wait {
                         state.agent_infos[wi].state = AgentState::Inactive;
                         state.agent_infos[wi].active = false;
@@ -8407,12 +8946,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // Get additional workspace info: cwd and pane count.
         // Use the cached CWD (resolved from OSC 7 or lsof fallback)
         // instead of reading osc.cwd directly, which may be empty.
-        let ws_cwd = state.workspace_infos.get(i)
+        let ws_cwd = state
+            .workspace_infos
+            .get(i)
             .map(|inf| inf.cwd.clone())
             .unwrap_or_default();
-        let ws_pane_count: usize = state.workspaces[i].tabs.iter()
-            .map(|t| t.panes.len())
-            .sum();
+        let ws_pane_count: usize = state.workspaces[i].tabs.iter().map(|t| t.panes.len()).sum();
 
         // Calculate entry height for active highlight background.
         let has_git = info.map_or(false, |inf| inf.git_branch.is_some());
@@ -8434,12 +8973,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             content_h += info_line_gap + cell_h;
         }
         // Agent status line (below Allow Flow / ports / git).
-        let has_agent = agent_status_enabled
-            && i < state.agent_infos.len()
-            && state.agent_infos[i].active;
+        let has_agent =
+            agent_status_enabled && i < state.agent_infos.len() && state.agent_infos[i].active;
         if has_agent {
             content_h += info_line_gap + cell_h; // agent status line (compact)
-            // Summary line if non-empty.
+                                                 // Summary line if non-empty.
             if !state.agent_infos[i].summary.is_empty() {
                 content_h += info_line_gap + cell_h;
             }
@@ -8470,11 +9008,19 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         }
 
         // --- Active workspace: highlight background (full sidebar width) ---
-        let bg = if is_active { active_entry_bg } else { sidebar_bg };
+        let bg = if is_active {
+            active_entry_bg
+        } else {
+            sidebar_bg
+        };
         if is_active {
             // Start highlight after the accent stripe area to keep it visible.
             let accent_w: u32 = 3;
-            let bg_x = if has_allow_pending { accent_w } else { accent_w };
+            let bg_x = if has_allow_pending {
+                accent_w
+            } else {
+                accent_w
+            };
             state.renderer.submit_separator(
                 view,
                 bg_x,
@@ -8508,7 +9054,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // Agent pulse animation on dot.
         if has_agent && agent_indicator_style == "pulse" {
             let elapsed = state.app_start_time.elapsed().as_secs_f32();
-            let alpha = 0.5 + 0.5 * (2.0 * std::f32::consts::PI * elapsed / agent_pulse_speed.max(0.1)).sin();
+            let alpha = 0.5
+                + 0.5 * (2.0 * std::f32::consts::PI * elapsed / agent_pulse_speed.max(0.1)).sin();
             let base = match state.agent_infos[i].state {
                 AgentState::WaitingForPermission => agent_idle_color,
                 _ => agent_active_color,
@@ -8526,12 +9073,24 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         let dot_cx = side_pad + cell_w * 0.5; // center in ~1-cell area
         let dot_cy = entry_y + cell_h * 0.5;
         let filled = is_active || has_agent;
-        state.renderer.submit_rounded_rects(view, &[RoundedRect {
-            rect: [dot_cx - dot_radius, dot_cy - dot_radius, dot_diameter, dot_diameter],
-            color: if filled { dot_color } else { [0.0, 0.0, 0.0, 0.0] },
-            border_color: if filled { [0.0; 4] } else { dot_color },
-            params: [dot_radius, if filled { 0.0 } else { 1.5 }, 0.0, 0.0],
-        }]);
+        state.renderer.submit_rounded_rects(
+            view,
+            &[RoundedRect {
+                rect: [
+                    dot_cx - dot_radius,
+                    dot_cy - dot_radius,
+                    dot_diameter,
+                    dot_diameter,
+                ],
+                color: if filled {
+                    dot_color
+                } else {
+                    [0.0, 0.0, 0.0, 0.0]
+                },
+                border_color: if filled { [0.0; 4] } else { dot_color },
+                params: [dot_radius, if filled { 0.0 } else { 1.5 }, 0.0, 0.0],
+            }],
+        );
 
         // --- Notification dot for unread activity (small bright dot above-right) ---
         if !is_active {
@@ -8541,12 +9100,15 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     let notif_r = notif_d / 2.0;
                     let notif_x = dot_cx + dot_radius * 0.5;
                     let notif_y = dot_cy - dot_radius * 0.7;
-                    state.renderer.submit_rounded_rects(view, &[RoundedRect {
-                        rect: [notif_x - notif_r, notif_y - notif_r, notif_d, notif_d],
-                        color: notification_dot,
-                        border_color: [0.0; 4],
-                        params: [notif_r, 0.0, 0.0, 0.0],
-                    }]);
+                    state.renderer.submit_rounded_rects(
+                        view,
+                        &[RoundedRect {
+                            rect: [notif_x - notif_r, notif_y - notif_r, notif_d, notif_d],
+                            color: notification_dot,
+                            border_color: [0.0; 4],
+                            params: [notif_r, 0.0, 0.0, 0.0],
+                        }],
+                    );
                 }
             }
         }
@@ -8580,7 +9142,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // Tab/pane count badge.
         let tab_count = state.workspaces[i].tabs.len();
         let badge = if tab_count > 1 || ws_pane_count > 1 {
-            let pane_str = if ws_pane_count > 1 { format!(" \u{25A8}{ws_pane_count}") } else { String::new() };
+            let pane_str = if ws_pane_count > 1 {
+                format!(" \u{25A8}{ws_pane_count}")
+            } else {
+                String::new()
+            };
             format!(" [{tab_count}\u{25AB}{pane_str}]")
         } else {
             String::new()
@@ -8589,7 +9155,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         let name_label = format!("{display_name}{badge}");
         let name_display: String = name_label.chars().take(max_chars).collect();
         let name_fg = if is_active { active_fg } else { inactive_fg };
-        state.renderer.render_text(view, &name_display, text_left, entry_y, name_fg, bg);
+        state
+            .renderer
+            .render_text(view, &name_display, text_left, entry_y, name_fg, bg);
 
         let mut line_y = entry_y + cell_h;
 
@@ -8615,8 +9183,13 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 }
             };
             let info_indent = text_left + cell_w * 0.5;
-            let cwd_trimmed: String = cwd_display.chars().take(max_chars.saturating_sub(1)).collect();
-            state.renderer.render_text(view, &cwd_trimmed, info_indent, line_y, dim_fg, bg);
+            let cwd_trimmed: String = cwd_display
+                .chars()
+                .take(max_chars.saturating_sub(1))
+                .collect();
+            state
+                .renderer
+                .render_text(view, &cwd_trimmed, info_indent, line_y, dim_fg, bg);
             line_y += cell_h;
         }
 
@@ -8641,7 +9214,10 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 }
 
                 let info_indent = text_left + cell_w * 0.5;
-                let git_display: String = git_parts.chars().take(max_chars.saturating_sub(1)).collect();
+                let git_display: String = git_parts
+                    .chars()
+                    .take(max_chars.saturating_sub(1))
+                    .collect();
                 // Branch in cyan/blue, status indicators dimmed for inactive
                 let git_fg = if is_active {
                     if info.git_dirty > 0 || info.git_untracked > 0 {
@@ -8652,21 +9228,31 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 } else {
                     dim_fg
                 };
-                state.renderer.render_text(view, &git_display, info_indent, line_y, git_fg, bg);
+                state
+                    .renderer
+                    .render_text(view, &git_display, info_indent, line_y, git_fg, bg);
                 line_y += cell_h;
             }
 
             // --- Ports line (below git) ---
             if !info.ports.is_empty() {
                 line_y += info_line_gap;
-                let ports_str: String = format!("\u{F0AC} {}",  // globe icon
-                    info.ports.iter()
+                let ports_str: String = format!(
+                    "\u{F0AC} {}", // globe icon
+                    info.ports
+                        .iter()
                         .map(|p| format!(":{p}"))
                         .collect::<Vec<_>>()
-                        .join(" "));
+                        .join(" ")
+                );
                 let info_indent = text_left + cell_w * 0.5;
-                let ports_display: String = ports_str.chars().take(max_chars.saturating_sub(1)).collect();
-                state.renderer.render_text(view, &ports_display, info_indent, line_y, dim_fg, bg);
+                let ports_display: String = ports_str
+                    .chars()
+                    .take(max_chars.saturating_sub(1))
+                    .collect();
+                state
+                    .renderer
+                    .render_text(view, &ports_display, info_indent, line_y, dim_fg, bg);
                 line_y += cell_h;
             }
         }
@@ -8679,9 +9265,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let count = state.allow_flow.pending_count_for_workspace(i);
             let info_indent = text_left + cell_w * 0.5;
             let badge = format!("\u{26A1} {} pending", count);
-            state.renderer.render_text(
-                view, &badge, info_indent, line_y, allow_accent_color, bg,
-            );
+            state
+                .renderer
+                .render_text(view, &badge, info_indent, line_y, allow_accent_color, bg);
             line_y += cell_h;
         }
 
@@ -8693,12 +9279,20 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             // Use correct status detection: check for actual pending requests.
             let has_pending_inline = state.allow_flow.has_pending_for_workspace(i);
             let (agent_icon, state_label) = match agent.state {
-                AgentState::Running => ("\u{26A1}", "running"),    // ⚡ running
+                AgentState::Running => ("\u{26A1}", "running"), // ⚡ running
                 AgentState::WaitingForPermission => {
-                    if has_pending_inline { ("\u{23F3}", "wait you") } else { ("\u{26A1}", "running") } // ⏳ / ⚡
+                    if has_pending_inline {
+                        ("\u{23F3}", "wait you")
+                    } else {
+                        ("\u{26A1}", "running")
+                    } // ⏳ / ⚡
                 }
                 AgentState::Idle | AgentState::Inactive => {
-                    if has_pending_inline { ("\u{23F3}", "wait you") } else { ("\u{2713}", "done") } // ⏳ / ✓
+                    if has_pending_inline {
+                        ("\u{23F3}", "wait you")
+                    } else {
+                        ("\u{2713}", "done")
+                    } // ⏳ / ✓
                 }
             };
             let done_inline_color: [f32; 4] = [0.45, 0.75, 0.45, 1.0];
@@ -8715,14 +9309,22 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             };
             let info_indent = text_left + cell_w * 0.5;
             let agent_display: String = agent_line.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &agent_display, info_indent, line_y, agent_fg, bg);
+            state
+                .renderer
+                .render_text(view, &agent_display, info_indent, line_y, agent_fg, bg);
             line_y += cell_h;
 
             // Summary line (truncated).
             if !agent.summary.is_empty() {
                 line_y += info_line_gap;
-                let summary_display: String = agent.summary.chars().take(max_chars.saturating_sub(1)).collect();
-                state.renderer.render_text(view, &summary_display, info_indent, line_y, dim_fg, bg);
+                let summary_display: String = agent
+                    .summary
+                    .chars()
+                    .take(max_chars.saturating_sub(1))
+                    .collect();
+                state
+                    .renderer
+                    .render_text(view, &summary_display, info_indent, line_y, dim_fg, bg);
                 line_y += cell_h;
             }
             let _ = line_y; // suppress unused warning
@@ -8760,7 +9362,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let tree_start_y = entry_y;
             let tree_available_h = (phys_h - tree_start_y - below_h).max(cell_h * 3.0);
             // +2 for header and hint lines
-            let tree_lines = ((tree_available_h / cell_h) as usize).saturating_sub(2).max(3);
+            let tree_lines = ((tree_available_h / cell_h) as usize)
+                .saturating_sub(2)
+                .max(3);
 
             // Store current_visible_lines for scroll/click handling.
             state.dir_trees[i].current_visible_lines = tree_lines;
@@ -8797,7 +9401,14 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             };
             let header = format!("\u{25BE} {}", root_short); // ▾ root
             let header_display: String = header.chars().take(max_chars.saturating_sub(1)).collect();
-            state.renderer.render_text(view, &header_display, info_indent, tree_y, guide_fg, tree_bg);
+            state.renderer.render_text(
+                view,
+                &header_display,
+                info_indent,
+                tree_y,
+                guide_fg,
+                tree_bg,
+            );
             tree_y += cell_h;
 
             // Tree entries with guide lines and file type icons.
@@ -8809,10 +9420,14 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             // and whether this entry is the last sibling at its depth.
             let scan_end = tree.entries.len().min(visible_end + 200);
             // Compute max_depth over the full scan range (not just visible) to avoid OOB.
-            let max_depth = tree.entries[scroll..scan_end].iter()
-                .map(|e| e.depth).max().unwrap_or(0);
+            let max_depth = tree.entries[scroll..scan_end]
+                .iter()
+                .map(|e| e.depth)
+                .max()
+                .unwrap_or(0);
             let mut entry_is_last: Vec<bool> = vec![true; visible_end - scroll];
-            let mut entry_continuations: Vec<Vec<bool>> = vec![vec![false; max_depth + 1]; visible_end - scroll];
+            let mut entry_continuations: Vec<Vec<bool>> =
+                vec![vec![false; max_depth + 1]; visible_end - scroll];
             {
                 let mut depth_has_more = vec![false; max_depth + 2];
                 for j in (scroll..scan_end).rev() {
@@ -8854,15 +9469,30 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                             );
                         }
                     }
-                    let conn_x = info_indent + ((entry.depth - 1) as f32) * cell_w * 1.5 + cell_w * 0.5;
+                    let conn_x =
+                        info_indent + ((entry.depth - 1) as f32) * cell_w * 1.5 + cell_w * 0.5;
                     let is_last = entry_is_last[vi];
-                    let vert_h = if is_last { (cell_h * 0.5) as u32 } else { cell_h as u32 };
+                    let vert_h = if is_last {
+                        (cell_h * 0.5) as u32
+                    } else {
+                        cell_h as u32
+                    };
                     state.renderer.submit_separator(
-                        view, conn_x as u32, tree_y as u32, 1, vert_h, guide_line_color,
+                        view,
+                        conn_x as u32,
+                        tree_y as u32,
+                        1,
+                        vert_h,
+                        guide_line_color,
                     );
                     let horiz_len = (cell_w * 0.8) as u32;
                     state.renderer.submit_separator(
-                        view, conn_x as u32, (tree_y + cell_h * 0.5) as u32, horiz_len, 1, guide_line_color,
+                        view,
+                        conn_x as u32,
+                        (tree_y + cell_h * 0.5) as u32,
+                        horiz_len,
+                        1,
+                        guide_line_color,
                     );
                 }
 
@@ -8904,7 +9534,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 let label = format!("{}{}", prefix, entry.name);
                 let avail = ((sidebar_w - depth_indent - side_pad) / cell_w).max(1.0) as usize;
                 let display: String = label.chars().take(avail).collect();
-                state.renderer.render_text(view, &display, depth_indent, tree_y, fg, entry_bg);
+                state
+                    .renderer
+                    .render_text(view, &display, depth_indent, tree_y, fg, entry_bg);
                 tree_y += cell_h;
             }
 
@@ -8914,12 +9546,22 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                 let q = format!("find: {}\u{2588}", tree.find_query); // █ cursor
                 (q, [0.70, 0.80, 1.0, 1.0])
             } else if tree.focused {
-                ("j/k:nav  \u{21B5}:open  e:cd  f:find  v:edit  esc:close".to_string(), [0.40, 0.45, 0.55, 0.8])
+                (
+                    "j/k:nav  \u{21B5}:open  e:cd  f:find  v:edit  esc:close".to_string(),
+                    [0.40, 0.45, 0.55, 0.8],
+                )
             } else {
                 ("Cmd+Shift+E to focus".to_string(), [0.40, 0.45, 0.55, 0.8])
             };
             let hint_display: String = hint.chars().take(max_chars.saturating_sub(1)).collect();
-            state.renderer.render_text(view, &hint_display, info_indent, tree_y, hint_fg_col, tree_bg);
+            state.renderer.render_text(
+                view,
+                &hint_display,
+                info_indent,
+                tree_y,
+                hint_fg_col,
+                tree_bg,
+            );
 
             entry_y += tree_block_h + entry_gap;
         }
@@ -8927,7 +9569,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         // --- Subtle separator line between entries ---
         if i < num_workspaces - 1 {
             let sep_line_y = (entry_y - entry_gap / 2.0) as u32;
-            let sep_dim_color = [separator_color[0], separator_color[1], separator_color[2], 0.4];
+            let sep_dim_color = [
+                separator_color[0],
+                separator_color[1],
+                separator_color[2],
+                0.4,
+            ];
             if (sep_line_y as f32) + 1.0 < phys_h {
                 state.renderer.submit_separator(
                     view,
@@ -8958,7 +9605,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
     let new_ws_y = sep_y + 8.0 + 1.0; // 8px below separator
     if new_ws_y + cell_h <= phys_h {
         let new_ws_label = "+ New Workspace";
-        state.renderer.render_text(view, new_ws_label, side_pad, new_ws_y, dim_fg, sidebar_bg);
+        state
+            .renderer
+            .render_text(view, new_ws_label, side_pad, new_ws_y, dim_fg, sidebar_bg);
     }
 
     // --- Update available notice ---
@@ -8968,7 +9617,14 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             let update_fg = [1.0, 0.58, 0.16, 1.0]; // orange
             let update_label = format!("\u{F0176} v{ver} available", ver = ver);
             let update_display: String = update_label.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &update_display, side_pad, update_y, update_fg, sidebar_bg);
+            state.renderer.render_text(
+                view,
+                &update_display,
+                side_pad,
+                update_y,
+                update_fg,
+                sidebar_bg,
+            );
         }
     }
 
@@ -8984,8 +9640,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         title: String,
         state_label: &'static str,
         subagents: Vec<SubAgentEntry>, // all subagents with state
-        worktree_display: String,       // e.g. "jterm" (last component of worktree path)
-        branch: String,                 // git branch name
+        worktree_display: String,      // e.g. "jterm" (last component of worktree path)
+        branch: String,                // git branch name
     }
     let mut claude_entries: Vec<ClaudeEntry> = Vec::new();
     let done_color: [f32; 4] = [0.45, 0.75, 0.45, 1.0]; // green for "done"
@@ -9025,14 +9681,24 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         let state_label: &'static str = match agent.state {
             AgentState::Running => "running",
             AgentState::WaitingForPermission => {
-                if has_pending { "wait you" } else { "running" }
+                if has_pending {
+                    "wait you"
+                } else {
+                    "running"
+                }
             }
             AgentState::Idle | AgentState::Inactive => {
-                if has_pending { "wait you" } else { "done" }
+                if has_pending {
+                    "wait you"
+                } else {
+                    "done"
+                }
             }
         };
         // Collect ALL subagents with their state for display.
-        let subagents: Vec<SubAgentEntry> = agent.subagents.iter()
+        let subagents: Vec<SubAgentEntry> = agent
+            .subagents
+            .iter()
             .map(|s| SubAgentEntry {
                 title: s.title.clone(),
                 state_label: match s.state {
@@ -9048,7 +9714,9 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             .unwrap_or("")
             .to_string();
         // Use cached CWD from workspace info.
-        let ws_cwd = state.workspace_infos.get(wi)
+        let ws_cwd = state
+            .workspace_infos
+            .get(wi)
             .map(|inf| inf.cwd.clone())
             .unwrap_or_default();
         let worktree_display = if !ws_cwd.is_empty() {
@@ -9097,7 +9765,8 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
             header_h
         } else {
             let entries_h: f32 = claude_entries.iter().map(|e| compute_entry_h(e)).sum();
-            let daemon_h: f32 = state.daemon_sessions.len() as f32 * (daemon_entry_h + session_entry_gap);
+            let daemon_h: f32 =
+                state.daemon_sessions.len() as f32 * (daemon_entry_h + session_entry_gap);
             let gaps_h = (claude_entries.len().saturating_sub(1)) as f32 * session_entry_gap;
             header_h + entries_h + gaps_h + daemon_h
         };
@@ -9107,8 +9776,18 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
         if sessions_start_y >= min_start_y {
             // --- Gradient-like separator (double thin lines with gap) ---
             let sep_sess_y = sessions_start_y;
-            let sep_upper_color = [separator_color[0], separator_color[1], separator_color[2], 0.25];
-            let sep_lower_color = [separator_color[0], separator_color[1], separator_color[2], 0.5];
+            let sep_upper_color = [
+                separator_color[0],
+                separator_color[1],
+                separator_color[2],
+                0.25,
+            ];
+            let sep_lower_color = [
+                separator_color[0],
+                separator_color[1],
+                separator_color[2],
+                0.5,
+            ];
             state.renderer.submit_separator(
                 view,
                 (side_pad + dot_area * 0.5) as u32,
@@ -9128,13 +9807,36 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
 
             // --- Header: collapsible toggle + "Claudes" + count ---
             let header_y = sep_sess_y + sessions_sep_h;
-            let collapse_icon = if state.claudes_collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ or ▾
+            let collapse_icon = if state.claudes_collapsed {
+                "\u{25B8}"
+            } else {
+                "\u{25BE}"
+            }; // ▸ or ▾
             let header_icon_fg = agent_active_color;
-            state.renderer.render_text(view, collapse_icon, side_pad, header_y, header_icon_fg, sidebar_bg);
+            state.renderer.render_text(
+                view,
+                collapse_icon,
+                side_pad,
+                header_y,
+                header_icon_fg,
+                sidebar_bg,
+            );
             let total_count = claude_entries.len();
             let header_text = format!("Claudes ({})", total_count);
-            let header_fg = [active_fg[0] * 0.8, active_fg[1] * 0.8, active_fg[2] * 0.8, 0.9];
-            state.renderer.render_text(view, &header_text, side_pad + cell_w * 2.0, header_y, header_fg, sidebar_bg);
+            let header_fg = [
+                active_fg[0] * 0.8,
+                active_fg[1] * 0.8,
+                active_fg[2] * 0.8,
+                0.9,
+            ];
+            state.renderer.render_text(
+                view,
+                &header_text,
+                side_pad + cell_w * 2.0,
+                header_y,
+                header_fg,
+                sidebar_bg,
+            );
 
             // If collapsed, stop here — no Claude entries drawn.
             if !state.claudes_collapsed {
@@ -9153,13 +9855,23 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     let card_bg = if is_active_ws {
                         active_entry_bg
                     } else {
-                        [sidebar_bg[0] + 0.02, sidebar_bg[1] + 0.02, sidebar_bg[2] + 0.025, 1.0]
+                        [
+                            sidebar_bg[0] + 0.02,
+                            sidebar_bg[1] + 0.02,
+                            sidebar_bg[2] + 0.025,
+                            1.0,
+                        ]
                     };
                     let accent_w: u32 = 3;
                     let card_x: u32 = accent_w;
                     let card_w = (sidebar_w as u32).saturating_sub(accent_w);
                     state.renderer.submit_separator(
-                        view, card_x, sy as u32, card_w, entry_h as u32, card_bg,
+                        view,
+                        card_x,
+                        sy as u32,
+                        card_w,
+                        entry_h as u32,
+                        card_bg,
                     );
 
                     // --- Left accent bar ---
@@ -9170,7 +9882,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         [ws_col[0] * 0.5, ws_col[1] * 0.5, ws_col[2] * 0.5, 0.6]
                     };
                     state.renderer.submit_separator(
-                        view, 0, sy as u32, accent_w, entry_h as u32, accent_color,
+                        view,
+                        0,
+                        sy as u32,
+                        accent_w,
+                        entry_h as u32,
+                        accent_color,
                     );
 
                     let content_y = sy + session_pad_y;
@@ -9180,8 +9897,17 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     let mut dot_col = ws_col;
                     if entry.state_label == "running" && agent_indicator_style == "pulse" {
                         let elapsed = state.app_start_time.elapsed().as_secs_f32();
-                        let alpha = 0.5 + 0.5 * (2.0 * std::f32::consts::PI * elapsed / agent_pulse_speed.max(0.1)).sin();
-                        dot_col = [agent_active_color[0], agent_active_color[1], agent_active_color[2], alpha];
+                        let alpha = 0.5
+                            + 0.5
+                                * (2.0 * std::f32::consts::PI * elapsed
+                                    / agent_pulse_speed.max(0.1))
+                                .sin();
+                        dot_col = [
+                            agent_active_color[0],
+                            agent_active_color[1],
+                            agent_active_color[2],
+                            alpha,
+                        ];
                     } else if entry.state_label == "wait you" {
                         dot_col = agent_idle_color;
                     } else if entry.state_label == "done" {
@@ -9192,20 +9918,39 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     let sr = sd / 2.0;
                     let scx = side_pad + 2.0 + cell_w * 0.5;
                     let scy = content_y + cell_h * 0.5;
-                    state.renderer.submit_rounded_rects(view, &[RoundedRect {
-                        rect: [scx - sr, scy - sr, sd, sd],
-                        color: dot_col,
-                        border_color: [0.0; 4],
-                        params: [sr, 0.0, 0.0, 0.0],
-                    }]);
-                    let title_display: String = entry.title.chars().take(max_chars.saturating_sub(1)).collect();
+                    state.renderer.submit_rounded_rects(
+                        view,
+                        &[RoundedRect {
+                            rect: [scx - sr, scy - sr, sd, sd],
+                            color: dot_col,
+                            border_color: [0.0; 4],
+                            params: [sr, 0.0, 0.0, 0.0],
+                        }],
+                    );
+                    let title_display: String = entry
+                        .title
+                        .chars()
+                        .take(max_chars.saturating_sub(1))
+                        .collect();
                     // Brighter title color for better readability.
                     let title_fg = if is_active_ws {
                         active_fg
                     } else {
-                        [active_fg[0] * 0.85, active_fg[1] * 0.85, active_fg[2] * 0.85, 0.95]
+                        [
+                            active_fg[0] * 0.85,
+                            active_fg[1] * 0.85,
+                            active_fg[2] * 0.85,
+                            0.95,
+                        ]
                     };
-                    state.renderer.render_text(view, &title_display, text_left, content_y, title_fg, card_bg);
+                    state.renderer.render_text(
+                        view,
+                        &title_display,
+                        text_left,
+                        content_y,
+                        title_fg,
+                        card_bg,
+                    );
 
                     // --- Line 2: Status dot + (worktree, branch) ---
                     let line2_y = content_y + session_line_h + session_gap;
@@ -9217,17 +9962,26 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     };
                     // Build state icon + label.
                     let (state_icon, state_text) = match entry.state_label {
-                        "running" => ("\u{25B6}", "Run"),    // ▶ Run
-                        "wait you" => ("\u{23F3}", "Wait"),  // ⏳ Wait
-                        "done" => ("\u{2713}", "Done"),      // ✓ Done
+                        "running" => ("\u{25B6}", "Run"),     // ▶ Run
+                        "wait you" => ("\u{23F3}", "Wait"),   // ⏳ Wait
+                        "done" => ("\u{2713}", "Done"),       // ✓ Done
                         _ => ("\u{25CF}", entry.state_label), // ● fallback
                     };
                     let label_fg = state_color;
                     // Render state icon + state text.
                     let icon_x = info_indent;
-                    state.renderer.render_text(view, state_icon, icon_x, line2_y, label_fg, card_bg);
+                    state
+                        .renderer
+                        .render_text(view, state_icon, icon_x, line2_y, label_fg, card_bg);
                     let state_text_x = icon_x + cell_w * 2.0;
-                    state.renderer.render_text(view, state_text, state_text_x, line2_y, label_fg, card_bg);
+                    state.renderer.render_text(
+                        view,
+                        state_text,
+                        state_text_x,
+                        line2_y,
+                        label_fg,
+                        card_bg,
+                    );
                     // Build location string (worktree, branch) after state.
                     let location_info = if !entry.branch.is_empty() {
                         if !entry.worktree_display.is_empty() {
@@ -9243,8 +9997,18 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     if !location_info.is_empty() {
                         let loc_x = state_text_x + (state_text.len() as f32 + 1.0) * cell_w;
                         let loc_fg = [dim_fg[0], dim_fg[1], dim_fg[2], 0.8];
-                        let loc_display: String = location_info.chars().take(max_chars.saturating_sub(8)).collect();
-                        state.renderer.render_text(view, &loc_display, loc_x, line2_y, loc_fg, card_bg);
+                        let loc_display: String = location_info
+                            .chars()
+                            .take(max_chars.saturating_sub(8))
+                            .collect();
+                        state.renderer.render_text(
+                            view,
+                            &loc_display,
+                            loc_x,
+                            line2_y,
+                            loc_fg,
+                            card_bg,
+                        );
                     }
 
                     // --- Subagent lines (all subagents with state) ---
@@ -9254,7 +10018,11 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                     for (si, sub) in entry.subagents.iter().enumerate() {
                         let sub_y = line2_y + (si as f32 + 1.0) * (session_line_h + session_gap);
                         let is_running = sub.state_label == "Run";
-                        let sub_state_color = if is_running { sub_run_color } else { sub_done_color };
+                        let sub_state_color = if is_running {
+                            sub_run_color
+                        } else {
+                            sub_done_color
+                        };
                         let sub_icon = if is_running { "\u{25B6}" } else { "\u{2713}" }; // ▶ or ✓
                         let sub_title_fg = if is_running {
                             [0.82, 0.78, 0.95, 0.95] // bright for running
@@ -9263,14 +10031,46 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         };
                         // └ icon State Title
                         let tree_char = "\u{2514}";
-                        state.renderer.render_text(view, tree_char, sub_indent, sub_y, [dim_fg[0], dim_fg[1], dim_fg[2], 0.5], card_bg);
+                        state.renderer.render_text(
+                            view,
+                            tree_char,
+                            sub_indent,
+                            sub_y,
+                            [dim_fg[0], dim_fg[1], dim_fg[2], 0.5],
+                            card_bg,
+                        );
                         let icon_x = sub_indent + cell_w * 1.5;
-                        state.renderer.render_text(view, sub_icon, icon_x, sub_y, sub_state_color, card_bg);
+                        state.renderer.render_text(
+                            view,
+                            sub_icon,
+                            icon_x,
+                            sub_y,
+                            sub_state_color,
+                            card_bg,
+                        );
                         let state_x = icon_x + cell_w * 1.5;
-                        state.renderer.render_text(view, sub.state_label, state_x, sub_y, sub_state_color, card_bg);
+                        state.renderer.render_text(
+                            view,
+                            sub.state_label,
+                            state_x,
+                            sub_y,
+                            sub_state_color,
+                            card_bg,
+                        );
                         let title_x = state_x + (sub.state_label.len() as f32 + 1.0) * cell_w;
-                        let sub_display: String = sub.title.chars().take(max_chars.saturating_sub(10)).collect();
-                        state.renderer.render_text(view, &sub_display, title_x, sub_y, sub_title_fg, card_bg);
+                        let sub_display: String = sub
+                            .title
+                            .chars()
+                            .take(max_chars.saturating_sub(10))
+                            .collect();
+                        state.renderer.render_text(
+                            view,
+                            &sub_display,
+                            title_x,
+                            sub_y,
+                            sub_title_fg,
+                            card_bg,
+                        );
                     }
 
                     sy += entry_h + session_entry_gap;
@@ -9284,13 +10084,29 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         }
                         let ds_h = session_line_h + session_pad_y * 2.0;
                         // Simple card background.
-                        let card_bg = [sidebar_bg[0] + 0.015, sidebar_bg[1] + 0.015, sidebar_bg[2] + 0.02, 1.0];
+                        let card_bg = [
+                            sidebar_bg[0] + 0.015,
+                            sidebar_bg[1] + 0.015,
+                            sidebar_bg[2] + 0.02,
+                            1.0,
+                        ];
                         let accent_w: u32 = 3;
                         let card_x: u32 = accent_w;
                         let card_w = (sidebar_w as u32).saturating_sub(accent_w);
-                        state.renderer.submit_separator(view, card_x, sy as u32, card_w, ds_h as u32, card_bg);
                         state.renderer.submit_separator(
-                            view, 0, sy as u32, accent_w, ds_h as u32,
+                            view,
+                            card_x,
+                            sy as u32,
+                            card_w,
+                            ds_h as u32,
+                            card_bg,
+                        );
+                        state.renderer.submit_separator(
+                            view,
+                            0,
+                            sy as u32,
+                            accent_w,
+                            ds_h as u32,
                             [dim_fg[0], dim_fg[1], dim_fg[2], 0.4],
                         );
                         // Shell basename + PID + CWD short.
@@ -9311,7 +10127,12 @@ fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phys_h: f32) {
                         let label = format!("{}{} {}", shell_name, pid_str, cwd_short);
                         let label_display: String = label.chars().take(max_chars).collect();
                         state.renderer.render_text(
-                            view, &label_display, text_left, sy + session_pad_y, dim_fg, card_bg,
+                            view,
+                            &label_display,
+                            text_left,
+                            sy + session_pad_y,
+                            dim_fg,
+                            card_bg,
                         );
                         sy += ds_h + session_entry_gap;
                     }
@@ -9353,8 +10174,12 @@ fn build_status_context(state: &mut AppState) -> StatusContext {
                         if let Some(at_idx) = authority.find('@') {
                             let pu = &authority[..at_idx];
                             let ph = &authority[at_idx + 1..];
-                            if !pu.is_empty() { u = pu.to_string(); }
-                            if !ph.is_empty() { h = ph.to_string(); }
+                            if !pu.is_empty() {
+                                u = pu.to_string();
+                            }
+                            if !ph.is_empty() {
+                                h = ph.to_string();
+                            }
                             found = true;
                         } else {
                             h = authority.to_string();
@@ -9403,7 +10228,11 @@ fn build_status_context(state: &mut AppState) -> StatusContext {
     state.pane_git_cache.update_from_snapshot(&snap);
 
     let gc = &state.pane_git_cache;
-    let cwd = if !osc_cwd.is_empty() { osc_cwd } else { gc.cwd.clone() };
+    let cwd = if !osc_cwd.is_empty() {
+        osc_cwd
+    } else {
+        gc.cwd.clone()
+    };
     let cwd_short = if let Ok(home) = std::env::var("HOME") {
         if cwd.starts_with(&home) {
             format!("~{}", &cwd[home.len()..])
@@ -9512,12 +10341,7 @@ fn str_display_width(s: &str, cjk: bool) -> usize {
 }
 
 /// Render the bottom status bar.
-fn render_status_bar(
-    state: &mut AppState,
-    view: &wgpu::TextureView,
-    phys_w: f32,
-    phys_h: f32,
-) {
+fn render_status_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32, phys_h: f32) {
     let cfg = state.config.status_bar.clone();
     if !cfg.enabled {
         return;
@@ -9527,7 +10351,11 @@ fn render_status_bar(
 
     let cell_w = state.renderer.cell_size().width;
     let cell_h = state.renderer.cell_size().height;
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
     // Bar height: at least cell_h + padding.
     let bar_h = effective_status_bar_height(state);
     let bar_x = sidebar_w.floor();
@@ -9538,15 +10366,24 @@ fn render_status_bar(
     let status_bg = parse_hex_color(&cfg.background).unwrap_or([0.1, 0.1, 0.14, 1.0]);
     let bar_yi = bar_y as u32;
     let bar_hi = bar_h as u32;
-    state.renderer.submit_separator(view, bar_x as u32, bar_yi, bar_w as u32, bar_hi, status_bg);
+    state
+        .renderer
+        .submit_separator(view, bar_x as u32, bar_yi, bar_w as u32, bar_hi, status_bg);
 
     // Draw top border if enabled.
     if cfg.top_border {
-        let border_color = color_or(&cfg.top_border_color, [
-            (status_bg[0] + 0.08).min(1.0), (status_bg[1] + 0.08).min(1.0),
-            (status_bg[2] + 0.08).min(1.0), 1.0,
-        ]);
-        state.renderer.submit_separator(view, bar_x as u32, bar_yi, bar_w as u32, 1, border_color);
+        let border_color = color_or(
+            &cfg.top_border_color,
+            [
+                (status_bg[0] + 0.08).min(1.0),
+                (status_bg[1] + 0.08).min(1.0),
+                (status_bg[2] + 0.08).min(1.0),
+                1.0,
+            ],
+        );
+        state
+            .renderer
+            .submit_separator(view, bar_x as u32, bar_yi, bar_w as u32, 1, border_color);
     }
 
     // Optically center text within the bar.
@@ -9558,22 +10395,31 @@ fn render_status_bar(
     let text_y = (bar_y + (bar_h - cell_h) / 2.0 + optical_offset).floor();
 
     // Segment horizontal padding (each side).
-    let seg_pad = if cfg.padding_x > 0.0 { cfg.padding_x } else { cell_w };
+    let seg_pad = if cfg.padding_x > 0.0 {
+        cfg.padding_x
+    } else {
+        cell_w
+    };
 
     // --- Expand all segments and compute widths ---
     // Segment width = text width + padding on each side.
     let cjk = state.renderer.cjk_width;
-    let expand_segs = |segs: &[config::StatusSegment]| -> Vec<(String, [f32; 4], [f32; 4], f32, f32)> {
-        segs.iter().filter_map(|seg| {
-            let text = expand_status_variables(&seg.content, &ctx);
-            if segment_is_empty(&text) { return None; }
-            let fg = parse_hex_color(&seg.fg).unwrap_or([0.8, 0.8, 0.8, 1.0]);
-            let bg = parse_hex_color(&seg.bg).unwrap_or(status_bg);
-            let text_w = (str_display_width(&text, cjk) as f32 * cell_w).ceil();
-            let seg_w = text_w + seg_pad * 2.0;
-            Some((text, fg, bg, seg_w, text_w))
-        }).collect()
-    };
+    let expand_segs =
+        |segs: &[config::StatusSegment]| -> Vec<(String, [f32; 4], [f32; 4], f32, f32)> {
+            segs.iter()
+                .filter_map(|seg| {
+                    let text = expand_status_variables(&seg.content, &ctx);
+                    if segment_is_empty(&text) {
+                        return None;
+                    }
+                    let fg = parse_hex_color(&seg.fg).unwrap_or([0.8, 0.8, 0.8, 1.0]);
+                    let bg = parse_hex_color(&seg.bg).unwrap_or(status_bg);
+                    let text_w = (str_display_width(&text, cjk) as f32 * cell_w).ceil();
+                    let seg_w = text_w + seg_pad * 2.0;
+                    Some((text, fg, bg, seg_w, text_w))
+                })
+                .collect()
+        };
 
     let left_segs = expand_segs(&cfg.left);
     let right_segs = expand_segs(&cfg.right);
@@ -9582,12 +10428,25 @@ fn render_status_bar(
     // Text is horizontally centered within each segment.
     let text_yi = text_y as u32;
 
-    let render_seg = |state: &mut AppState, xi: u32, text: &str, fg: [f32; 4], bg: [f32; 4], seg_w: f32, text_w: f32| {
+    let render_seg = |state: &mut AppState,
+                      xi: u32,
+                      text: &str,
+                      fg: [f32; 4],
+                      bg: [f32; 4],
+                      seg_w: f32,
+                      text_w: f32| {
         let wi = seg_w as u32;
-        state.renderer.submit_separator(view, xi, bar_yi, wi, bar_hi, bg);
+        state
+            .renderer
+            .submit_separator(view, xi, bar_yi, wi, bar_hi, bg);
         let text_x = xi as f32 + ((seg_w - text_w) / 2.0).floor();
         state.renderer.render_text_clipped(
-            view, text, text_x, text_yi as f32, fg, bg,
+            view,
+            text,
+            text_x,
+            text_yi as f32,
+            fg,
+            bg,
             Some((xi, bar_yi, wi, bar_hi)),
         );
     };
@@ -9608,18 +10467,24 @@ fn render_status_bar(
 
 /// Render all panes with tab bar and sidebar.
 fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderError> {
-
     // Poll the background brew update check result.
     if state.update_checker.available_version.is_none() {
         if let Ok(guard) = state.update_check_result.lock() {
             if let Some(ref ver) = *guard {
                 let v = ver.clone();
                 drop(guard);
-                log::info!("update available via Homebrew: v{v} (current: {})", env!("CARGO_PKG_VERSION"));
+                log::info!(
+                    "update available via Homebrew: v{v} (current: {})",
+                    env!("CARGO_PKG_VERSION")
+                );
                 state.update_checker.available_version = Some(v.clone());
                 // Send a desktop notification about the update.
                 let title = "Termojinal Update Available";
-                let body = format!("v{} is available (current: v{}). Run: brew upgrade termojinal", v, env!("CARGO_PKG_VERSION"));
+                let body = format!(
+                    "v{} is available (current: v{}). Run: brew upgrade termojinal",
+                    v,
+                    env!("CARGO_PKG_VERSION")
+                );
                 notification::send_notification(title, &body, false);
             }
         }
@@ -9646,14 +10511,24 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
     {
         let mut term_bg = color_or(&state.config.theme.background, [0.067, 0.067, 0.09, 1.0]);
         term_bg[3] = state.config.window.opacity;
-        let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
-        let tab_h = if has_tab_bar { state.config.tab_bar.height } else { 0.0 };
+        let sidebar_w = if state.sidebar_visible {
+            state.sidebar_width
+        } else {
+            0.0
+        };
+        let tab_h = if has_tab_bar {
+            state.config.tab_bar.height
+        } else {
+            0.0
+        };
         let status_h = effective_status_bar_height(state);
         let content_x = sidebar_w as u32;
         let content_y = tab_h as u32;
         let content_w = (phys_w - sidebar_w).max(0.0) as u32;
         let content_h = (phys_h - tab_h - status_h).max(0.0) as u32;
-        state.renderer.submit_separator(&view, content_x, content_y, content_w, content_h, term_bg);
+        state
+            .renderer
+            .submit_separator(&view, content_x, content_y, content_w, content_h, term_bg);
     }
 
     // Render sidebar if visible (suppressed in Quick Terminal when configured).
@@ -9699,9 +10574,16 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
                 (rect.w as u32).max(1),
                 (rect.h as u32).max(1),
             );
-            state
-                .renderer
-                .render_pane(&pane.terminal, sel_bounds, viewport, *pid, preedit, &view, s_matches, s_current_idx)?;
+            state.renderer.render_pane(
+                &pane.terminal,
+                sel_bounds,
+                viewport,
+                *pid,
+                preedit,
+                &view,
+                s_matches,
+                s_current_idx,
+            )?;
         }
     }
 
@@ -9755,13 +10637,21 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
         let b = state.config.pane.focus_border_width;
         if let Some((_, r)) = pane_rects.iter().find(|(id, _)| *id == focused_id) {
             let (x, y, w, h) = (r.x as u32, r.y as u32, r.w as u32, r.h as u32);
-            state.renderer.submit_separator(&view, x, y, w, b, focus_color);
+            state
+                .renderer
+                .submit_separator(&view, x, y, w, b, focus_color);
             if h > b {
-                state.renderer.submit_separator(&view, x, y + h - b, w, b, focus_color);
+                state
+                    .renderer
+                    .submit_separator(&view, x, y + h - b, w, b, focus_color);
             }
-            state.renderer.submit_separator(&view, x, y, b, h, focus_color);
+            state
+                .renderer
+                .submit_separator(&view, x, y, b, h, focus_color);
             if w > b {
-                state.renderer.submit_separator(&view, x + w - b, y, b, h, focus_color);
+                state
+                    .renderer
+                    .submit_separator(&view, x + w - b, y, b, h, focus_color);
             }
         }
     }
@@ -9777,27 +10667,35 @@ fn render_frame(state: &mut AppState) -> Result<(), termojinal_render::RenderErr
                 DropZone::Right => (rect.x + rect.w * 0.5, rect.y, rect.w * 0.5, rect.h),
             };
             let inset = 4.0_f32;
-            state.renderer.submit_rounded_rects(&view, &[RoundedRect {
-                rect: [zx + inset, zy + inset, (zw - inset * 2.0).max(1.0), (zh - inset * 2.0).max(1.0)],
-                color: [0.2, 0.5, 1.0, 0.18],
-                border_color: [0.2, 0.5, 1.0, 0.4],
-                params: [8.0, 2.0, 0.0, 0.0], // corner_radius, border_width, no shadow
-            }]);
+            state.renderer.submit_rounded_rects(
+                &view,
+                &[RoundedRect {
+                    rect: [
+                        zx + inset,
+                        zy + inset,
+                        (zw - inset * 2.0).max(1.0),
+                        (zh - inset * 2.0).max(1.0),
+                    ],
+                    color: [0.2, 0.5, 1.0, 0.18],
+                    border_color: [0.2, 0.5, 1.0, 0.4],
+                    params: [8.0, 2.0, 0.0, 0.0], // corner_radius, border_width, no shadow
+                }],
+            );
         }
     }
 
     // Update IME cursor position for the focused pane.
     if let Some((_, rect)) = pane_rects.iter().find(|(id, _)| *id == focused_id) {
-        if let Some(fp) = state.workspaces[ws_idx].tabs[tab_idx].panes.get(&focused_id) {
+        if let Some(fp) = state.workspaces[ws_idx].tabs[tab_idx]
+            .panes
+            .get(&focused_id)
+        {
             let cell_size = state.renderer.cell_size();
             let x = rect.x + (fp.terminal.cursor_col as f32 * cell_size.width);
             let y = rect.y + (fp.terminal.cursor_row as f32 * cell_size.height);
             state.window.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new(x as f64, y as f64),
-                winit::dpi::PhysicalSize::new(
-                    cell_size.width as f64,
-                    cell_size.height as f64,
-                ),
+                winit::dpi::PhysicalSize::new(cell_size.width as f64, cell_size.height as f64),
             );
         }
     }
@@ -9871,7 +10769,11 @@ fn render_search_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32
     let cell_size = state.renderer.cell_size();
     let cell_w = cell_size.width;
     let cell_h = cell_size.height;
-    let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
 
     let bar_x = sidebar_w;
     let bar_y: f32 = 0.0;
@@ -9892,11 +10794,22 @@ fn render_search_bar(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32
     // Input text from config.
     let input_fg = color_or(&state.config.search.input_fg, [0.95, 0.95, 0.95, 1.0]);
     let match_count = search.matches.len();
-    let current = if match_count > 0 { search.current + 1 } else { 0 };
+    let current = if match_count > 0 {
+        search.current + 1
+    } else {
+        0
+    };
     let prompt = format!("Find: {}  ({current}/{match_count})", search.query);
     let max_chars = ((bar_w - 2.0 * cell_w) / cell_w) as usize;
     let display: String = prompt.chars().take(max_chars).collect();
-    state.renderer.render_text(view, &display, bar_x + cell_w, bar_y + 2.0, input_fg, bar_bg);
+    state.renderer.render_text(
+        view,
+        &display,
+        bar_x + cell_w,
+        bar_y + 2.0,
+        input_fg,
+        bar_bg,
+    );
 
     // Bottom border from config.
     let border_color = color_or(&state.config.search.border_color, [0.3, 0.3, 0.4, 1.0]);
@@ -9943,10 +10856,14 @@ fn render_allow_flow_pane_hint(
     let accent = color_or(&ui.hint_bar_accent, [0.96, 0.62, 0.04, 1.0]);
     let hint_fg = color_or(&ui.hint_bar_fg, [0.10, 0.10, 0.14, 1.0]);
 
-    state.renderer.submit_separator(view, bar_x, bar_y, bar_w, bar_h as u32, bar_bg);
+    state
+        .renderer
+        .submit_separator(view, bar_x, bar_y, bar_w, bar_h as u32, bar_bg);
 
     // Top accent line.
-    state.renderer.submit_separator(view, bar_x, bar_y, bar_w, 1, accent);
+    state
+        .renderer
+        .submit_separator(view, bar_x, bar_y, bar_w, 1, accent);
 
     // Text: lightning bolt + short message + key hints.
     let text_x = bar_x as f32 + cell_w;
@@ -9954,7 +10871,9 @@ fn render_allow_flow_pane_hint(
     let max_chars = ((bar_w as f32 - 2.0 * cell_w) / cell_w).max(1.0) as usize;
     let msg = "\u{26A1} AI permission needed \u{2014} y/n one \u{00B7} Y/N all \u{00B7} A always";
     let display: String = msg.chars().take(max_chars).collect();
-    state.renderer.render_text(view, &display, text_x, text_y, hint_fg, bar_bg);
+    state
+        .renderer
+        .render_text(view, &display, text_x, text_y, hint_fg, bar_bg);
 }
 
 /// Render the command palette as an overlay on top of the terminal.
@@ -9977,14 +10896,9 @@ fn render_command_palette(
     let pc = &state.config.palette;
     // 1. Semi-transparent dark overlay covering the entire window.
     let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
-    state.renderer.submit_separator(
-        view,
-        0,
-        0,
-        phys_w as u32,
-        phys_h as u32,
-        overlay_color,
-    );
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // 2. Centered floating box.
     let box_w = (phys_w * pc.width_ratio).min(phys_w - 40.0).max(200.0);
@@ -10004,7 +10918,9 @@ fn render_command_palette(
     let box_bg = color_or(&pc.bg, [0.12, 0.12, 0.16, 0.95]);
     let default_border = color_or(&pc.border_color, [0.3, 0.3, 0.4, 1.0]);
     // Error flash: orange border for 400ms after invalid e/v action.
-    let error_flash_active = state.command_palette.error_flash
+    let error_flash_active = state
+        .command_palette
+        .error_flash
         .map(|t| t.elapsed().as_millis() < 400)
         .unwrap_or(false);
     let border_color = if error_flash_active {
@@ -10017,7 +10933,11 @@ fn render_command_palette(
         default_border
     };
     let corner_radius = pc.corner_radius;
-    let border_width = if error_flash_active { pc.border_width.max(2.0) } else { pc.border_width };
+    let border_width = if error_flash_active {
+        pc.border_width.max(2.0)
+    } else {
+        pc.border_width
+    };
     let shadow_radius = pc.shadow_radius;
     let shadow_opacity = pc.shadow_opacity;
 
@@ -10044,7 +10964,9 @@ fn render_command_palette(
         PaletteMode::FileFinder => {
             // Show abbreviated CWD + input.
             let root = &state.command_palette.file_finder.search_root;
-            let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let home = dirs::home_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
             let display_root = if !home.is_empty() && root.starts_with(&home) {
                 format!("~{}/", &root[home.len()..])
             } else {
@@ -10053,12 +10975,17 @@ fn render_command_palette(
             if preedit.is_empty() {
                 format!("{}{}", display_root, state.command_palette.input)
             } else {
-                format!("{}{}[{}]", display_root, state.command_palette.input, preedit)
+                format!(
+                    "{}{}[{}]",
+                    display_root, state.command_palette.input, preedit
+                )
             }
         }
     };
     let palette_input_fg = color_or(&pc.input_fg, [0.95, 0.95, 0.95, 1.0]);
-    state.renderer.render_text(view, &prompt, input_x, input_y, palette_input_fg, box_bg);
+    state
+        .renderer
+        .render_text(view, &prompt, input_x, input_y, palette_input_fg, box_bg);
 
     // Draw a separator line below the input.
     let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
@@ -10095,7 +11022,9 @@ fn render_command_palette(
             {
                 let row = vi - scroll_offset;
                 let item_y = list_start_y + (row as f32) * cell_h;
-                if item_y + cell_h > box_y + box_h { break; }
+                if item_y + cell_h > box_y + box_h {
+                    break;
+                }
 
                 let is_selected = vi == state.command_palette.selected;
                 let bg = if is_selected { selected_bg } else { box_bg };
@@ -10116,23 +11045,53 @@ fn render_command_palette(
                     CommandKind::Plugin => ("[ext] ", [0.7, 0.55, 0.2, 1.0]),
                     CommandKind::PluginVerified => ("[ok] ", [0.4, 0.8, 0.4, 1.0]),
                 };
-                let badge_w = if badge.is_empty() { 0.0 } else { badge.chars().count() as f32 * cell_w };
+                let badge_w = if badge.is_empty() {
+                    0.0
+                } else {
+                    badge.chars().count() as f32 * cell_w
+                };
                 if !badge.is_empty() {
-                    state.renderer.render_text(view, badge, input_x, item_y, badge_fg, bg);
+                    state
+                        .renderer
+                        .render_text(view, badge, input_x, item_y, badge_fg, bg);
                 }
-                let name_display: String = cmd.name.chars().take(max_chars.saturating_sub(badge.chars().count())).collect();
-                let fg = if is_selected { palette_input_fg } else { cmd_fg };
-                state.renderer.render_text(view, &name_display, input_x + badge_w, item_y, fg, bg);
+                let name_display: String = cmd
+                    .name
+                    .chars()
+                    .take(max_chars.saturating_sub(badge.chars().count()))
+                    .collect();
+                let fg = if is_selected {
+                    palette_input_fg
+                } else {
+                    cmd_fg
+                };
+                state
+                    .renderer
+                    .render_text(view, &name_display, input_x + badge_w, item_y, fg, bg);
                 let desc_offset = badge_w + name_display.len() as f32 * cell_w + 2.0 * cell_w;
                 if desc_offset < box_w - 2.0 * cell_w {
                     let remaining = max_chars.saturating_sub(name_display.len() + 2);
                     let desc_display: String = cmd.description.chars().take(remaining).collect();
-                    state.renderer.render_text(view, &desc_display, input_x + desc_offset, item_y, desc_fg, bg);
+                    state.renderer.render_text(
+                        view,
+                        &desc_display,
+                        input_x + desc_offset,
+                        item_y,
+                        desc_fg,
+                        bg,
+                    );
                 }
             }
             if state.command_palette.filtered.is_empty() {
                 let empty_fg = [0.5, 0.5, 0.55, 1.0];
-                state.renderer.render_text(view, "No matching commands", input_x, list_start_y, empty_fg, box_bg);
+                state.renderer.render_text(
+                    view,
+                    "No matching commands",
+                    input_x,
+                    list_start_y,
+                    empty_fg,
+                    box_bg,
+                );
             }
         }
         PaletteMode::FileFinder => {
@@ -10142,10 +11101,18 @@ fn render_command_palette(
             let scroll_offset = ff.scroll_offset;
             let dir_icon_fg = [0.55, 0.75, 0.95, 1.0]; // blue-ish for directories
 
-            for (vi, &entry_idx) in ff.filtered.iter().enumerate().skip(scroll_offset).take(max_visible_items) {
+            for (vi, &entry_idx) in ff
+                .filtered
+                .iter()
+                .enumerate()
+                .skip(scroll_offset)
+                .take(max_visible_items)
+            {
                 let row = vi - scroll_offset;
                 let item_y = list_start_y + (row as f32) * cell_h;
-                if item_y + cell_h > box_y + box_h { break; }
+                if item_y + cell_h > box_y + box_h {
+                    break;
+                }
 
                 let is_selected = vi == ff.selected;
                 let bg = if is_selected { selected_bg } else { box_bg };
@@ -10166,30 +11133,43 @@ fn render_command_palette(
                 } else {
                     (file_icon(&entry.name), file_extension_color(&entry.name))
                 };
-                state.renderer.render_text(view, icon, input_x, item_y, icon_fg, bg);
+                state
+                    .renderer
+                    .render_text(view, icon, input_x, item_y, icon_fg, bg);
 
-                let name_display: String = entry.name.chars().take(max_chars.saturating_sub(3)).collect();
+                let name_display: String = entry
+                    .name
+                    .chars()
+                    .take(max_chars.saturating_sub(3))
+                    .collect();
                 let name_suffix = if entry.is_dir { "/" } else { "" };
                 let display = format!("{}{}", name_display, name_suffix);
-                let fg = if is_selected { palette_input_fg } else { cmd_fg };
-                state.renderer.render_text(view, &display, input_x + cell_w * 3.0, item_y, fg, bg);
+                let fg = if is_selected {
+                    palette_input_fg
+                } else {
+                    cmd_fg
+                };
+                state
+                    .renderer
+                    .render_text(view, &display, input_x + cell_w * 3.0, item_y, fg, bg);
             }
             if ff.filtered.is_empty() {
                 let empty_fg = [0.5, 0.5, 0.55, 1.0];
-                state.renderer.render_text(view, "No matching files", input_x, list_start_y, empty_fg, box_bg);
+                state.renderer.render_text(
+                    view,
+                    "No matching files",
+                    input_x,
+                    list_start_y,
+                    empty_fg,
+                    box_bg,
+                );
             }
         }
     }
 }
 
-
 /// Render the Quick Launch overlay (fuzzy search for tabs/panes/workspaces).
-fn render_quick_launch(
-    state: &mut AppState,
-    view: &wgpu::TextureView,
-    phys_w: f32,
-    phys_h: f32,
-) {
+fn render_quick_launch(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32, phys_h: f32) {
     let cell_size = state.renderer.cell_size();
     let cell_w = cell_size.width;
     let cell_h = cell_size.height;
@@ -10198,7 +11178,9 @@ fn render_quick_launch(
 
     // 1. Semi-transparent overlay.
     let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
-    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // 2. Centered floating box.
     let max_visible_items: usize = 12;
@@ -10233,7 +11215,14 @@ fn render_quick_launch(
 
     let prompt = format!("\u{F002} {}", state.quick_launch.input); // magnifying glass icon
     let prompt_display: String = prompt.chars().take(max_chars).collect();
-    state.renderer.render_text(view, &prompt_display, input_x, input_y, palette_input_fg, box_bg);
+    state.renderer.render_text(
+        view,
+        &prompt_display,
+        input_x,
+        input_y,
+        palette_input_fg,
+        box_bg,
+    );
 
     // Separator line.
     let sep_y = input_y + cell_h + 2.0;
@@ -10258,10 +11247,18 @@ fn render_quick_launch(
     let scroll_offset = ql.scroll_offset;
     let row_h = cell_h * 1.5; // extra space for detail line
 
-    for (vi, &entry_idx) in ql.filtered.iter().enumerate().skip(scroll_offset).take(max_visible_items) {
+    for (vi, &entry_idx) in ql
+        .filtered
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(max_visible_items)
+    {
         let row = vi - scroll_offset;
         let item_y = list_start_y + (row as f32) * row_h;
-        if item_y + row_h > box_y + box_h { break; }
+        if item_y + row_h > box_y + box_h {
+            break;
+        }
 
         let is_selected = vi == ql.selected;
         let bg = if is_selected { selected_bg } else { box_bg };
@@ -10283,27 +11280,59 @@ fn render_quick_launch(
             QuickLaunchKind::Tab => ("\u{F03E2} ", [0.75, 0.70, 0.95, 1.0]),       // tab icon
             QuickLaunchKind::Pane => ("\u{F0668} ", [0.65, 0.85, 0.70, 1.0]),      // pane icon
         };
-        state.renderer.render_text(view, kind_icon, input_x, item_y, kind_fg, bg);
+        state
+            .renderer
+            .render_text(view, kind_icon, input_x, item_y, kind_fg, bg);
 
-        let label_display: String = entry.label.chars().take(max_chars.saturating_sub(3)).collect();
-        let fg = if is_selected { palette_input_fg } else { cmd_fg };
-        state.renderer.render_text(view, &label_display, input_x + cell_w * 3.0, item_y, fg, bg);
+        let label_display: String = entry
+            .label
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect();
+        let fg = if is_selected {
+            palette_input_fg
+        } else {
+            cmd_fg
+        };
+        state
+            .renderer
+            .render_text(view, &label_display, input_x + cell_w * 3.0, item_y, fg, bg);
 
         // Detail line (smaller, dimmed).
-        let detail_display: String = entry.detail.chars().take(max_chars.saturating_sub(4)).collect();
-        state.renderer.render_text(view, &detail_display, input_x + cell_w * 3.0, item_y + cell_h * 0.85, desc_fg, bg);
+        let detail_display: String = entry
+            .detail
+            .chars()
+            .take(max_chars.saturating_sub(4))
+            .collect();
+        state.renderer.render_text(
+            view,
+            &detail_display,
+            input_x + cell_w * 3.0,
+            item_y + cell_h * 0.85,
+            desc_fg,
+            bg,
+        );
     }
 
     if ql.filtered.is_empty() {
         let empty_fg = [0.5, 0.5, 0.55, 1.0];
-        state.renderer.render_text(view, "No matching items", input_x, list_start_y, empty_fg, box_bg);
+        state.renderer.render_text(
+            view,
+            "No matching items",
+            input_x,
+            list_start_y,
+            empty_fg,
+            box_bg,
+        );
     }
 
     // Hint at bottom.
     let hint = "\u{21B5} Jump  \u{2191}\u{2193} Navigate  esc Close";
     let hint_y = box_y + box_h - cell_h * 0.8;
     let hint_fg = [0.4, 0.4, 0.5, 0.7];
-    state.renderer.render_text(view, hint, input_x, hint_y, hint_fg, box_bg);
+    state
+        .renderer
+        .render_text(view, hint, input_x, hint_y, hint_fg, box_bg);
 }
 
 /// Render the command execution UI as an overlay (replaces normal palette content).
@@ -10321,7 +11350,9 @@ fn render_command_execution(
 
     // 1. Semi-transparent dark overlay covering the entire window.
     let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
-    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // Borrow the execution state to compute box dimensions.
     let Some(exec) = state.command_execution.as_ref() else {
@@ -10384,7 +11415,9 @@ fn render_command_execution(
         CommandUIState::Loading => {
             let msg = format!("Running {}...", exec.command_name);
             let display: String = msg.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
         }
 
         CommandUIState::Fuzzy { prompt } | CommandUIState::Multi { prompt } => {
@@ -10394,22 +11427,35 @@ fn render_command_execution(
             let filtered: Vec<usize> = exec.filtered_items.clone();
             let selected_idx = exec.selected;
             let selected_set_snapshot: std::collections::HashSet<usize> = exec.selected_set.clone();
-            let items_snapshot: Vec<_> = exec.items.iter().map(|item| {
-                (
-                    item.label.clone(),
-                    item.value.clone(),
-                    item.description.clone(),
-                )
-            }).collect();
+            let items_snapshot: Vec<_> = exec
+                .items
+                .iter()
+                .map(|item| {
+                    (
+                        item.label.clone(),
+                        item.value.clone(),
+                        item.description.clone(),
+                    )
+                })
+                .collect();
 
             // Prompt and input at the top.
             let prompt_display = format!("{}: {}", prompt_str, input_str);
             let display: String = prompt_display.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
 
             // Separator below prompt.
             let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
-            state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, palette_sep_color);
+            state.renderer.submit_separator(
+                view,
+                box_x as u32 + 1,
+                sep_y,
+                box_w as u32 - 2,
+                1,
+                palette_sep_color,
+            );
 
             // Item list.
             let list_start_y = sep_y as f32 + cell_h * 0.25;
@@ -10437,7 +11483,11 @@ fn render_command_execution(
 
                 // Multi-select: show check mark for toggled items.
                 let prefix = if is_multi {
-                    if selected_set_snapshot.contains(&item_idx) { "[x] " } else { "[ ] " }
+                    if selected_set_snapshot.contains(&item_idx) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    }
                 } else {
                     ""
                 };
@@ -10446,8 +11496,14 @@ fn render_command_execution(
                     .chars()
                     .take(max_chars)
                     .collect();
-                let fg = if is_selected { palette_input_fg } else { cmd_fg };
-                state.renderer.render_text(view, &name_display, input_x, item_y, fg, bg);
+                let fg = if is_selected {
+                    palette_input_fg
+                } else {
+                    cmd_fg
+                };
+                state
+                    .renderer
+                    .render_text(view, &name_display, input_x, item_y, fg, bg);
 
                 // Description after the name.
                 if let Some(ref desc) = desc_opt {
@@ -10455,7 +11511,14 @@ fn render_command_execution(
                     if desc_offset < box_w - 2.0 * cell_w {
                         let remaining = max_chars.saturating_sub(name_display.len() + 2);
                         let desc_display: String = desc.chars().take(remaining).collect();
-                        state.renderer.render_text(view, &desc_display, input_x + desc_offset, item_y, desc_fg, bg);
+                        state.renderer.render_text(
+                            view,
+                            &desc_display,
+                            input_x + desc_offset,
+                            item_y,
+                            desc_fg,
+                            bg,
+                        );
                     }
                 }
             }
@@ -10465,7 +11528,9 @@ fn render_command_execution(
                 let no_match = "No matching items";
                 let empty_fg = [0.5, 0.5, 0.55, 1.0];
                 let list_start_y = (input_y + cell_h + cell_h * 0.25) as f32 + cell_h * 0.25;
-                state.renderer.render_text(view, no_match, input_x, list_start_y, empty_fg, box_bg);
+                state
+                    .renderer
+                    .render_text(view, no_match, input_x, list_start_y, empty_fg, box_bg);
             }
         }
 
@@ -10473,10 +11538,19 @@ fn render_command_execution(
             let message_str = message.clone();
             let default_val = *default;
             let display: String = message_str.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
 
             let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
-            state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, palette_sep_color);
+            state.renderer.submit_separator(
+                view,
+                box_x as u32 + 1,
+                sep_y,
+                box_w as u32 - 2,
+                1,
+                palette_sep_color,
+            );
 
             let hint = if default_val {
                 "Press Enter for Yes, or N for No"
@@ -10484,7 +11558,9 @@ fn render_command_execution(
                 "Press Y for Yes, or Enter for No"
             };
             let hint_y = sep_y as f32 + cell_h * 0.25;
-            state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
         }
 
         CommandUIState::Text { label, placeholder } => {
@@ -10492,18 +11568,41 @@ fn render_command_execution(
             let placeholder_str = placeholder.clone();
             let input_str = exec.input.clone();
             let label_display: String = format!("{}:", label_str).chars().take(max_chars).collect();
-            state.renderer.render_text(view, &label_display, input_x, input_y, palette_input_fg, box_bg);
+            state.renderer.render_text(
+                view,
+                &label_display,
+                input_x,
+                input_y,
+                palette_input_fg,
+                box_bg,
+            );
 
             let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
-            state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, palette_sep_color);
+            state.renderer.submit_separator(
+                view,
+                box_x as u32 + 1,
+                sep_y,
+                box_w as u32 - 2,
+                1,
+                palette_sep_color,
+            );
 
             let text_y = sep_y as f32 + cell_h * 0.25;
             if input_str.is_empty() && !placeholder_str.is_empty() {
                 let ph_display: String = placeholder_str.chars().take(max_chars).collect();
-                state.renderer.render_text(view, &ph_display, input_x, text_y, desc_fg, box_bg);
+                state
+                    .renderer
+                    .render_text(view, &ph_display, input_x, text_y, desc_fg, box_bg);
             } else {
                 let input_display: String = input_str.chars().take(max_chars).collect();
-                state.renderer.render_text(view, &input_display, input_x, text_y, palette_input_fg, box_bg);
+                state.renderer.render_text(
+                    view,
+                    &input_display,
+                    input_x,
+                    text_y,
+                    palette_input_fg,
+                    box_bg,
+                );
             }
         }
 
@@ -10513,11 +11612,14 @@ fn render_command_execution(
             let tick = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() / 200)
-                .unwrap_or(0) % 4) as usize;
+                .unwrap_or(0)
+                % 4) as usize;
             let spinner = spinner_chars[tick];
             let msg = format!("{} {}", spinner, info_msg);
             let display: String = msg.chars().take(max_chars).collect();
-            state.renderer.render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &display, input_x, input_y, palette_input_fg, box_bg);
         }
 
         CommandUIState::Done(notify) => {
@@ -10529,22 +11631,30 @@ fn render_command_execution(
             };
             let display: String = msg.chars().take(max_chars).collect();
             let done_fg = [0.55, 0.82, 0.33, 1.0]; // green
-            state.renderer.render_text(view, &display, input_x, input_y, done_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &display, input_x, input_y, done_fg, box_bg);
 
             let hint = "Press any key to dismiss";
             let hint_y = input_y + cell_h;
-            state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
         }
 
         CommandUIState::Error(message) => {
             let msg = format!("Error: {}", message);
             let display: String = msg.chars().take(max_chars).collect();
             let error_fg = [1.0, 0.42, 0.42, 1.0]; // red
-            state.renderer.render_text(view, &display, input_x, input_y, error_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &display, input_x, input_y, error_fg, box_bg);
 
             let hint = "Press Esc to dismiss";
             let hint_y = input_y + cell_h;
-            state.renderer.render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, hint, input_x, hint_y, desc_fg, box_bg);
         }
     }
 }
@@ -10569,8 +11679,12 @@ fn load_about_text() -> String {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
 
     let search_paths = [
-        exe_dir.as_ref().map(|d| d.join("../Resources/THIRD_PARTY_LICENSES.md")),
-        exe_dir.as_ref().map(|d| d.join("../../THIRD_PARTY_LICENSES.md")),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("../Resources/THIRD_PARTY_LICENSES.md")),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("../../THIRD_PARTY_LICENSES.md")),
         Some(std::path::PathBuf::from("THIRD_PARTY_LICENSES.md")),
     ];
 
@@ -10613,8 +11727,14 @@ fn render_command_timeline(
         .panes
         .get(&focused_id)
         .map(|p| {
-            p.terminal.command_history().iter().enumerate().rev()
-                .filter(|(_, cmd)| filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter))
+            p.terminal
+                .command_history()
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, cmd)| {
+                    filter.is_empty() || cmd.command_text.to_lowercase().contains(&filter)
+                })
                 .map(|(_, cmd)| TimelineEntry {
                     command_text: cmd.command_text.clone(),
                     timestamp: cmd.timestamp,
@@ -10628,7 +11748,9 @@ fn render_command_timeline(
 
     // 1. Semi-transparent overlay.
     let overlay_color = [0.0, 0.0, 0.0, 0.5];
-    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // 2. Centered floating box.
     let box_w = (phys_w * 0.6).min(phys_w - 40.0).max(300.0);
@@ -10655,12 +11777,21 @@ fn render_command_timeline(
     let input_x = box_x + cell_w;
     let prompt = format!("> {}", state.timeline_input);
     let input_fg = [0.95, 0.95, 0.95, 1.0];
-    state.renderer.render_text(view, &prompt, input_x, input_y, input_fg, box_bg);
+    state
+        .renderer
+        .render_text(view, &prompt, input_x, input_y, input_fg, box_bg);
 
     // Separator.
     let sep_y = (input_y + cell_h + cell_h * 0.25) as u32;
     let sep_color = [0.25, 0.25, 0.3, 1.0];
-    state.renderer.submit_separator(view, box_x as u32 + 1, sep_y, box_w as u32 - 2, 1, sep_color);
+    state.renderer.submit_separator(
+        view,
+        box_x as u32 + 1,
+        sep_y,
+        box_w as u32 - 2,
+        1,
+        sep_color,
+    );
 
     // 4. Command list.
     let list_start_y = sep_y as f32 + cell_h * 0.25;
@@ -10690,9 +11821,12 @@ fn render_command_timeline(
             "No matching commands"
         };
         let msg_y = list_start_y + cell_h * 0.5;
-        state.renderer.render_text(view, msg, input_x, msg_y, time_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, msg, input_x, msg_y, time_fg, box_bg);
     } else {
-        for (vi, entry) in entries.iter()
+        for (vi, entry) in entries
+            .iter()
             .enumerate()
             .skip(state.timeline_scroll_offset)
             .take(max_visible)
@@ -10725,23 +11859,32 @@ fn render_command_timeline(
                 Some(code) => format!("E{code}"),
                 None => "..".to_string(),
             };
-            let duration_str = cmd.duration_ms
+            let duration_str = cmd
+                .duration_ms
                 .map(|ms| {
-                    if ms < 1000 { format!("{ms}ms") }
-                    else if ms < 60_000 { format!("{:.1}s", ms as f64 / 1000.0) }
-                    else { format!("{:.0}m", ms as f64 / 60_000.0) }
+                    if ms < 1000 {
+                        format!("{ms}ms")
+                    } else if ms < 60_000 {
+                        format!("{:.1}s", ms as f64 / 1000.0)
+                    } else {
+                        format!("{:.0}m", ms as f64 / 60_000.0)
+                    }
                 })
                 .unwrap_or_default();
 
             // Time
             let time_x = box_x + cell_w * 0.5;
-            state.renderer.render_text(view, &time_str, time_x, item_y, time_fg, bg);
+            state
+                .renderer
+                .render_text(view, &time_str, time_x, item_y, time_fg, bg);
 
             // Command text (truncated)
             let cmd_x = time_x + cell_w * 10.0;
             let max_cmd_chars = max_chars.saturating_sub(18);
             let cmd_display: String = cmd.command_text.chars().take(max_cmd_chars).collect();
-            state.renderer.render_text(view, &cmd_display, cmd_x, item_y, cmd_fg, bg);
+            state
+                .renderer
+                .render_text(view, &cmd_display, cmd_x, item_y, cmd_fg, bg);
 
             // Exit code indicator (right-aligned)
             let exit_fg = match cmd.exit_code {
@@ -10750,12 +11893,16 @@ fn render_command_timeline(
                 None => time_fg,
             };
             let exit_x = box_x + box_w - cell_w * 8.0;
-            state.renderer.render_text(view, &exit_indicator, exit_x, item_y, exit_fg, bg);
+            state
+                .renderer
+                .render_text(view, &exit_indicator, exit_x, item_y, exit_fg, bg);
 
             // Duration (right-aligned)
             if !duration_str.is_empty() {
                 let dur_x = box_x + box_w - cell_w * 4.0;
-                state.renderer.render_text(view, &duration_str, dur_x, item_y, time_fg, bg);
+                state
+                    .renderer
+                    .render_text(view, &duration_str, dur_x, item_y, time_fg, bg);
             }
         }
     }
@@ -10763,7 +11910,9 @@ fn render_command_timeline(
     // 5. Footer with keyboard shortcuts.
     let footer_y = box_y + box_h - cell_h * 0.75;
     let footer_text = "Up/Down navigate  Enter jump  Esc close  Cmd+R rerun";
-    state.renderer.render_text(view, footer_text, input_x, footer_y, time_fg, box_bg);
+    state
+        .renderer
+        .render_text(view, footer_text, input_x, footer_y, time_fg, box_bg);
 }
 
 /// Render a close confirmation dialog overlay.
@@ -10779,7 +11928,9 @@ fn render_close_confirm_dialog(
 
     // Dark overlay behind the dialog.
     let overlay_color = [0.0, 0.0, 0.0, 0.55];
-    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // Dialog box dimensions.
     let dialog_w = (cell_w * 38.0).min(phys_w * 0.8);
@@ -10790,12 +11941,15 @@ fn render_close_confirm_dialog(
     // Dialog background.
     let bg = [0.12, 0.12, 0.16, 0.97];
     let border_color = [0.35, 0.35, 0.50, 0.9];
-    state.renderer.submit_rounded_rects(view, &[RoundedRect {
-        rect: [dialog_x, dialog_y, dialog_w, dialog_h],
-        color: bg,
-        border_color,
-        params: [8.0, 1.0, 0.0, 0.0],
-    }]);
+    state.renderer.submit_rounded_rects(
+        view,
+        &[RoundedRect {
+            rect: [dialog_x, dialog_y, dialog_w, dialog_h],
+            color: bg,
+            border_color,
+            params: [8.0, 1.0, 0.0, 0.0],
+        }],
+    );
 
     let text_x = dialog_x + cell_w * 1.5;
     let text_fg = [0.92, 0.92, 0.96, 1.0];
@@ -10805,24 +11959,30 @@ fn render_close_confirm_dialog(
     // Warning icon + message.
     let line1_y = dialog_y + cell_h * 1.0;
     let msg = format!("\"{}\" is running in this pane.", proc_name);
-    state.renderer.render_text(view, &msg, text_x, line1_y, warn_fg, bg);
+    state
+        .renderer
+        .render_text(view, &msg, text_x, line1_y, warn_fg, bg);
 
     // Question.
     let line2_y = line1_y + cell_h * 1.2;
-    state.renderer.render_text(view, "Close anyway?", text_x, line2_y, text_fg, bg);
+    state
+        .renderer
+        .render_text(view, "Close anyway?", text_x, line2_y, text_fg, bg);
 
     // Key hints.
     let line3_y = line2_y + cell_h * 1.4;
-    state.renderer.render_text(view, "Y = Close    N / Esc = Cancel", text_x, line3_y, hint_fg, bg);
+    state.renderer.render_text(
+        view,
+        "Y = Close    N / Esc = Cancel",
+        text_x,
+        line3_y,
+        hint_fg,
+        bg,
+    );
 }
 
 /// Render the "About Termojinal" overlay on top of the terminal.
-fn render_about_overlay(
-    state: &mut AppState,
-    view: &wgpu::TextureView,
-    phys_w: f32,
-    phys_h: f32,
-) {
+fn render_about_overlay(state: &mut AppState, view: &wgpu::TextureView, phys_w: f32, phys_h: f32) {
     let cell_size = state.renderer.cell_size();
     let cell_w = cell_size.width;
     let cell_h = cell_size.height;
@@ -10831,7 +11991,9 @@ fn render_about_overlay(
 
     // 1. Semi-transparent dark overlay covering the entire window.
     let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.5]);
-    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // 2. Centered floating box (use most of the window).
     let box_w = (phys_w * 0.7).min(phys_w - 40.0).max(200.0);
@@ -10878,14 +12040,21 @@ fn render_about_overlay(
     let text_fg = [0.75, 0.75, 0.78, 1.0];
     let hint_fg = [0.5, 0.5, 0.55, 1.0];
 
-    for (i, line) in lines.iter().enumerate().skip(scroll).take(max_visible_lines) {
+    for (i, line) in lines
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(max_visible_lines)
+    {
         let row = i - scroll;
         let y = box_y + cell_h * 0.25 + (row as f32) * cell_h;
         let display: String = line.chars().take(max_chars).collect();
 
         // Use brighter color for the first few header lines.
         let fg = if i < 4 { title_fg } else { text_fg };
-        state.renderer.render_text(view, &display, content_x, y, fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &display, content_x, y, fg, box_bg);
     }
 
     // 4. Footer: "Press any key to close" hint.
@@ -10907,7 +12076,9 @@ fn render_about_overlay(
     } else {
         "Press any key to close"
     };
-    state.renderer.render_text(view, scroll_hint, content_x, footer_y, hint_fg, box_bg);
+    state
+        .renderer
+        .render_text(view, scroll_hint, content_x, footer_y, hint_fg, box_bg);
 }
 
 // ---------------------------------------------------------------------------
@@ -10920,10 +12091,8 @@ fn refresh_claudes_dashboard(state: &mut AppState) {
 
     for session in &sessions {
         // Read JSONL stats (model, tokens, cost, tool usage).
-        let stats = termojinal_claude::monitor::read_session_jsonl_stats(
-            &session.session_id,
-            &session.cwd,
-        );
+        let stats =
+            termojinal_claude::monitor::read_session_jsonl_stats(&session.session_id, &session.cwd);
 
         // Compute total context used (input + output + cache_read).
         let context_used = stats.input_tokens + stats.output_tokens + stats.cache_read_tokens;
@@ -10955,17 +12124,25 @@ fn refresh_claudes_dashboard(state: &mut AppState) {
     }
 
     // Preserve selection if possible.
-    let old_selected = state.claudes_dashboard.entries
+    let old_selected = state
+        .claudes_dashboard
+        .entries
         .get(state.claudes_dashboard.selected_idx)
         .map(|e| e.session_id.clone());
     state.claudes_dashboard.entries = entries;
     if let Some(old_id) = old_selected {
-        if let Some(pos) = state.claudes_dashboard.entries.iter().position(|e| e.session_id == old_id) {
+        if let Some(pos) = state
+            .claudes_dashboard
+            .entries
+            .iter()
+            .position(|e| e.session_id == old_id)
+        {
             state.claudes_dashboard.selected_idx = pos;
         }
     }
     if state.claudes_dashboard.selected_idx >= state.claudes_dashboard.entries.len() {
-        state.claudes_dashboard.selected_idx = state.claudes_dashboard.entries.len().saturating_sub(1);
+        state.claudes_dashboard.selected_idx =
+            state.claudes_dashboard.entries.len().saturating_sub(1);
     }
     state.claudes_dashboard.last_refresh = std::time::Instant::now();
 }
@@ -10984,7 +12161,9 @@ fn render_claudes_dashboard(
 
     // 1. Semi-transparent dark overlay covering entire window.
     let overlay_color = color_or(&pc.overlay_color, [0.0, 0.0, 0.0, 0.55]);
-    state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // 2. Centered floating box — 75% width, 80% height.
     let box_w = (phys_w * 0.75).min(phys_w - 40.0).max(400.0);
@@ -11016,12 +12195,26 @@ fn render_claudes_dashboard(
     let entry_count = state.claudes_dashboard.entries.len();
     let header_text = format!("  Claudes ({})", entry_count);
     let header_fg = [0.95, 0.95, 0.95, 1.0];
-    state.renderer.render_text(view, &header_text, box_x + cell_w * 0.5, header_y, header_fg, box_bg);
+    state.renderer.render_text(
+        view,
+        &header_text,
+        box_x + cell_w * 0.5,
+        header_y,
+        header_fg,
+        box_bg,
+    );
 
     // Header separator.
     let header_sep_y = (header_y + cell_h + cell_h * 0.15) as u32;
     let sep_color = color_or(&pc.separator_color, [0.25, 0.25, 0.3, 1.0]);
-    state.renderer.submit_separator(view, box_x as u32 + 1, header_sep_y, box_w as u32 - 2, 1, sep_color);
+    state.renderer.submit_separator(
+        view,
+        box_x as u32 + 1,
+        header_sep_y,
+        box_w as u32 - 2,
+        1,
+        sep_color,
+    );
 
     // Split: left pane (40%) and right pane (60%).
     let left_w = (box_w * 0.40).max(100.0);
@@ -11043,7 +12236,14 @@ fn render_claudes_dashboard(
 
     // Right pane: "Detail" header.
     let detail_header = "  Detail";
-    state.renderer.render_text(view, detail_header, right_x + cell_w * 0.5, header_y, header_fg, box_bg);
+    state.renderer.render_text(
+        view,
+        detail_header,
+        right_x + cell_w * 0.5,
+        header_y,
+        header_fg,
+        box_bg,
+    );
 
     // Color definitions.
     let text_fg = [0.75, 0.75, 0.78, 1.0];
@@ -11069,13 +12269,29 @@ fn render_claudes_dashboard(
 
     if state.claudes_dashboard.entries.is_empty() {
         let empty_msg = "No Claude Code sessions detected";
-        state.renderer.render_text(view, empty_msg, left_x + cell_w, list_start_y + cell_h, dim_fg, box_bg);
+        state.renderer.render_text(
+            view,
+            empty_msg,
+            left_x + cell_w,
+            list_start_y + cell_h,
+            dim_fg,
+            box_bg,
+        );
     }
 
-    for (vi, entry) in state.claudes_dashboard.entries.iter().enumerate().skip(scroll_offset).take(max_visible.max(1)) {
+    for (vi, entry) in state
+        .claudes_dashboard
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(max_visible.max(1))
+    {
         let row = vi - scroll_offset;
         let item_y = list_start_y + (row as f32) * entry_h;
-        if item_y + entry_h > box_y + content_h { break; }
+        if item_y + entry_h > box_y + content_h {
+            break;
+        }
 
         let is_selected = vi == state.claudes_dashboard.selected_idx;
         let bg = if is_selected { selected_bg } else { box_bg };
@@ -11092,9 +12308,9 @@ fn render_claudes_dashboard(
 
         // Line 1: state icon + title
         let state_icon = match entry.state {
-            SessionState::Running => "\u{25CF} ",  // filled circle
-            SessionState::Idle => "\u{25CB} ",      // open circle
-            SessionState::Done => "\u{2714} ",      // checkmark
+            SessionState::Running => "\u{25CF} ", // filled circle
+            SessionState::Idle => "\u{25CB} ",    // open circle
+            SessionState::Done => "\u{2714} ",    // checkmark
             SessionState::WaitingForPermission => "\u{23F3} ", // hourglass
         };
         let state_color = match entry.state {
@@ -11110,14 +12326,28 @@ fn render_claudes_dashboard(
         };
         let title_trunc: String = title_display.chars().take(left_max_chars).collect();
         let title_fg = if is_selected { header_fg } else { text_fg };
-        state.renderer.render_text(view, &title_trunc, left_x + cell_w * 0.5, item_y + cell_h * 0.15, title_fg, bg);
+        state.renderer.render_text(
+            view,
+            &title_trunc,
+            left_x + cell_w * 0.5,
+            item_y + cell_h * 0.15,
+            title_fg,
+            bg,
+        );
         // Color the state icon separately.
         let icon_str: String = if is_selected {
             format!("\u{25B6} {}", state_icon)
         } else {
             format!("  {}", state_icon)
         };
-        state.renderer.render_text(view, &icon_str, left_x + cell_w * 0.5, item_y + cell_h * 0.15, state_color, bg);
+        state.renderer.render_text(
+            view,
+            &icon_str,
+            left_x + cell_w * 0.5,
+            item_y + cell_h * 0.15,
+            state_color,
+            bg,
+        );
 
         // Line 2: model | context bar N%
         let model_short = termojinal_claude::monitor::model_short_name(&entry.model);
@@ -11141,20 +12371,44 @@ fn render_claudes_dashboard(
             bar,
             pct,
         );
-        let bar_color = if pct < 70.0 { green } else if pct < 90.0 { yellow } else { red };
+        let bar_color = if pct < 70.0 {
+            green
+        } else if pct < 90.0 {
+            yellow
+        } else {
+            red
+        };
         let context_trunc: String = context_str.chars().take(left_max_chars).collect();
-        state.renderer.render_text(view, &context_trunc, left_x + cell_w * 0.5, item_y + cell_h * 1.15, bar_color, bg);
+        state.renderer.render_text(
+            view,
+            &context_trunc,
+            left_x + cell_w * 0.5,
+            item_y + cell_h * 1.15,
+            bar_color,
+            bg,
+        );
 
         // Line 3: subagent count | cwd
         let agent_count = entry.subagents.len();
         let cwd_abbr = abbreviate_home(&entry.cwd);
         let line3 = format!("  \u{2299}{} agents \u{2502} {}", agent_count, cwd_abbr);
         let line3_trunc: String = line3.chars().take(left_max_chars).collect();
-        state.renderer.render_text(view, &line3_trunc, left_x + cell_w * 0.5, item_y + cell_h * 2.15, dim_fg, bg);
+        state.renderer.render_text(
+            view,
+            &line3_trunc,
+            left_x + cell_w * 0.5,
+            item_y + cell_h * 2.15,
+            dim_fg,
+            bg,
+        );
     }
 
     // --- Right pane: detail view ---
-    if let Some(entry) = state.claudes_dashboard.entries.get(state.claudes_dashboard.selected_idx) {
+    if let Some(entry) = state
+        .claudes_dashboard
+        .entries
+        .get(state.claudes_dashboard.selected_idx)
+    {
         let detail_x = right_x + cell_w * 1.5;
         let detail_max_chars = ((right_w - 3.0 * cell_w) / cell_w) as usize;
         let mut dy = list_start_y;
@@ -11162,12 +12416,16 @@ fn render_claudes_dashboard(
 
         // Task title.
         let title_trunc: String = entry.title.chars().take(detail_max_chars).collect();
-        state.renderer.render_text(view, &title_trunc, detail_x, dy, header_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &title_trunc, detail_x, dy, header_fg, box_bg);
         dy += line_h * 1.2;
 
         // Model.
         let model_line = format!("Model:    {}", entry.model);
-        state.renderer.render_text(view, &model_line, detail_x, dy, text_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &model_line, detail_x, dy, text_fg, box_bg);
         dy += line_h;
 
         // Context bar.
@@ -11189,31 +12447,47 @@ fn render_claudes_dashboard(
             format_token_count(entry.context_used),
             entry.context_max / 1000,
         );
-        let bar_color = if pct < 70.0 { green } else if pct < 90.0 { yellow } else { red };
-        state.renderer.render_text(view, &ctx_line, detail_x, dy, bar_color, box_bg);
+        let bar_color = if pct < 70.0 {
+            green
+        } else if pct < 90.0 {
+            yellow
+        } else {
+            red
+        };
+        state
+            .renderer
+            .render_text(view, &ctx_line, detail_x, dy, bar_color, box_bg);
         dy += line_h;
 
         // Tokens.
         let tokens_line = format!("Tokens:   ~{}k used", entry.tokens_used / 1000);
-        state.renderer.render_text(view, &tokens_line, detail_x, dy, text_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &tokens_line, detail_x, dy, text_fg, box_bg);
         dy += line_h;
 
         // Cost.
         let cost_line = format!("Cost:     ~${:.2}", entry.cost_estimate);
-        state.renderer.render_text(view, &cost_line, detail_x, dy, text_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &cost_line, detail_x, dy, text_fg, box_bg);
         dy += line_h;
 
         // CWD.
         let cwd_abbr = abbreviate_home(&entry.cwd);
         let cwd_line = format!("CWD:      {}", cwd_abbr);
         let cwd_trunc: String = cwd_line.chars().take(detail_max_chars).collect();
-        state.renderer.render_text(view, &cwd_trunc, detail_x, dy, text_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &cwd_trunc, detail_x, dy, text_fg, box_bg);
         dy += line_h;
 
         // Workspace / pane info.
         let pane_line = format!("Pane:     {}  pane#{}", entry.workspace_name, entry.pane_id);
         let pane_trunc: String = pane_line.chars().take(detail_max_chars).collect();
-        state.renderer.render_text(view, &pane_trunc, detail_x, dy, text_fg, box_bg);
+        state
+            .renderer
+            .render_text(view, &pane_trunc, detail_x, dy, text_fg, box_bg);
         dy += line_h;
 
         // Started time.
@@ -11228,22 +12502,34 @@ fn render_claudes_dashboard(
             } else if elapsed_secs < 3600 {
                 format!("{} min ago", elapsed_secs / 60)
             } else {
-                format!("{} hr {} min ago", elapsed_secs / 3600, (elapsed_secs % 3600) / 60)
+                format!(
+                    "{} hr {} min ago",
+                    elapsed_secs / 3600,
+                    (elapsed_secs % 3600) / 60
+                )
             };
             let started_line = format!("Started:  {}", elapsed_str);
-            state.renderer.render_text(view, &started_line, detail_x, dy, text_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, &started_line, detail_x, dy, text_fg, box_bg);
         }
         dy += line_h * 1.3;
 
         // Subagents section.
         if !entry.subagents.is_empty() {
             let sub_header = format!("Subagents ({}):", entry.subagents.len());
-            state.renderer.render_text(view, &sub_header, detail_x, dy, accent, box_bg);
+            state
+                .renderer
+                .render_text(view, &sub_header, detail_x, dy, accent, box_bg);
             dy += line_h;
 
             for (i, agent) in entry.subagents.iter().enumerate() {
                 let is_last = i == entry.subagents.len() - 1;
-                let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+                let connector = if is_last {
+                    "\u{2514}\u{2500} "
+                } else {
+                    "\u{251C}\u{2500} "
+                };
                 let state_dot = match agent.state {
                     SessionState::Running => "\u{25CF} ",
                     _ => "\u{2714} ",
@@ -11258,12 +12544,24 @@ fn render_claudes_dashboard(
                 } else {
                     agent.agent_type.clone()
                 };
-                let agent_line = format!("{}{}{:<12} \"{}\"", connector, state_dot, agent_type_display, agent_desc);
+                let agent_line = format!(
+                    "{}{}{:<12} \"{}\"",
+                    connector, state_dot, agent_type_display, agent_desc
+                );
                 let agent_trunc: String = agent_line.chars().take(detail_max_chars).collect();
-                state.renderer.render_text(view, &agent_trunc, detail_x, dy, text_fg, box_bg);
+                state
+                    .renderer
+                    .render_text(view, &agent_trunc, detail_x, dy, text_fg, box_bg);
                 // Color the state dot.
                 let dot_offset = connector.chars().count() as f32 * cell_w;
-                state.renderer.render_text(view, state_dot, detail_x + dot_offset, dy, agent_state_color, box_bg);
+                state.renderer.render_text(
+                    view,
+                    state_dot,
+                    detail_x + dot_offset,
+                    dy,
+                    agent_state_color,
+                    box_bg,
+                );
                 dy += line_h;
             }
         }
@@ -11271,7 +12569,9 @@ fn render_claudes_dashboard(
 
         // Tool usage horizontal bar chart.
         if !entry.tool_usage.is_empty() && dy + line_h < box_y + content_h {
-            state.renderer.render_text(view, "Tools Used:", detail_x, dy, accent, box_bg);
+            state
+                .renderer
+                .render_text(view, "Tools Used:", detail_x, dy, accent, box_bg);
             dy += line_h;
 
             // Sort tools by usage count descending.
@@ -11281,23 +12581,34 @@ fn render_claudes_dashboard(
 
             let tool_colors = [
                 [0.45, 0.75, 1.0, 1.0],  // blue
-                [0.35, 0.85, 0.55, 1.0],  // green
-                [0.95, 0.75, 0.30, 1.0],  // orange
-                [0.85, 0.50, 0.95, 1.0],  // purple
-                [0.95, 0.55, 0.55, 1.0],  // red
-                [0.50, 0.90, 0.85, 1.0],  // cyan
+                [0.35, 0.85, 0.55, 1.0], // green
+                [0.95, 0.75, 0.30, 1.0], // orange
+                [0.85, 0.50, 0.95, 1.0], // purple
+                [0.95, 0.55, 0.55, 1.0], // red
+                [0.50, 0.90, 0.85, 1.0], // cyan
             ];
 
             let bar_max_width = 14usize; // max bar chars
             for (ti, (tool_name, &count)) in tools.iter().enumerate() {
-                if dy + line_h > box_y + content_h { break; }
-                let bar_filled = ((count as f64 / max_count as f64) * bar_max_width as f64) as usize;
+                if dy + line_h > box_y + content_h {
+                    break;
+                }
+                let bar_filled =
+                    ((count as f64 / max_count as f64) * bar_max_width as f64) as usize;
                 let bar: String = "\u{2588}".repeat(bar_filled.max(1));
-                let tool_display: String = format!("{:<6}", tool_name.chars().take(6).collect::<String>());
+                let tool_display: String =
+                    format!("{:<6}", tool_name.chars().take(6).collect::<String>());
                 let tool_line = format!("{} {} {}", tool_display, bar, count);
                 let tool_trunc: String = tool_line.chars().take(detail_max_chars).collect();
                 let color_idx = ti % tool_colors.len();
-                state.renderer.render_text(view, &tool_trunc, detail_x, dy, tool_colors[color_idx], box_bg);
+                state.renderer.render_text(
+                    view,
+                    &tool_trunc,
+                    detail_x,
+                    dy,
+                    tool_colors[color_idx],
+                    box_bg,
+                );
                 dy += line_h;
             }
         }
@@ -11306,7 +12617,9 @@ fn render_claudes_dashboard(
         // Mini preview: render a few lines from the target pane's terminal.
         if dy + cell_h * 5.0 < box_y + content_h {
             let preview_label = "\u{250C}\u{2500} Mini Preview \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}";
-            state.renderer.render_text(view, preview_label, detail_x, dy, dim_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, preview_label, detail_x, dy, dim_fg, box_bg);
             dy += line_h;
 
             // Try to access the pane's terminal grid.
@@ -11314,7 +12627,9 @@ fn render_claudes_dashboard(
             let preview_cols = detail_max_chars.min(30);
             let mut found = false;
             for ws in &state.workspaces {
-                if found { break; }
+                if found {
+                    break;
+                }
                 for tab in &ws.tabs {
                     if let Some(pane) = tab.panes.get(&entry.pane_id) {
                         found = true;
@@ -11323,7 +12638,9 @@ fn render_claudes_dashboard(
                         // Show last N rows (near cursor).
                         let start_row = rows.saturating_sub(preview_lines);
                         for r in start_row..rows {
-                            if dy + cell_h > box_y + content_h { break; }
+                            if dy + cell_h > box_y + content_h {
+                                break;
+                            }
                             let mut line_chars = String::new();
                             line_chars.push_str("\u{2502} ");
                             for c in 0..preview_cols.min(grid.cols()) {
@@ -11334,7 +12651,14 @@ fn render_claudes_dashboard(
                                     line_chars.push(cell.c);
                                 }
                             }
-                            state.renderer.render_text(view, &line_chars, detail_x, dy, dim_fg, box_bg);
+                            state.renderer.render_text(
+                                view,
+                                &line_chars,
+                                detail_x,
+                                dy,
+                                dim_fg,
+                                box_bg,
+                            );
                             dy += cell_h;
                         }
                         break;
@@ -11342,17 +12666,33 @@ fn render_claudes_dashboard(
                 }
             }
             if !found {
-                state.renderer.render_text(view, "\u{2502} (pane not accessible)", detail_x, dy, dim_fg, box_bg);
+                state.renderer.render_text(
+                    view,
+                    "\u{2502} (pane not accessible)",
+                    detail_x,
+                    dy,
+                    dim_fg,
+                    box_bg,
+                );
                 dy += cell_h;
             }
             let preview_bottom = "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}";
-            state.renderer.render_text(view, preview_bottom, detail_x, dy, dim_fg, box_bg);
+            state
+                .renderer
+                .render_text(view, preview_bottom, detail_x, dy, dim_fg, box_bg);
         }
     } else {
         // No sessions -- show placeholder in right pane.
         let detail_x = right_x + cell_w * 2.0;
         let detail_y = list_start_y + cell_h * 2.0;
-        state.renderer.render_text(view, "No session selected", detail_x, detail_y, dim_fg, box_bg);
+        state.renderer.render_text(
+            view,
+            "No session selected",
+            detail_x,
+            detail_y,
+            dim_fg,
+            box_bg,
+        );
     }
 
     // --- Footer ---
@@ -11365,7 +12705,10 @@ fn render_claudes_dashboard(
         1,
         sep_color,
     );
-    let running_count = state.claudes_dashboard.entries.iter()
+    let running_count = state
+        .claudes_dashboard
+        .entries
+        .iter()
         .filter(|e| matches!(e.state, SessionState::Running | SessionState::Idle))
         .count();
     let total_count = state.claudes_dashboard.entries.len();
@@ -11374,7 +12717,9 @@ fn render_claudes_dashboard(
         total_count,
         running_count,
     );
-    state.renderer.render_text(view, &footer_left, box_x + cell_w, footer_y, dim_fg, box_bg);
+    state
+        .renderer
+        .render_text(view, &footer_left, box_x + cell_w, footer_y, dim_fg, box_bg);
 }
 
 /// Format token count for display (e.g. 12345 -> "12.3k", 1234 -> "1.2k").
@@ -11387,7 +12732,6 @@ fn format_token_count(tokens: u64) -> String {
         format!("{}", tokens)
     }
 }
-
 
 fn sel_bounds_for(pane: &Pane) -> Option<((usize, usize), (usize, usize))> {
     match &pane.selection {
@@ -11432,11 +12776,15 @@ fn get_child_cwd(pid: i32) -> Option<String> {
         .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
         if let Some(path) = line.strip_prefix('n') {
-            if path.starts_with('/') { return Some(path.to_string()); }
+            if path.starts_with('/') {
+                return Some(path.to_string());
+            }
         }
     }
     None
@@ -11459,10 +12807,18 @@ fn detect_foreground_child(pty_pid: i32) -> Option<String> {
     let mut children: HashMap<i32, Vec<(i32, String)>> = HashMap::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let mut parts = trimmed.splitn(3, char::is_whitespace);
-        let ppid: i32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(-1);
-        let _child_pid: i32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(-1);
+        let ppid: i32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(-1);
+        let _child_pid: i32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(-1);
         let cmd = parts.next().unwrap_or("").trim().to_string();
         if ppid >= 0 && _child_pid >= 0 {
             children.entry(ppid).or_default().push((_child_pid, cmd));
@@ -11504,10 +12860,18 @@ fn detect_ssh_from_pid(pid: i32) -> Option<(Option<String>, String)> {
     let mut children: HashMap<i32, Vec<(i32, String)>> = HashMap::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let mut parts = trimmed.splitn(3, char::is_whitespace);
-        let ppid: i32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(-1);
-        let child_pid: i32 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(-1);
+        let ppid: i32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(-1);
+        let child_pid: i32 = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(-1);
         let cmd = parts.next().unwrap_or("").trim().to_string();
         if ppid >= 0 && child_pid >= 0 {
             children.entry(ppid).or_default().push((child_pid, cmd));
@@ -11518,7 +12882,9 @@ fn detect_ssh_from_pid(pid: i32) -> Option<(Option<String>, String)> {
     let mut queue = vec![pid];
     let mut visited = std::collections::HashSet::new();
     while let Some(current) = queue.pop() {
-        if !visited.insert(current) { continue; }
+        if !visited.insert(current) {
+            continue;
+        }
         if let Some(kids) = children.get(&current) {
             for (child_pid, cmd) in kids {
                 queue.push(*child_pid);
@@ -11536,13 +12902,17 @@ fn detect_ssh_from_pid(pid: i32) -> Option<(Option<String>, String)> {
 /// from ~/.ssh/config, supporting aliases like `ssh mydev`.
 fn parse_ssh_command(cmd: &str) -> Option<(Option<String>, String)> {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
-    if parts.is_empty() { return None; }
+    if parts.is_empty() {
+        return None;
+    }
 
     let bin = std::path::Path::new(parts[0])
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    if bin != "ssh" { return None; }
+    if bin != "ssh" {
+        return None;
+    }
 
     // Find destination: first non-flag argument.
     let mut i = 1;
@@ -11550,8 +12920,24 @@ fn parse_ssh_command(cmd: &str) -> Option<(Option<String>, String)> {
     while i < parts.len() {
         let arg = parts[i];
         if arg.starts_with('-') {
-            if matches!(arg, "-p" | "-i" | "-l" | "-o" | "-F" | "-J"
-                | "-L" | "-R" | "-D" | "-W" | "-b" | "-c" | "-e" | "-m" | "-S" | "-w") {
+            if matches!(
+                arg,
+                "-p" | "-i"
+                    | "-l"
+                    | "-o"
+                    | "-F"
+                    | "-J"
+                    | "-L"
+                    | "-R"
+                    | "-D"
+                    | "-W"
+                    | "-b"
+                    | "-c"
+                    | "-e"
+                    | "-m"
+                    | "-S"
+                    | "-w"
+            ) {
                 i += 1;
             }
         } else {
@@ -11593,7 +12979,10 @@ fn parse_ssh_command(cmd: &str) -> Option<(Option<String>, String)> {
 
     // Fallback: parse destination directly.
     if let Some(at_idx) = dest.find('@') {
-        Some((Some(dest[..at_idx].to_string()), dest[at_idx + 1..].to_string()))
+        Some((
+            Some(dest[..at_idx].to_string()),
+            dest[at_idx + 1..].to_string(),
+        ))
     } else {
         Some((None, dest))
     }
@@ -11656,20 +13045,26 @@ fn cells_to_rtf(
     }
 
     // RTF header.
-    let mut rtf = String::from("{\\rtf1\\ansi\\deff0
-");
+    let mut rtf = String::from(
+        "{\\rtf1\\ansi\\deff0
+",
+    );
 
     // Font table — use a monospaced font.
-    rtf.push_str("{\\fonttbl{\\f0\\fmodern\\fcharset0 Menlo;}}
-");
+    rtf.push_str(
+        "{\\fonttbl{\\f0\\fmodern\\fcharset0 Menlo;}}
+",
+    );
 
     // Color table.
     rtf.push_str("{\\colortbl;");
     for (r, g, b) in &color_list {
         rtf.push_str(&format!("\\red{}\\green{}\\blue{};", r, g, b));
     }
-    rtf.push_str("}
-");
+    rtf.push_str(
+        "}
+",
+    );
 
     // Font size (20 = 10pt in RTF half-points).
     rtf.push_str("\\f0\\fs20 ");
@@ -11705,8 +13100,10 @@ fn cells_to_rtf(
             if attrs.contains(Attrs::ITALIC) {
                 rtf.push_str("\\i ");
             }
-            if attrs.contains(Attrs::UNDERLINE) || attrs.contains(Attrs::DOUBLE_UNDERLINE)
-                || attrs.contains(Attrs::CURLY_UNDERLINE) || attrs.contains(Attrs::DOTTED_UNDERLINE)
+            if attrs.contains(Attrs::UNDERLINE)
+                || attrs.contains(Attrs::DOUBLE_UNDERLINE)
+                || attrs.contains(Attrs::CURLY_UNDERLINE)
+                || attrs.contains(Attrs::DOTTED_UNDERLINE)
                 || attrs.contains(Attrs::DASHED_UNDERLINE)
             {
                 rtf.push_str("\\ul ");
@@ -11735,8 +13132,10 @@ fn cells_to_rtf(
             if attrs.contains(Attrs::ITALIC) {
                 rtf.push_str("\\i0");
             }
-            if attrs.contains(Attrs::UNDERLINE) || attrs.contains(Attrs::DOUBLE_UNDERLINE)
-                || attrs.contains(Attrs::CURLY_UNDERLINE) || attrs.contains(Attrs::DOTTED_UNDERLINE)
+            if attrs.contains(Attrs::UNDERLINE)
+                || attrs.contains(Attrs::DOUBLE_UNDERLINE)
+                || attrs.contains(Attrs::CURLY_UNDERLINE)
+                || attrs.contains(Attrs::DOTTED_UNDERLINE)
                 || attrs.contains(Attrs::DASHED_UNDERLINE)
             {
                 rtf.push_str("\\ul0");
@@ -11749,13 +13148,17 @@ fn cells_to_rtf(
             }
         }
         if row_idx < rows.len() - 1 {
-            rtf.push_str("\\par
-");
+            rtf.push_str(
+                "\\par
+",
+            );
         }
     }
 
-    rtf.push_str("}
-");
+    rtf.push_str(
+        "}
+",
+    );
     rtf
 }
 
@@ -11835,11 +13238,11 @@ fn show_context_menu(
     window: &winit::window::Window,
     has_selection: bool,
 ) -> Option<ContextMenuAction> {
-    use std::cell::Cell;
     use objc2::rc::{Allocated, Id};
     use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel};
     use objc2::{class, msg_send, msg_send_id, sel};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::cell::Cell;
 
     let handle = match window.window_handle() {
         Ok(h) => h,
@@ -11910,29 +13313,23 @@ fn show_context_menu(
         };
 
         // Helper: create a menu item.
-        let make_item =
-            |title: &str, key_equiv: &str, tag: isize, enabled: bool| -> Id<NSObject> {
-                let ns_title = make_nsstring(title);
-                let ns_key = make_nsstring(key_equiv);
-                let item: Allocated<NSObject> = msg_send_id![
-                    class!(NSMenuItem),
-                    alloc
-                ];
-                let item: Id<NSObject> = msg_send_id![
-                    item,
-                    initWithTitle: &*ns_title,
-                    action: action_sel,
-                    keyEquivalent: &*ns_key
-                ];
-                let () = msg_send![&*item, setTarget: &*target];
-                let () = msg_send![&*item, setTag: tag];
-                let () = msg_send![&*item, setEnabled: enabled];
-                item
-            };
-
-        let make_separator = || -> Id<NSObject> {
-            msg_send_id![class!(NSMenuItem), separatorItem]
+        let make_item = |title: &str, key_equiv: &str, tag: isize, enabled: bool| -> Id<NSObject> {
+            let ns_title = make_nsstring(title);
+            let ns_key = make_nsstring(key_equiv);
+            let item: Allocated<NSObject> = msg_send_id![class!(NSMenuItem), alloc];
+            let item: Id<NSObject> = msg_send_id![
+                item,
+                initWithTitle: &*ns_title,
+                action: action_sel,
+                keyEquivalent: &*ns_key
+            ];
+            let () = msg_send![&*item, setTarget: &*target];
+            let () = msg_send![&*item, setTag: tag];
+            let () = msg_send![&*item, setEnabled: enabled];
+            item
         };
+
+        let make_separator = || -> Id<NSObject> { msg_send_id![class!(NSMenuItem), separatorItem] };
 
         // --- Build menu ---
         let copy_item = make_item("Copy", "c", TAG_COPY, has_selection);
@@ -11997,16 +13394,18 @@ fn show_context_menu(
 /// Set NSWindow background to clear so wgpu alpha compositing shows through.
 #[cfg(target_os = "macos")]
 fn set_macos_window_transparent(window: &winit::window::Window) {
-    use objc2::{class, msg_send, msg_send_id};
     use objc2::rc::Id;
     use objc2::runtime::NSObject;
+    use objc2::{class, msg_send, msg_send_id};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let handle = match window.window_handle() {
         Ok(h) => h,
         Err(_) => return,
     };
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
     let ns_view = appkit.ns_view.as_ptr() as *const NSObject;
 
     unsafe {
@@ -12028,9 +13427,9 @@ fn set_macos_window_transparent(window: &winit::window::Window) {
 /// Set the macOS Dock icon from an embedded PNG using raw objc messaging.
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
-    use objc2::{class, msg_send, msg_send_id};
     use objc2::rc::Id;
     use objc2::runtime::NSObject;
+    use objc2::{class, msg_send, msg_send_id};
 
     // Load icon PNG and add ~18% transparent padding (Apple HIG standard).
     let png_bytes = include_bytes!("../resources/Assets.xcassets/AppIcon.appiconset/256.png");
@@ -12073,7 +13472,12 @@ fn add_icon_padding(png_bytes: &[u8]) -> Option<Vec<u8>> {
     let icon_size = (canvas_size as f32 * 0.80) as u32;
     let offset = (canvas_size - icon_size) / 2;
 
-    let resized = image::imageops::resize(&src, icon_size, icon_size, image::imageops::FilterType::Lanczos3);
+    let resized = image::imageops::resize(
+        &src,
+        icon_size,
+        icon_size,
+        image::imageops::FilterType::Lanczos3,
+    );
 
     let mut canvas = image::RgbaImage::new(canvas_size, canvas_size);
     image::imageops::overlay(&mut canvas, &resized, offset as i64, offset as i64);
@@ -12196,14 +13600,12 @@ fn handle_app_ipc_request(
             }))
         }
 
-        AppIpcRequest::GetConfig => {
-            AppIpcResponse::ok(json!({
-                "font_size": state.config.font.size,
-                "opacity": state.config.window.opacity,
-                "theme_bg": state.config.theme.background,
-                "theme_fg": state.config.theme.foreground,
-            }))
-        }
+        AppIpcRequest::GetConfig => AppIpcResponse::ok(json!({
+            "font_size": state.config.font.size,
+            "opacity": state.config.window.opacity,
+            "theme_bg": state.config.theme.background,
+            "theme_fg": state.config.theme.foreground,
+        })),
 
         AppIpcRequest::ListWorkspaces => {
             let workspaces: Vec<_> = state
@@ -12251,7 +13653,9 @@ fn handle_app_ipc_request(
                 // panes in the workspace being removed.
                 {
                     let ws = &state.workspaces[*index];
-                    let pane_ids: Vec<PaneId> = ws.tabs.iter()
+                    let pane_ids: Vec<PaneId> = ws
+                        .tabs
+                        .iter()
                         .flat_map(|t| t.panes.keys().copied())
                         .collect();
                     if let Ok(mut bufs) = buffers.lock() {
@@ -12362,7 +13766,11 @@ fn handle_app_ipc_request(
             let action = match direction.as_str() {
                 "horizontal" | "right" => Action::SplitRight,
                 "vertical" | "down" => Action::SplitDown,
-                _ => return Some(AppIpcResponse::err("direction must be 'horizontal' or 'vertical'")),  // early return still needs Some
+                _ => {
+                    return Some(AppIpcResponse::err(
+                        "direction must be 'horizontal' or 'vertical'",
+                    ))
+                } // early return still needs Some
             };
             dispatch_action(state, &action, proxy, buffers, event_loop);
             AppIpcResponse::ok_empty()
@@ -12465,10 +13873,10 @@ fn handle_app_ipc_request(
                 let mut result_lines = Vec::new();
                 for i in start..scrollback_len {
                     if let Some(row) = pane.terminal.scrollback_row(i) {
-                        let line: String =
-                            row.iter()
-                                .map(|c| if c.c == '\0' { ' ' } else { c.c })
-                                .collect();
+                        let line: String = row
+                            .iter()
+                            .map(|c| if c.c == '\0' { ' ' } else { c.c })
+                            .collect();
                         result_lines.push(line.trim_end().to_string());
                     }
                 }
@@ -12501,21 +13909,20 @@ fn handle_app_ipc_request(
 
         AppIpcRequest::ApproveRequest { request_id } => {
             let pane_sessions: HashMap<u64, String> = {
-            let mut m = std::collections::HashMap::new();
-                                    for ws in &state.workspaces {
-                                        for tab in &ws.tabs {
-                                            for (pid, pane) in &tab.panes {
-                                                m.insert(*pid, pane.session_id.clone());
-                                            }
-                                        }
-                                    }
-                                    m
-                                };
-            if let Some(response) =
-                state
-                    .allow_flow
-                    .engine
-                    .respond(*request_id, termojinal_claude::AllowDecision::Allow)
+                let mut m = std::collections::HashMap::new();
+                for ws in &state.workspaces {
+                    for tab in &ws.tabs {
+                        for (pid, pane) in &tab.panes {
+                            m.insert(*pid, pane.session_id.clone());
+                        }
+                    }
+                }
+                m
+            };
+            if let Some(response) = state
+                .allow_flow
+                .engine
+                .respond(*request_id, termojinal_claude::AllowDecision::Allow)
             {
                 allow_flow::AllowFlowUI::write_to_pty(
                     &pane_sessions,
@@ -12534,21 +13941,20 @@ fn handle_app_ipc_request(
 
         AppIpcRequest::DenyRequest { request_id } => {
             let pane_sessions: HashMap<u64, String> = {
-            let mut m = std::collections::HashMap::new();
-                                    for ws in &state.workspaces {
-                                        for tab in &ws.tabs {
-                                            for (pid, pane) in &tab.panes {
-                                                m.insert(*pid, pane.session_id.clone());
-                                            }
-                                        }
-                                    }
-                                    m
-                                };
-            if let Some(response) =
-                state
-                    .allow_flow
-                    .engine
-                    .respond(*request_id, termojinal_claude::AllowDecision::Deny)
+                let mut m = std::collections::HashMap::new();
+                for ws in &state.workspaces {
+                    for tab in &ws.tabs {
+                        for (pid, pane) in &tab.panes {
+                            m.insert(*pid, pane.session_id.clone());
+                        }
+                    }
+                }
+                m
+            };
+            if let Some(response) = state
+                .allow_flow
+                .engine
+                .respond(*request_id, termojinal_claude::AllowDecision::Deny)
             {
                 allow_flow::AllowFlowUI::write_to_pty(
                     &pane_sessions,
@@ -12566,16 +13972,16 @@ fn handle_app_ipc_request(
 
         AppIpcRequest::ApproveAll { workspace } => {
             let pane_sessions: HashMap<u64, String> = {
-            let mut m = std::collections::HashMap::new();
-                                    for ws in &state.workspaces {
-                                        for tab in &ws.tabs {
-                                            for (pid, pane) in &tab.panes {
-                                                m.insert(*pid, pane.session_id.clone());
-                                            }
-                                        }
-                                    }
-                                    m
-                                };
+                let mut m = std::collections::HashMap::new();
+                for ws in &state.workspaces {
+                    for tab in &ws.tabs {
+                        for (pid, pane) in &tab.panes {
+                            m.insert(*pid, pane.session_id.clone());
+                        }
+                    }
+                }
+                m
+            };
             let resolved = state
                 .allow_flow
                 .allow_all_for_workspace(*workspace, &pane_sessions);
@@ -12691,7 +14097,10 @@ fn handle_app_ipc_request(
                 AppIpcResponse::err("pane not found")
             }
         }
-        AppIpcRequest::JumpToCommand { pane_id, command_id } => {
+        AppIpcRequest::JumpToCommand {
+            pane_id,
+            command_id,
+        } => {
             let focused_id = pane_id.unwrap_or_else(|| active_tab(state).layout.focused());
             if let Some(pane) = active_tab_mut(state).panes.get_mut(&focused_id) {
                 if pane.terminal.jump_to_command(*command_id).is_some() {
@@ -12758,8 +14167,7 @@ fn unescape_keys(s: &str) -> Vec<u8> {
 
 /// Get the app IPC socket path (matches `termojinal_session::daemon::app_socket_path`).
 fn app_ipc_socket_path() -> std::path::PathBuf {
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let data_dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     data_dir.join("termojinal").join("termojinal-app.sock")
 }
 
@@ -12785,7 +14193,10 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
     let listener = match UnixListener::bind(&sock_path) {
         Ok(l) => l,
         Err(e) => {
-            log::error!("failed to bind app IPC socket at {}: {e}", sock_path.display());
+            log::error!(
+                "failed to bind app IPC socket at {}: {e}",
+                sock_path.display()
+            );
             return;
         }
     };
@@ -12844,15 +14255,13 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
                         };
                         match rx.recv_timeout(timeout) {
                             Ok(response) => {
-                                let json_str =
-                                    serde_json::to_string(&response).unwrap_or_default();
+                                let json_str = serde_json::to_string(&response).unwrap_or_default();
                                 let _ = stream.write_all(json_str.as_bytes());
                                 let _ = stream.write_all(b"\n");
                                 let _ = stream.flush();
                             }
                             Err(_) => {
-                                let timeout_resp =
-                                    AppIpcResponse::err("request timed out");
+                                let timeout_resp = AppIpcResponse::err("request timed out");
                                 let json_str =
                                     serde_json::to_string(&timeout_resp).unwrap_or_default();
                                 let _ = stream.write_all(json_str.as_bytes());
@@ -12864,13 +14273,10 @@ fn app_ipc_listener(proxy: EventLoopProxy<UserEvent>) {
                         // Legacy text protocol
                         match cmd {
                             "toggle_quick_terminal" => {
-                                let _ =
-                                    proxy.send_event(UserEvent::ToggleQuickTerminal);
+                                let _ = proxy.send_event(UserEvent::ToggleQuickTerminal);
                             }
                             "show_palette" => {
-                                log::debug!(
-                                    "app IPC: show_palette (not yet wired)"
-                                );
+                                log::debug!("app IPC: show_palette (not yet wired)");
                             }
                             _ => {
                                 log::debug!("unknown app IPC command: {cmd}");
@@ -12958,7 +14364,12 @@ fn main() {
     };
 
     let config = load_config();
-    log::info!("config: font.size={}, window={}x{}", config.font.size, config.window.width, config.window.height);
+    log::info!(
+        "config: font.size={}, window={}x{}",
+        config.font.size,
+        config.window.width,
+        config.window.height
+    );
     let mut app = App::new(proxy, config);
     app.quick_terminal_mode = quick_terminal_mode;
 
