@@ -4069,18 +4069,20 @@ impl ApplicationHandler<UserEvent> for App {
                 }
 
                 // Active command execution intercepts ALL keyboard input.
-                if state.command_execution.is_some() && state.command_palette.visible {
-                    let result = state.command_execution.as_mut().unwrap().handle_key(&event);
-                    match result {
-                        CommandKeyResult::Consumed => {
-                            state.window.request_redraw();
-                            return;
-                        }
-                        CommandKeyResult::Cancelled | CommandKeyResult::Dismiss => {
-                            state.command_execution = None;
-                            state.command_palette.visible = false;
-                            state.window.request_redraw();
-                            return;
+                if state.command_palette.visible {
+                    if let Some(ref mut cmd_exec) = state.command_execution {
+                        let result = cmd_exec.handle_key(&event);
+                        match result {
+                            CommandKeyResult::Consumed => {
+                                state.window.request_redraw();
+                                return;
+                            }
+                            CommandKeyResult::Cancelled | CommandKeyResult::Dismiss => {
+                                state.command_execution = None;
+                                state.command_palette.visible = false;
+                                state.window.request_redraw();
+                                return;
+                            }
                         }
                     }
                 }
@@ -4435,9 +4437,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
 
                 // --- Tab drag active: check for reordering (Feature 4) ---
-                if state.tab_drag.is_some() {
-                    let drag_idx = state.tab_drag.as_ref().unwrap().tab_idx;
-                    let drag_start_x = state.tab_drag.as_ref().unwrap().start_x;
+                if let Some(ref drag) = state.tab_drag {
+                    let drag_idx = drag.tab_idx;
+                    let drag_start_x = drag.start_x;
                     let cx = position.x as f32;
                     let sidebar_w = if state.sidebar_visible { state.sidebar_width } else { 0.0 };
                     let local_cx = cx - sidebar_w;
@@ -9114,7 +9116,9 @@ fn render_command_execution(
     state.renderer.submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // Borrow the execution state to compute box dimensions.
-    let exec = state.command_execution.as_ref().unwrap();
+    let Some(exec) = state.command_execution.as_ref() else {
+        return;
+    };
     let max_visible = pc.max_visible_items;
 
     // Determine how many rows the content needs.
@@ -9164,7 +9168,9 @@ fn render_command_execution(
     let max_chars = ((box_w - 2.0 * cell_w) / cell_w) as usize;
 
     // Re-borrow exec (the earlier borrow was dropped before renderer calls).
-    let exec = state.command_execution.as_ref().unwrap();
+    let Some(exec) = state.command_execution.as_ref() else {
+        return;
+    };
 
     match &exec.ui_state {
         CommandUIState::Loading => {

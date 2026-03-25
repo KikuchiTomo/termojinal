@@ -41,11 +41,25 @@ impl Grid {
 
     #[inline]
     pub fn cell(&self, col: usize, row: usize) -> &Cell {
+        debug_assert!(col < self.cols && row < self.rows,
+            "Grid::cell OOB: col={col}, row={row}, cols={}, rows={}", self.cols, self.rows);
         &self.cells[self.idx(col, row)]
+    }
+
+    /// Safe accessor that returns None if coordinates are out of bounds.
+    #[inline]
+    pub fn get_cell(&self, col: usize, row: usize) -> Option<&Cell> {
+        if col < self.cols && row < self.rows {
+            Some(&self.cells[self.idx(col, row)])
+        } else {
+            None
+        }
     }
 
     #[inline]
     pub fn cell_mut(&mut self, col: usize, row: usize) -> &mut Cell {
+        debug_assert!(col < self.cols && row < self.rows,
+            "Grid::cell_mut OOB: col={col}, row={row}, cols={}, rows={}", self.cols, self.rows);
         self.dirty_rows[row].set(true);
         let i = self.idx(col, row);
         &mut self.cells[i]

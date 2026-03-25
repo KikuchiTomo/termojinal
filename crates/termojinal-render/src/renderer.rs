@@ -170,6 +170,12 @@ pub struct Renderer {
     pane_caches: HashMap<PaneKey, PaneCache>,
     /// The pane key currently active (for single-pane render() calls).
     current_pane_key: PaneKey,
+    /// Separate instance buffer for preedit overlay rendering.
+    /// Using a dedicated buffer prevents preedit rendering from
+    /// invalidating the main pane cache (which causes full rebuilds
+    /// and display corruption during long sessions).
+    preedit_instance_buffer: wgpu::Buffer,
+    preedit_instance_capacity: usize,
     /// Image renderer for inline terminal images (Kitty/iTerm2/Sixel).
     image_renderer: ImageRenderer,
     /// SDF-based rounded rectangle renderer for overlays (command palette, etc.).
@@ -554,6 +560,15 @@ impl Renderer {
         // Create blur renderer for frosted-glass effects.
         let blur_renderer = BlurRenderer::new(&device, surface_format);
 
+        // Create a dedicated instance buffer for preedit overlay rendering.
+        let preedit_cap = 256;
+        let preedit_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("preedit instances"),
+            size: (preedit_cap * std::mem::size_of::<CellInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             adapter,
             device,
@@ -584,6 +599,8 @@ impl Renderer {
             theme_palette: ThemePalette::default(),
             pane_caches: HashMap::new(),
             current_pane_key: 0,
+            preedit_instance_buffer,
+            preedit_instance_capacity: preedit_cap,
             image_renderer,
             rounded_rect_renderer,
             blur_renderer,
@@ -626,8 +643,10 @@ impl Renderer {
                     Some(cells) if col < cells.len() => cells[col],
                     _ => termojinal_vt::Cell::default(),
                 }
-            } else {
+            } else if grid_row < grid.rows() {
                 *grid.cell(col, grid_row)
+            } else {
+                termojinal_vt::Cell::default()
             };
 
             // Skip continuation cells (width == 0).
@@ -910,12 +929,22 @@ impl Renderer {
                 let new_row_instances = self.build_row_instances(terminal, row, selection, search_matches, search_current_idx);
 
                 let cache = &self.pane_caches[&key];
+                // Guard against stale row_instance_counts after resize
+                if row >= cache.row_instance_counts.len() {
+                    return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                }
                 let row_start_instance: usize =
                     cache.row_instance_counts[..row].iter().sum();
                 let old_count = cache.row_instance_counts[row];
 
                 if new_row_instances.len() == old_count {
-                    let cache = self.pane_caches.get_mut(&key).unwrap();
+                    let Some(cache) = self.pane_caches.get_mut(&key) else {
+                        return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                    };
+                    // Guard against instance buffer out-of-bounds
+                    if row_start_instance + new_row_instances.len() > cache.instances.len() {
+                        return self.full_rebuild(terminal, selection, search_matches, search_current_idx);
+                    }
                     for (i, inst) in new_row_instances.iter().enumerate() {
                         cache.instances[row_start_instance + i] = *inst;
                     }
@@ -1364,22 +1393,21 @@ impl Renderer {
 
         let count = preedit_instances.len();
 
-        // Ensure instance buffer is large enough.
-        if count > self.instance_capacity {
-            self.instance_capacity = count.next_power_of_two();
-            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("cell instances"),
-                size: (self.instance_capacity * std::mem::size_of::<CellInstance>()) as u64,
+        // Use the dedicated preedit instance buffer to avoid invalidating
+        // the main pane cache (which would force expensive full rebuilds).
+        if count > self.preedit_instance_capacity {
+            self.preedit_instance_capacity = count.next_power_of_two();
+            self.preedit_instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("preedit instances"),
+                size: (self.preedit_instance_capacity * std::mem::size_of::<CellInstance>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            // Invalidate pane caches since buffer was recreated.
-            self.pane_caches.clear();
         }
 
-        // Upload preedit instances.
+        // Upload preedit instances to the dedicated buffer.
         self.queue.write_buffer(
-            &self.instance_buffer,
+            &self.preedit_instance_buffer,
             0,
             bytemuck::cast_slice(&preedit_instances),
         );
@@ -1420,13 +1448,10 @@ impl Renderer {
             }
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            render_pass.set_vertex_buffer(0, self.preedit_instance_buffer.slice(..));
             render_pass.draw(0..6, 0..count as u32);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Invalidate pane caches since we overwrote the instance buffer.
-        self.pane_caches.clear();
     }
 
     /// Submit a separator draw. Call after all panes are rendered.

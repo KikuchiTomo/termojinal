@@ -44,6 +44,8 @@ struct SavedCursor {
     col: usize,
     row: usize,
     pen: Pen,
+    cursor_visible: bool,
+    cursor_shape: CursorShape,
 }
 
 /// Which mouse events to report to the application.
@@ -799,6 +801,8 @@ impl Terminal {
                 col: self.cursor_col,
                 row: self.cursor_row,
                 pen: self.pen,
+                cursor_visible: self.modes.cursor_visible,
+                cursor_shape: self.cursor_shape,
             });
             self.using_alt = true;
             self.modes.alternate_screen = true;
@@ -818,6 +822,13 @@ impl Terminal {
                 self.cursor_col = saved.col;
                 self.cursor_row = saved.row;
                 self.pen = saved.pen;
+                self.modes.cursor_visible = saved.cursor_visible;
+                self.cursor_shape = saved.cursor_shape;
+            } else {
+                // No saved state: ensure cursor is visible with default shape
+                // to prevent cursor loss when alt screen apps exit abnormally.
+                self.modes.cursor_visible = true;
+                self.cursor_shape = CursorShape::default();
             }
         }
     }
@@ -1062,6 +1073,11 @@ impl vte::Perform for Terminal {
             return;
         }
 
+        // Guard against zero-size terminal (can happen during resize transitions).
+        if self.cols == 0 || self.rows == 0 {
+            return;
+        }
+
         let char_width = char_width(c, self.cjk_width);
 
         if self.wrap_pending {
@@ -1156,17 +1172,18 @@ impl vte::Perform for Terminal {
                 self.wrap_pending = false;
             }
             0x09 => {
+                if self.cols == 0 { return; }
                 let cur = self.cursor_col;
                 let next_tab = if cur + 1 < self.cols {
                     self.tab_stops[cur + 1..]
                         .iter()
                         .position(|&t| t)
                         .map(|p| cur + 1 + p)
-                        .unwrap_or(self.cols - 1)
+                        .unwrap_or(self.cols.saturating_sub(1))
                 } else {
-                    self.cols - 1
+                    self.cols.saturating_sub(1)
                 };
-                self.cursor_col = next_tab.min(self.cols - 1);
+                self.cursor_col = next_tab.min(self.cols.saturating_sub(1));
                 self.wrap_pending = false;
             }
             0x0A | 0x0B | 0x0C => {
@@ -1191,6 +1208,8 @@ impl vte::Perform for Terminal {
                     col: self.cursor_col,
                     row: self.cursor_row,
                     pen: self.pen,
+                    cursor_visible: self.modes.cursor_visible,
+                    cursor_shape: self.cursor_shape,
                 };
                 if self.using_alt {
                     self.saved_cursor_alt = Some(saved);
@@ -1208,6 +1227,8 @@ impl vte::Perform for Terminal {
                     self.cursor_col = s.col;
                     self.cursor_row = s.row;
                     self.pen = s.pen;
+                    self.modes.cursor_visible = s.cursor_visible;
+                    self.cursor_shape = s.cursor_shape;
                 }
             }
             ([], b'M') => {
@@ -1427,10 +1448,11 @@ impl vte::Perform for Terminal {
             }
             // DECSTBM — Set Top and Bottom Margins.
             ([], 'r') => {
+                if self.rows == 0 { return; }
                 let top = param(0, 1) as usize;
                 let bottom = param(1, self.rows as u16) as usize;
                 self.scroll_top = top.saturating_sub(1);
-                self.scroll_bottom = (bottom.saturating_sub(1)).min(self.rows - 1);
+                self.scroll_bottom = (bottom.saturating_sub(1)).min(self.rows.saturating_sub(1));
                 if self.scroll_top >= self.scroll_bottom {
                     // Invalid region (top >= bottom); reset to full screen.
                     self.scroll_top = 0;
