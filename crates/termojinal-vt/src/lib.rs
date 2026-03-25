@@ -5,6 +5,9 @@
 //!
 //! Image display protocols (Kitty Graphics, iTerm2 Inline Images, Sixel)
 //! are provided by the `image` module.
+//!
+//! DRCS (Dynamically Redefinable Character Sets) soft fonts are supported
+//! via the DECDLD escape sequence for custom glyph definitions.
 
 pub mod cell;
 pub mod color;
@@ -21,6 +24,7 @@ pub use image::{
 };
 pub use scrollback::ScrollbackBuffer;
 pub use term::{
-    char_width, ClipboardEvent, CommandRecord, CursorShape, Modes, MouseFormat, MouseMode,
-    NamedSnapshot, OscState, Terminal, TerminalSnapshot,
+    char_width, ClipboardEvent, CommandRecord, CursorShape, DrcsFontStore, DrcsGlyph,
+    FileTransferEvent, Modes, MouseFormat, MouseMode, NamedSnapshot, OscState, Terminal,
+    TerminalSnapshot,
 };

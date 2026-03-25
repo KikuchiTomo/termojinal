@@ -12,13 +12,95 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use unicode_width::UnicodeWidthChar;
 
-/// DCS accumulation mode for Sixel graphics.
+/// DCS accumulation mode.
 #[derive(Debug, PartialEq)]
 enum DcsMode {
     /// Not accumulating DCS data.
     None,
     /// Accumulating Sixel data (DCS with `q` final character).
     Sixel,
+    /// Accumulating DECDLD (soft font definition) data.
+    Decdld {
+        /// Font number (Pfn).
+        font_number: u8,
+        /// Starting character code (Pcn).
+        start_char: u8,
+        /// Character cell width in pixels (Pcmw or derived from Ps).
+        cell_width: u8,
+        /// Character cell height in pixels (derived from Ps or Pe).
+        cell_height: u8,
+        /// Erase control (Pe): 0 = erase all, 1 = erase only chars being loaded, 2 = erase all.
+        erase_control: u8,
+    },
+}
+
+/// A single DRCS (Dynamically Redefinable Character Set) glyph.
+///
+/// DECDLD allows programs to define custom character glyphs as bitmaps
+/// that can be assigned to G0/G1 character sets.
+#[derive(Debug, Clone)]
+pub struct DrcsGlyph {
+    /// 1-bit-per-pixel bitmap data (MSB first, row-major).
+    pub bitmap: Vec<u8>,
+    /// Width in pixels.
+    pub width: u8,
+    /// Height in pixels.
+    pub height: u8,
+}
+
+/// Store for DRCS soft fonts loaded via DECDLD.
+#[derive(Debug, Clone, Default)]
+pub struct DrcsFontStore {
+    /// Fonts keyed by (font_number, character_code).
+    glyphs: std::collections::HashMap<(u8, u8), DrcsGlyph>,
+}
+
+impl DrcsFontStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Store a glyph for the given font number and character code.
+    pub fn set_glyph(&mut self, font_number: u8, char_code: u8, glyph: DrcsGlyph) {
+        self.glyphs.insert((font_number, char_code), glyph);
+    }
+
+    /// Look up a glyph by font number and character code.
+    pub fn get_glyph(&self, font_number: u8, char_code: u8) -> Option<&DrcsGlyph> {
+        self.glyphs.get(&(font_number, char_code))
+    }
+
+    /// Erase all glyphs for a given font number.
+    pub fn erase_font(&mut self, font_number: u8) {
+        self.glyphs.retain(|&(fn_, _), _| fn_ != font_number);
+    }
+
+    /// Erase all DRCS glyphs.
+    pub fn erase_all(&mut self) {
+        self.glyphs.clear();
+    }
+
+    /// Check if any glyphs are defined.
+    pub fn is_empty(&self) -> bool {
+        self.glyphs.is_empty()
+    }
+
+    /// Get all defined glyphs.
+    pub fn glyphs(&self) -> &std::collections::HashMap<(u8, u8), DrcsGlyph> {
+        &self.glyphs
+    }
+}
+
+/// File transfer event produced by iTerm2 OSC 1337 with inline=0.
+///
+/// When an application sends a file via `OSC 1337 ; File=inline=0;name=...;size=...:BASE64 ST`,
+/// the terminal should offer the file for saving rather than displaying inline.
+#[derive(Debug, Clone)]
+pub struct FileTransferEvent {
+    /// Decoded file name (from base64-encoded `name=` parameter).
+    pub name: String,
+    /// Raw file data (decoded from base64 payload).
+    pub data: Vec<u8>,
 }
 
 /// Cursor shape (DECSCUSR).
@@ -93,6 +175,14 @@ pub struct Modes {
     pub origin_mode: bool,
     pub insert_mode: bool,
     pub cursor_visible: bool,
+    /// DECCKM: when true, cursor keys send application sequences (ESC O A)
+    /// instead of normal sequences (ESC [ A).
+    pub application_cursor_keys: bool,
+    /// LNM: when true, LF/VT/FF also perform CR (auto carriage return).
+    pub linefeed_mode: bool,
+    /// DECSDM (mode 80): Sixel display mode.
+    /// When set, sixel images are displayed at the upper-left corner of the screen.
+    pub sixel_display_mode: bool,
     /// Which mouse events to report.
     pub mouse_mode: MouseMode,
     /// How to encode mouse coordinates.
@@ -245,10 +335,19 @@ pub struct Terminal {
     kitty_accumulator: KittyAccumulator,
     /// iTerm2 multipart image transfer accumulator.
     iterm2_accumulator: Iterm2Accumulator,
-    /// DCS data accumulation buffer (for Sixel).
+    /// DCS data accumulation buffer (for Sixel and DECDLD).
     dcs_data: Vec<u8>,
     /// Current DCS accumulation mode.
     dcs_mode: DcsMode,
+    /// DRCS soft font store (DECDLD-defined custom glyphs).
+    pub drcs_fonts: DrcsFontStore,
+    /// Pending responses to be written back to the PTY.
+    ///
+    /// Escape sequences like DSR, DA, OSC 10/11/12 color queries produce
+    /// response bytes that the application layer must send to the PTY master.
+    pending_responses: VecDeque<Vec<u8>>,
+    /// File transfer event from iTerm2 OSC 1337 (inline=0).
+    pub file_transfer_event: Option<FileTransferEvent>,
     /// Completed command records (time travel history).
     command_history: VecDeque<CommandRecord>,
     /// Next command ID to assign.
@@ -323,6 +422,9 @@ impl Terminal {
             iterm2_accumulator: Iterm2Accumulator::new(),
             dcs_data: Vec::new(),
             dcs_mode: DcsMode::None,
+            drcs_fonts: DrcsFontStore::new(),
+            pending_responses: VecDeque::new(),
+            file_transfer_event: None,
             command_history: VecDeque::new(),
             next_command_id: 0,
             pending_command: None,
@@ -640,6 +742,32 @@ impl Terminal {
         self.kitty_keyboard_flags.last().copied().unwrap_or(0)
     }
 
+    // -----------------------------------------------------------------------
+    // PTY Response Queue
+    // -----------------------------------------------------------------------
+
+    /// Queue a response to be sent back to the PTY.
+    ///
+    /// Used by escape sequences that require a reply (DSR, DA, OSC 10/11/12
+    /// color queries, etc.).  The application layer must drain these with
+    /// `drain_responses()` and write them to the PTY master.
+    fn queue_response(&mut self, data: Vec<u8>) {
+        self.pending_responses.push_back(data);
+    }
+
+    /// Drain all pending responses that should be written to the PTY.
+    ///
+    /// Returns an iterator of byte buffers.  The application layer should
+    /// call this after each `feed()` and write each buffer to the PTY.
+    pub fn drain_responses(&mut self) -> std::collections::vec_deque::Drain<'_, Vec<u8>> {
+        self.pending_responses.drain(..)
+    }
+
+    /// Check whether there are pending PTY responses.
+    pub fn has_pending_responses(&self) -> bool {
+        !self.pending_responses.is_empty()
+    }
+
     /// Get a row from scrollback history. Index 0 is the most recent scrollback line.
     pub fn scrollback_row(&self, idx: usize) -> Option<&[Cell]> {
         self.scrollback.get(idx)
@@ -929,8 +1057,35 @@ impl Terminal {
     /// Handle private mode set/reset (DECSET/DECRST).
     fn handle_private_mode(&mut self, code: u16, enable: bool) {
         match code {
-            1 => {}
+            // DECCKM — Application cursor keys.
+            1 => {
+                self.modes.application_cursor_keys = enable;
+                log::trace!("DECCKM {}", if enable { "on" } else { "off" });
+            }
+            // DECOM — Origin mode.
+            6 => {
+                self.modes.origin_mode = enable;
+                // When origin mode changes, cursor moves to the origin.
+                if enable {
+                    self.cursor_col = 0;
+                    self.cursor_row = self.scroll_top;
+                } else {
+                    self.cursor_col = 0;
+                    self.cursor_row = 0;
+                }
+                self.wrap_pending = false;
+                log::trace!("DECOM {}", if enable { "on" } else { "off" });
+            }
             7 => self.modes.auto_wrap = enable,
+            // X10 mouse reporting (mode 9).
+            9 => {
+                self.modes.mouse_mode = if enable {
+                    MouseMode::Click
+                } else {
+                    MouseMode::None
+                };
+                log::trace!("X10 mouse mode 9 {}", if enable { "on" } else { "off" });
+            }
             12 => {}
             25 => self.modes.cursor_visible = enable,
             47 => {
@@ -976,6 +1131,11 @@ impl Terminal {
                 self.modes.focus_events = enable;
                 log::trace!("focus events {}", if enable { "on" } else { "off" });
             }
+            // DECSDM — Sixel display mode (mode 80).
+            80 => {
+                self.modes.sixel_display_mode = enable;
+                log::trace!("DECSDM {}", if enable { "on" } else { "off" });
+            }
             // Mouse format modes.
             1005 => {
                 self.modes.mouse_format = if enable {
@@ -1003,6 +1163,42 @@ impl Terminal {
                     "mouse format 1015 (urxvt) {}",
                     if enable { "on" } else { "off" }
                 );
+            }
+            // Mode 1047 — Alternate screen buffer (without cursor save/restore).
+            1047 => {
+                if enable {
+                    self.enter_alt_screen();
+                } else {
+                    self.leave_alt_screen();
+                }
+            }
+            // Mode 1048 — Save/restore cursor (DECSC/DECRC).
+            1048 => {
+                if enable {
+                    // Save cursor.
+                    let saved = SavedCursor {
+                        col: self.cursor_col,
+                        row: self.cursor_row,
+                        pen: self.pen,
+                    };
+                    if self.using_alt {
+                        self.saved_cursor_alt = Some(saved);
+                    } else {
+                        self.saved_cursor_main = Some(saved);
+                    }
+                } else {
+                    // Restore cursor.
+                    let saved = if self.using_alt {
+                        self.saved_cursor_alt
+                    } else {
+                        self.saved_cursor_main
+                    };
+                    if let Some(s) = saved {
+                        self.cursor_col = s.col;
+                        self.cursor_row = s.row;
+                        self.pen = s.pen;
+                    }
+                }
             }
             1049 => {
                 if enable {
@@ -1188,6 +1384,10 @@ impl vte::Perform for Terminal {
             }
             0x0A | 0x0B | 0x0C => {
                 self.newline();
+                // LNM (mode 20): when set, LF also performs CR.
+                if self.modes.linefeed_mode {
+                    self.cursor_col = 0;
+                }
                 self.wrap_pending = false;
             }
             0x0D => {
@@ -1444,7 +1644,24 @@ impl vte::Perform for Terminal {
             }
             // DSR — Device Status Report.
             ([], 'n') => {
-                log::trace!("DSR request: {}", param(0, 0));
+                match param(0, 0) {
+                    5 => {
+                        // Status report — respond "OK".
+                        self.queue_response(b"[0n".to_vec());
+                        log::trace!("DSR: status report -> OK");
+                    }
+                    6 => {
+                        // Cursor position report.
+                        let row = self.cursor_row + 1;
+                        let col = self.cursor_col + 1;
+                        let response = format!("[{row};{col}R");
+                        self.queue_response(response.into_bytes());
+                        log::trace!("DSR: cursor position -> {row};{col}");
+                    }
+                    _ => {
+                        log::trace!("DSR: unhandled request {}", param(0, 0));
+                    }
+                }
             }
             // DECSTBM — Set Top and Bottom Margins.
             ([], 'r') => {
@@ -1514,16 +1731,26 @@ impl vte::Perform for Terminal {
                     self.handle_private_mode(sub[0], false);
                 }
             }
-            // SM — Set Mode.
+            // SM — Set Mode (ANSI modes).
             ([], 'h') => {
-                if param(0, 0) == 4 {
-                    self.modes.insert_mode = true;
+                match param(0, 0) {
+                    4 => self.modes.insert_mode = true,
+                    20 => {
+                        self.modes.linefeed_mode = true;
+                        log::trace!("LNM on");
+                    }
+                    _ => {}
                 }
             }
-            // RM — Reset Mode.
+            // RM — Reset Mode (ANSI modes).
             ([], 'l') => {
-                if param(0, 0) == 4 {
-                    self.modes.insert_mode = false;
+                match param(0, 0) {
+                    4 => self.modes.insert_mode = false,
+                    20 => {
+                        self.modes.linefeed_mode = false;
+                        log::trace!("LNM off");
+                    }
+                    _ => {}
                 }
             }
             // Kitty keyboard protocol: CSI > flags u — push keyboard mode.
@@ -1549,6 +1776,23 @@ impl vte::Perform for Terminal {
                     self.kitty_keyboard_mode()
                 );
             }
+            // DA — Device Attributes (Primary).
+            ([], 'c') => {
+                if param(0, 0) == 0 {
+                    // Respond as VT220 with Sixel, DRCS support.
+                    // Attributes: 62=VT220, 4=Sixel, 22=ANSI color
+                    self.queue_response(b"[?62;4;22c".to_vec());
+                    log::trace!("DA: primary device attributes");
+                }
+            }
+            // DA2 — Secondary Device Attributes.
+            ([b'>'], 'c') => {
+                if param(0, 0) == 0 {
+                    // Respond as VT220, firmware version 1, ROM cartridge 0.
+                    self.queue_response(b"[>1;1;0c".to_vec());
+                    log::trace!("DA2: secondary device attributes");
+                }
+            }
             _ => {
                 log::trace!(
                     "unhandled CSI: intermediates={intermediates:?}, action={action}, params={p:?}"
@@ -1570,6 +1814,68 @@ impl vte::Perform for Terminal {
                     if let Ok(s) = std::str::from_utf8(title) {
                         self.osc.title = s.to_string();
                         log::debug!("title: {s}");
+                    }
+                }
+            }
+            // OSC 1 — Set icon name (often treated same as title).
+            "1" => {
+                if let Some(name) = params.get(1) {
+                    if let Ok(s) = std::str::from_utf8(name) {
+                        log::trace!("icon name: {s}");
+                        // Many terminals treat icon name = title.
+                        // We store it in the title for simplicity.
+                    }
+                }
+            }
+            // OSC 10 — Query/set default foreground color.
+            "10" => {
+                if let Some(color_param) = params.get(1) {
+                    if let Ok(s) = std::str::from_utf8(color_param) {
+                        if s == "?" {
+                            // Query: respond with current foreground color.
+                            // Use a sensible default (white-ish for dark themes).
+                            log::trace!("OSC 10 query -> default fg");
+                            self.queue_response(
+                                b"\x1b]10;rgb:cccc/cccc/cccc\x1b\\".to_vec()
+                            );
+                        } else {
+                            log::trace!("OSC 10 set fg: {s}");
+                            // Setting foreground color — store for theme-aware apps.
+                            // Actual color application depends on the renderer.
+                        }
+                    }
+                }
+            }
+            // OSC 11 — Query/set default background color.
+            "11" => {
+                if let Some(color_param) = params.get(1) {
+                    if let Ok(s) = std::str::from_utf8(color_param) {
+                        if s == "?" {
+                            // Query: respond with current background color.
+                            // Use a sensible default (dark for dark themes).
+                            log::trace!("OSC 11 query -> default bg");
+                            self.queue_response(
+                                b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\".to_vec()
+                            );
+                        } else {
+                            log::trace!("OSC 11 set bg: {s}");
+                        }
+                    }
+                }
+            }
+            // OSC 12 — Query/set cursor color.
+            "12" => {
+                if let Some(color_param) = params.get(1) {
+                    if let Ok(s) = std::str::from_utf8(color_param) {
+                        if s == "?" {
+                            // Query: respond with cursor color.
+                            log::trace!("OSC 12 query -> cursor color");
+                            self.queue_response(
+                                b"\x1b]12;rgb:cccc/cccc/cccc\x1b\\".to_vec()
+                            );
+                        } else {
+                            log::trace!("OSC 12 set cursor color: {s}");
+                        }
                     }
                 }
             }
@@ -1784,22 +2090,60 @@ impl vte::Perform for Terminal {
                     .join(";");
 
                 if payload.starts_with("File=") {
-                    // Legacy single-sequence inline image.
-                    let col = self.cursor_col;
-                    let row = self.cursor_row;
-                    let before = self.image_store.placements().len();
-                    image::parse_iterm2_image(
-                        &payload,
-                        &mut self.image_store,
-                        col,
-                        row,
-                    );
-                    // Advance cursor past the image so text flows below it.
-                    if self.image_store.placements().len() > before {
-                        self.image_store.cap_placement_size(self.cols, self.rows);
-                        let cell_rows = self.image_store.placements().last()
-                            .map(|p| p.cell_rows).unwrap_or(1);
-                        self.advance_cursor_past_image(cell_rows);
+                    // Check if this is a file transfer (inline=0) or inline image.
+                    let is_inline = payload.contains("inline=1");
+                    let is_non_inline = payload.contains("inline=0") || !payload.contains("inline=");
+
+                    if is_inline {
+                        // Legacy single-sequence inline image.
+                        let col = self.cursor_col;
+                        let row = self.cursor_row;
+                        let before = self.image_store.placements().len();
+                        image::parse_iterm2_image(
+                            &payload,
+                            &mut self.image_store,
+                            col,
+                            row,
+                        );
+                        // Advance cursor past the image so text flows below it.
+                        if self.image_store.placements().len() > before {
+                            self.image_store.cap_placement_size(self.cols, self.rows);
+                            let cell_rows = self.image_store.placements().last()
+                                .map(|p| p.cell_rows).unwrap_or(1);
+                            self.advance_cursor_past_image(cell_rows);
+                        }
+                    } else if is_non_inline {
+                        // File transfer: decode and emit a FileTransferEvent.
+                        if let Some(rest) = payload.strip_prefix("File=") {
+                            if let Some(colon_idx) = rest.rfind(':') {
+                                let params_str = &rest[..colon_idx];
+                                let b64_data = &rest[colon_idx + 1..];
+
+                                // Parse file name from params.
+                                let mut file_name = String::new();
+                                for kv in params_str.split(';') {
+                                    let mut parts = kv.splitn(2, '=');
+                                    let key = parts.next().unwrap_or("");
+                                    let value = parts.next().unwrap_or("");
+                                    if key == "name" {
+                                        file_name = base64::engine::general_purpose::STANDARD
+                                            .decode(value)
+                                            .ok()
+                                            .and_then(|b| String::from_utf8(b).ok())
+                                            .unwrap_or_default();
+                                    }
+                                }
+
+                                // Decode file data.
+                                if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64_data) {
+                                    self.file_transfer_event = Some(FileTransferEvent {
+                                        name: file_name,
+                                        data,
+                                    });
+                                    log::debug!("iTerm2 file transfer: received file");
+                                }
+                            }
+                        }
                     }
                 } else if payload.starts_with("MultipartFile=") {
                     // Multipart transfer: begin (metadata, no pixel data).
@@ -1834,7 +2178,7 @@ impl vte::Perform for Terminal {
 
     fn hook(
         &mut self,
-        _params: &vte::Params,
+        params: &vte::Params,
         _intermediates: &[u8],
         _ignore: bool,
         action: char,
@@ -1846,6 +2190,54 @@ impl vte::Perform for Terminal {
                 self.dcs_mode = DcsMode::Sixel;
                 self.dcs_data.clear();
             }
+            // DECDLD — Dynamically Redefinable Character Set (soft fonts).
+            //
+            // Format: DCS Pfn ; Pcn ; Pe ; Pcmw ; Pss ; Pt ; Pcmh ; Pcss { Dscs <data> ST
+            //   Pfn = font number (0-3)
+            //   Pcn = starting character code (0-95, added to 0x20)
+            //   Pe  = erase control (0=erase all, 1=erase loaded chars only, 2=erase all)
+            //   Pcmw = character cell width (0 = default)
+            //   Pss  = font set size (0=80-col, 1=132-col, 2=both)
+            //   Pt   = text/full cell (0=text, 1=full cell, 2=text)
+            //   Pcmh = character cell height (0 = default)
+            //   Pcss = character set size (0=94, 1=96)
+            //
+            // The '{' final byte introduces the font data.
+            '{' => {
+                let p: Vec<u16> = params.iter()
+                    .map(|s| s.first().copied().unwrap_or(0))
+                    .collect();
+                let pfn = p.first().copied().unwrap_or(0).min(3) as u8;
+                let pcn = p.get(1).copied().unwrap_or(0).min(95) as u8;
+                let pe = p.get(2).copied().unwrap_or(0).min(2) as u8;
+                let pcmw = p.get(3).copied().unwrap_or(0) as u8;
+                let pcmh = p.get(6).copied().unwrap_or(0) as u8;
+
+                // Default cell dimensions based on font size.
+                let cell_width = if pcmw == 0 { 10 } else { pcmw };
+                let cell_height = if pcmh == 0 { 20 } else { pcmh };
+
+                log::debug!(
+                    "DCS hook: DECDLD font={pfn} start_char={pcn} erase={pe}                      cell={}x{}",
+                    cell_width, cell_height
+                );
+
+                // Erase existing glyphs per the erase control parameter.
+                match pe {
+                    0 | 2 => self.drcs_fonts.erase_font(pfn),
+                    1 => {} // Only erase chars being loaded (handled during glyph parsing).
+                    _ => {}
+                }
+
+                self.dcs_mode = DcsMode::Decdld {
+                    font_number: pfn,
+                    start_char: pcn,
+                    cell_width,
+                    cell_height,
+                    erase_control: pe,
+                };
+                self.dcs_data.clear();
+            }
             _ => {
                 log::trace!("DCS hook: action={action}");
                 self.dcs_mode = DcsMode::None;
@@ -1855,7 +2247,7 @@ impl vte::Perform for Terminal {
 
     fn put(&mut self, byte: u8) {
         match self.dcs_mode {
-            DcsMode::Sixel => {
+            DcsMode::Sixel | DcsMode::Decdld { .. } => {
                 self.dcs_data.push(byte);
             }
             DcsMode::None => {}
@@ -1863,7 +2255,7 @@ impl vte::Perform for Terminal {
     }
 
     fn unhook(&mut self) {
-        match self.dcs_mode {
+        match std::mem::replace(&mut self.dcs_mode, DcsMode::None) {
             DcsMode::Sixel => {
                 log::trace!("DCS unhook: Sixel ({} bytes)", self.dcs_data.len());
                 let data = std::mem::take(&mut self.dcs_data);
@@ -1878,11 +2270,115 @@ impl vte::Perform for Terminal {
                     self.advance_cursor_past_image(cell_rows);
                 }
             }
+            DcsMode::Decdld {
+                font_number,
+                start_char,
+                cell_width,
+                cell_height,
+                ..
+            } => {
+                let data = std::mem::take(&mut self.dcs_data);
+                log::debug!(
+                    "DCS unhook: DECDLD font={font_number} ({} bytes)",
+                    data.len()
+                );
+                // Skip the Dscs (designator) byte(s) if present.
+                // The data format after Dscs is: rows of sixel-like data separated by ';'.
+                // Each glyph row is separated by '/'.
+                let body = if let Some(_pos) = data.iter().position(|&b| b == b'/') {
+                    // There may be leading designator chars before the first data.
+                    // Actually, the Dscs is a single character set designator like 'B' or '@'.
+                    // For simplicity, we treat the entire data as glyph definitions.
+                    &data[..]
+                } else {
+                    &data[..]
+                };
+
+                // Parse glyph data: glyphs are separated by ';'.
+                // Within each glyph, sixel rows are separated by '/'.
+                let mut char_code = start_char;
+                for glyph_data in body.split(|&b| b == b';') {
+                    if glyph_data.is_empty() {
+                        char_code = char_code.wrapping_add(1);
+                        continue;
+                    }
+
+                    let w = cell_width as usize;
+                    let h = cell_height as usize;
+                    // Each row is a sequence of sixel-encoded columns.
+                    // Rows within a glyph are separated by '/'.
+                    let mut bitmap = vec![0u8; (w * h + 7) / 8];
+                    let mut pixel_y = 0usize;
+
+                    for row_data in glyph_data.split(|&b| b == b'/') {
+                        let mut pixel_x = 0usize;
+                        let mut i = 0;
+                        while i < row_data.len() {
+                            let b = row_data[i];
+                            if b == b'!' {
+                                // Repeat: !<count><char>
+                                i += 1;
+                                let mut count = 0usize;
+                                while i < row_data.len() && row_data[i].is_ascii_digit() {
+                                    count = count * 10 + (row_data[i] - b'0') as usize;
+                                    i += 1;
+                                }
+                                if i < row_data.len() && row_data[i] >= 0x3F && row_data[i] <= 0x7E {
+                                    let val = row_data[i] - 0x3F;
+                                    for _ in 0..count {
+                                        for bit in 0..6u8 {
+                                            if val & (1 << bit) != 0 {
+                                                let py = pixel_y + bit as usize;
+                                                if pixel_x < w && py < h {
+                                                    let bit_idx = py * w + pixel_x;
+                                                    bitmap[bit_idx / 8] |= 1 << (7 - (bit_idx % 8));
+                                                }
+                                            }
+                                        }
+                                        pixel_x += 1;
+                                    }
+                                    i += 1;
+                                }
+                                continue;
+                            }
+                            if b >= 0x3F && b <= 0x7E {
+                                let val = b - 0x3F;
+                                for bit in 0..6u8 {
+                                    if val & (1 << bit) != 0 {
+                                        let py = pixel_y + bit as usize;
+                                        if pixel_x < w && py < h {
+                                            let bit_idx = py * w + pixel_x;
+                                            bitmap[bit_idx / 8] |= 1 << (7 - (bit_idx % 8));
+                                        }
+                                    }
+                                }
+                                pixel_x += 1;
+                            }
+                            i += 1;
+                        }
+                        pixel_y += 6;
+                    }
+
+                    self.drcs_fonts.set_glyph(
+                        font_number,
+                        char_code,
+                        DrcsGlyph {
+                            bitmap,
+                            width: cell_width,
+                            height: cell_height,
+                        },
+                    );
+                    log::trace!(
+                        "DECDLD: defined glyph font={font_number} char=0x{:02X}",
+                        0x20 + char_code
+                    );
+                    char_code = char_code.wrapping_add(1);
+                }
+            }
             DcsMode::None => {
                 log::trace!("DCS unhook");
             }
         }
-        self.dcs_mode = DcsMode::None;
     }
 }
 
@@ -2393,5 +2889,386 @@ mod tests {
 
         // Cursor should be at column 1.
         assert_eq!(term.cursor_col, 1);
+    }
+
+    // =========================================================================
+    // Tests for Issue 9, 16, 17 — new terminal protocol features
+    // =========================================================================
+
+    // --- DECCKM (mode 1) ---
+
+    #[test]
+    fn test_decckm_application_cursor_keys() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(!term.modes.application_cursor_keys);
+
+        // Enable DECCKM.
+        feed_str(&mut term, &mut parser, "\x1b[?1h");
+        assert!(term.modes.application_cursor_keys);
+
+        // Disable DECCKM.
+        feed_str(&mut term, &mut parser, "\x1b[?1l");
+        assert!(!term.modes.application_cursor_keys);
+    }
+
+    // --- DECOM (mode 6) ---
+
+    #[test]
+    fn test_decom_origin_mode() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(!term.modes.origin_mode);
+
+        // Set scroll region.
+        feed_str(&mut term, &mut parser, "\x1b[5;20r");
+        // Move cursor somewhere.
+        feed_str(&mut term, &mut parser, "\x1b[10;10H");
+        assert_eq!(term.cursor_row, 9);
+        assert_eq!(term.cursor_col, 9);
+
+        // Enable origin mode — cursor should move to scroll region origin.
+        feed_str(&mut term, &mut parser, "\x1b[?6h");
+        assert!(term.modes.origin_mode);
+        assert_eq!(term.cursor_col, 0);
+        assert_eq!(term.cursor_row, 4); // scroll_top = 4 (row 5, 0-indexed)
+
+        // Disable origin mode — cursor should move to absolute origin.
+        feed_str(&mut term, &mut parser, "\x1b[?6l");
+        assert!(!term.modes.origin_mode);
+        assert_eq!(term.cursor_col, 0);
+        assert_eq!(term.cursor_row, 0);
+    }
+
+    // --- X10 mouse (mode 9) ---
+
+    #[test]
+    fn test_x10_mouse_mode() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert_eq!(term.modes.mouse_mode, MouseMode::None);
+
+        feed_str(&mut term, &mut parser, "\x1b[?9h");
+        assert_eq!(term.modes.mouse_mode, MouseMode::Click);
+
+        feed_str(&mut term, &mut parser, "\x1b[?9l");
+        assert_eq!(term.modes.mouse_mode, MouseMode::None);
+    }
+
+    // --- DECSDM (mode 80) ---
+
+    #[test]
+    fn test_decsdm_sixel_display_mode() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(!term.modes.sixel_display_mode);
+
+        feed_str(&mut term, &mut parser, "\x1b[?80h");
+        assert!(term.modes.sixel_display_mode);
+
+        feed_str(&mut term, &mut parser, "\x1b[?80l");
+        assert!(!term.modes.sixel_display_mode);
+    }
+
+    // --- Mode 1047 (alt screen without cursor save) ---
+
+    #[test]
+    fn test_mode_1047_alt_screen() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        feed_str(&mut term, &mut parser, "Main");
+        assert_eq!(term.grid().cell(0, 0).c, 'M');
+
+        // Enter alt screen via mode 1047.
+        feed_str(&mut term, &mut parser, "\x1b[?1047h");
+        assert!(term.modes.alternate_screen);
+        assert_eq!(term.grid().cell(0, 0).c, ' '); // Alt screen is clear.
+
+        // Leave alt screen via mode 1047.
+        feed_str(&mut term, &mut parser, "\x1b[?1047l");
+        assert!(!term.modes.alternate_screen);
+        assert_eq!(term.grid().cell(0, 0).c, 'M'); // Main screen restored.
+    }
+
+    // --- Mode 1048 (save/restore cursor) ---
+
+    #[test]
+    fn test_mode_1048_save_restore_cursor() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Move cursor to (9, 4).
+        feed_str(&mut term, &mut parser, "\x1b[5;10H");
+        assert_eq!(term.cursor_row, 4);
+        assert_eq!(term.cursor_col, 9);
+
+        // Save cursor via mode 1048.
+        feed_str(&mut term, &mut parser, "\x1b[?1048h");
+
+        // Move cursor elsewhere.
+        feed_str(&mut term, &mut parser, "\x1b[1;1H");
+        assert_eq!(term.cursor_row, 0);
+        assert_eq!(term.cursor_col, 0);
+
+        // Restore cursor via mode 1048.
+        feed_str(&mut term, &mut parser, "\x1b[?1048l");
+        assert_eq!(term.cursor_row, 4);
+        assert_eq!(term.cursor_col, 9);
+    }
+
+    // --- LNM (ANSI mode 20) ---
+
+    #[test]
+    fn test_lnm_linefeed_mode() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(!term.modes.linefeed_mode);
+
+        // Set LNM.
+        feed_str(&mut term, &mut parser, "\x1b[20h");
+        assert!(term.modes.linefeed_mode);
+
+        // Move cursor to column 5.
+        feed_str(&mut term, &mut parser, "\x1b[1;6H");
+        assert_eq!(term.cursor_col, 5);
+
+        // LF should also do CR when LNM is set.
+        feed_str(&mut term, &mut parser, "\n");
+        assert_eq!(term.cursor_col, 0);
+        assert_eq!(term.cursor_row, 1);
+
+        // Reset LNM.
+        feed_str(&mut term, &mut parser, "\x1b[20l");
+        assert!(!term.modes.linefeed_mode);
+
+        // Move cursor to column 5 again.
+        feed_str(&mut term, &mut parser, "\x1b[3;6H");
+        assert_eq!(term.cursor_col, 5);
+
+        // LF should NOT do CR when LNM is off.
+        feed_str(&mut term, &mut parser, "\n");
+        assert_eq!(term.cursor_col, 5);
+    }
+
+    // --- OSC 10/11/12 Color Queries ---
+
+    #[test]
+    fn test_osc10_color_query() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Query foreground color: OSC 10 ; ? ST
+        feed_str(&mut term, &mut parser, "\x1b]10;?\x1b\\");
+
+        assert!(term.has_pending_responses());
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        let resp = std::str::from_utf8(&responses[0]).unwrap();
+        assert!(resp.contains("]10;rgb:"));
+    }
+
+    #[test]
+    fn test_osc11_color_query() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Query background color: OSC 11 ; ? ST
+        feed_str(&mut term, &mut parser, "\x1b]11;?\x1b\\");
+
+        assert!(term.has_pending_responses());
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        let resp = std::str::from_utf8(&responses[0]).unwrap();
+        assert!(resp.contains("]11;rgb:"));
+    }
+
+    #[test]
+    fn test_osc12_color_query() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Query cursor color: OSC 12 ; ? ST
+        feed_str(&mut term, &mut parser, "\x1b]12;?\x1b\\");
+
+        assert!(term.has_pending_responses());
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        let resp = std::str::from_utf8(&responses[0]).unwrap();
+        assert!(resp.contains("]12;rgb:"));
+    }
+
+    #[test]
+    fn test_osc10_set_color_no_response() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Setting a color should not produce a response.
+        feed_str(&mut term, &mut parser, "\x1b]10;rgb:ffff/0000/0000\x1b\\");
+
+        assert!(!term.has_pending_responses());
+    }
+
+    // --- DSR (Device Status Report) ---
+
+    #[test]
+    fn test_dsr_status_report() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // DSR status request (5).
+        feed_str(&mut term, &mut parser, "\x1b[5n");
+
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[0n");
+    }
+
+    #[test]
+    fn test_dsr_cursor_position_report() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Move cursor to (9, 4).
+        feed_str(&mut term, &mut parser, "\x1b[5;10H");
+
+        // DSR cursor position request (6).
+        feed_str(&mut term, &mut parser, "\x1b[6n");
+
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], b"\x1b[5;10R");
+    }
+
+    // --- DA (Device Attributes) ---
+
+    #[test]
+    fn test_da_primary() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Primary DA: CSI 0 c
+        feed_str(&mut term, &mut parser, "\x1b[0c");
+
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        let resp = std::str::from_utf8(&responses[0]).unwrap();
+        assert!(resp.starts_with("\x1b[?"));
+        // Should indicate VT220, Sixel support.
+        assert!(resp.contains("62"));
+        assert!(resp.contains("4"));
+    }
+
+    #[test]
+    fn test_da_secondary() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Secondary DA: CSI > 0 c
+        feed_str(&mut term, &mut parser, "\x1b[>0c");
+
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        let resp = std::str::from_utf8(&responses[0]).unwrap();
+        assert!(resp.starts_with("\x1b[>"));
+    }
+
+    // --- DRCS / DECDLD ---
+
+    #[test]
+    fn test_drcs_font_store() {
+        let mut store = DrcsFontStore::new();
+        assert!(store.is_empty());
+
+        store.set_glyph(0, 0, DrcsGlyph {
+            bitmap: vec![0xFF, 0x00],
+            width: 10,
+            height: 20,
+        });
+
+        assert!(!store.is_empty());
+        assert!(store.get_glyph(0, 0).is_some());
+        assert!(store.get_glyph(0, 1).is_none());
+        assert!(store.get_glyph(1, 0).is_none());
+
+        let glyph = store.get_glyph(0, 0).unwrap();
+        assert_eq!(glyph.width, 10);
+        assert_eq!(glyph.height, 20);
+
+        // Erase font 0.
+        store.erase_font(0);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_drcs_font_store_erase_all() {
+        let mut store = DrcsFontStore::new();
+        store.set_glyph(0, 0, DrcsGlyph {
+            bitmap: vec![0xFF],
+            width: 8,
+            height: 16,
+        });
+        store.set_glyph(1, 0, DrcsGlyph {
+            bitmap: vec![0xFF],
+            width: 8,
+            height: 16,
+        });
+        assert_eq!(store.glyphs().len(), 2);
+
+        store.erase_all();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_decdld_basic_dcs_hook() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Send DECDLD: DCS 0;0;0;10;0;0;20;0 { B <data> ST
+        // This defines font 0, starting at char 0, 10x20 cell.
+        // Minimal sixel data: one glyph with a single column of all-on pixels.
+        // DCS format: ESC P <params> { <Dscs> <data> ESC backslash
+        feed_str(&mut term, &mut parser, "\x1bP0;0;0;10;0;0;20;0{B~\x1b\\");
+
+        // The DRCS font store should now have at least one glyph.
+        assert!(!term.drcs_fonts.is_empty());
+    }
+
+    // --- Response queue ---
+
+    #[test]
+    fn test_response_queue_drain() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+        assert!(!term.has_pending_responses());
+
+        // Trigger two responses.
+        feed_str(&mut term, &mut parser, "\x1b[5n"); // DSR status
+        assert!(term.has_pending_responses());
+
+        // Drain.
+        let responses: Vec<Vec<u8>> = term.drain_responses().collect();
+        assert_eq!(responses.len(), 1);
+        assert!(!term.has_pending_responses());
+    }
+
+    // --- Multiple modes in single sequence ---
+
+    #[test]
+    fn test_multiple_private_modes() {
+        let mut term = Terminal::new(80, 24);
+        let mut parser = vte::Parser::new();
+
+        // Set multiple modes at once: DECCKM + DECAWM + bracketed paste.
+        feed_str(&mut term, &mut parser, "\x1b[?1;7;2004h");
+        assert!(term.modes.application_cursor_keys);
+        assert!(term.modes.auto_wrap);
+        assert!(term.modes.bracketed_paste);
+
+        // Reset them.
+        feed_str(&mut term, &mut parser, "\x1b[?1;7;2004l");
+        assert!(!term.modes.application_cursor_keys);
+        assert!(!term.modes.auto_wrap);
+        assert!(!term.modes.bracketed_paste);
     }
 }

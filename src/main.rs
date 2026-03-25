@@ -5327,6 +5327,20 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
 
+                // Drain pending PTY responses (DSR, DA, OSC 10/11/12 queries).
+                'outer_resp: for ws in &mut state.workspaces {
+                    for tab in &mut ws.tabs {
+                        if let Some(pane) = tab.panes.get_mut(&pane_id) {
+                            if pane.terminal.has_pending_responses() {
+                                for response_data in pane.terminal.drain_responses() {
+                                    let _ = pane.pty.write(&response_data);
+                                }
+                            }
+                            break 'outer_resp;
+                        }
+                    }
+                }
+
                 // ---------------------------------------------------------------
                 // Allow Flow: check for OSC notifications and scan output
                 // ---------------------------------------------------------------
