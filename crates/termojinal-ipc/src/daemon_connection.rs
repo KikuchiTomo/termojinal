@@ -189,10 +189,8 @@ pub fn daemon_reader_thread(
         }
     };
 
-    // Use a short read timeout so we can periodically check for writes.
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-        .ok();
+    // Writer thread uses a cloned stream, so the reader can block indefinitely.
+    stream.set_read_timeout(None).ok();
 
     let write_stream = std::sync::Arc::new(std::sync::Mutex::new(write_stream));
 
@@ -264,13 +262,6 @@ pub fn daemon_reader_thread(
                     }
                     _ => {}
                 }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::WouldBlock =>
-            {
-                // Timeout -- loop back and try again.
-                continue;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 // Connection closed.
