@@ -56,7 +56,7 @@ impl DaemonHandle {
 
     /// Send a JSON request to the daemon and return the response.
     pub fn send_request_json(&self, req: &serde_json::Value) -> Option<serde_json::Value> {
-        use std::io::{BufRead, Write};
+        use std::io::{BufRead, Read, Write};
         use std::os::unix::net::UnixStream;
 
         let mut stream = UnixStream::connect(&self.socket_path).ok()?;
@@ -66,7 +66,9 @@ impl DaemonHandle {
         let msg = format!("{}\n", req);
         stream.write_all(msg.as_bytes()).ok()?;
         let mut line = String::new();
-        std::io::BufReader::new(&stream).read_line(&mut line).ok()?;
+        std::io::BufReader::new((&stream).take(1_048_576))
+            .read_line(&mut line)
+            .ok()?;
         serde_json::from_str(line.trim()).ok()
     }
 

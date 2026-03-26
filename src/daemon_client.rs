@@ -3,88 +3,11 @@
 use crate::{Pane, UserEvent};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use serde_json::json;
 use termojinal_layout::PaneId;
 use termojinal_vt::Terminal;
 use winit::event_loop::EventLoopProxy;
 
-pub(crate) struct DaemonHandle {
-    socket_path: String,
-}
-
-impl DaemonHandle {
-    pub(crate) fn new() -> Self {
-        Self {
-            socket_path: daemon_socket_path(),
-        }
-    }
-
-    /// Send a JSON request to the daemon and return the response.
-    pub(crate) fn send_request_json(&self, req: &serde_json::Value) -> Option<serde_json::Value> {
-        use std::io::{BufRead, Write};
-        use std::os::unix::net::UnixStream;
-
-        let mut stream = UnixStream::connect(&self.socket_path).ok()?;
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
-        let msg = format!("{}\n", req);
-        stream.write_all(msg.as_bytes()).ok()?;
-        let mut line = String::new();
-        use std::io::Read;
-        std::io::BufReader::new((&stream).take(1_048_576)).read_line(&mut line).ok()?;
-        serde_json::from_str(line.trim()).ok()
-    }
-
-    /// Create a session on the daemon. Returns (session_id, name, pid).
-    pub(crate) fn create_session(
-        &self,
-        shell: &str,
-        cwd: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Option<(String, String, i32)> {
-        let req = json!({
-            "type": "create_session",
-            "shell": shell,
-            "cwd": cwd,
-            "cols": cols,
-            "rows": rows,
-        });
-        let resp = self.send_request_json(&req)?;
-        if resp.get("success")?.as_bool()? {
-            let data = resp.get("data")?;
-            let id = data.get("id")?.as_str()?.to_string();
-            let name = data.get("name")?.as_str()?.to_string();
-            let pid = data.get("pid")?.as_i64().map(|v| v as i32).unwrap_or(0);
-            Some((id, name, pid))
-        } else {
-            None
-        }
-    }
-
-    /// Resize a session.
-    #[allow(dead_code)]
-    pub(crate) fn resize_session(&self, session_id: &str, cols: u16, rows: u16) {
-        let req = json!({
-            "type": "resize_session",
-            "id": session_id,
-            "cols": cols,
-            "rows": rows,
-        });
-        self.send_request_json(&req);
-    }
-
-    /// Kill a session.
-    #[allow(dead_code)]
-    pub(crate) fn kill_session(&self, session_id: &str) {
-        let req = json!({
-            "type": "kill_session",
-            "id": session_id,
-        });
-        self.send_request_json(&req);
-    }
-}
+pub(crate) use termojinal_ipc::daemon_connection::DaemonHandle;
 
 
 
