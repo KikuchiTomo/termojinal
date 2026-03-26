@@ -1,6 +1,5 @@
 //! Keyboard input encoding.
 
-use winit::event::KeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 pub(crate) fn key_to_binding_string(

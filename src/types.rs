@@ -1,6 +1,5 @@
 //! Core type definitions.
 
-use crate::config;
 use crate::config::TermojinalConfig;
 use crate::allow_flow;
 use crate::command_ui::CommandExecution;
@@ -16,7 +15,6 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use termojinal_ipc::app_protocol::{AppIpcRequest, AppIpcResponse};
 use termojinal_ipc::command_loader::LoadedCommand;
@@ -476,6 +474,7 @@ pub(crate) struct AppState {
     /// Claudes Dashboard (multi-agent overlay) state.
     pub(crate) claudes_dashboard: ClaudesDashboard,
     /// Whether the sessions summary panel in the sidebar is collapsed.
+    #[allow(dead_code)]
     pub(crate) sessions_collapsed: bool,
     /// Cached session list from the daemon (refreshed by background thread).
     pub(crate) daemon_sessions: Vec<DaemonSessionInfo>,

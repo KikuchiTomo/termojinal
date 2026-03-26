@@ -292,10 +292,18 @@ impl Atlas {
         let pixel_area = (glyph_w * glyph_h) as u32;
         // Threshold: less than 2% total coverage means "almost empty".
         let nearly_empty = pixel_area > 0 && pixel_sum < pixel_area / 50;
+        // A glyph is considered "missing" (needs fallback) when:
+        //   - zero size bitmap, OR
+        //   - .notdef glyph index (0), OR
+        //   - for fallback-eligible chars: empty or near-empty bitmap
+        //
+        // For ANY character in the fallback-check set (PUA, symbols, etc.),
+        // ALWAYS check pixel coverage regardless of glyph index. fontdue
+        // sometimes reports a valid glyph index but produces an empty or
+        // near-empty bitmap for characters it cannot truly render.
         let primary_missing = (glyph_w == 0 || glyph_h == 0)
             || self.font.lookup_glyph_index(c) == 0
-            || (Self::needs_fallback_check(c) && bitmap.iter().all(|&b| b == 0))
-            || (Self::needs_fallback_check(c) && nearly_empty);
+            || (Self::needs_fallback_check(c) && (bitmap.iter().all(|&b| b == 0) || nearly_empty));
 
         let (metrics, bitmap) = if Self::is_cjk(c) {
             // CJK range characters: use CJK font for actual CJK ideographs/kana
@@ -396,7 +404,10 @@ impl Atlas {
         // A glyph is considered missing if it has zero size OR if it has
         // non-zero dimensions but all pixels are blank (empty rendering).
         let nonzero_count = bitmap.iter().filter(|&&b| b > 0).count();
-        let glyph_empty = (glyph_w == 0 || glyph_h == 0) || nonzero_count == 0;
+        let pixel_sum_after: u32 = bitmap.iter().map(|&b| b as u32).sum();
+        let pixel_area_after = (glyph_w * glyph_h) as u32;
+        let nearly_empty_after = pixel_area_after > 0 && pixel_sum_after < pixel_area_after / 50;
+        let glyph_empty = (glyph_w == 0 || glyph_h == 0) || nonzero_count == 0 || nearly_empty_after;
 
         // Log non-ASCII glyphs for debugging rendering issues.
         if c as u32 > 0x7F {

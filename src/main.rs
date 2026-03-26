@@ -644,6 +644,24 @@ impl ApplicationHandler<UserEvent> for App {
             Ok(p) => p,
             Err(e) => {
                 log::error!("failed to spawn initial pane: {e}");
+                // Show a user-facing error dialog via native macOS alert
+                #[cfg(target_os = "macos")]
+                {
+                    use std::process::Command;
+                    let msg = format!(
+                        "Termojinal requires the daemon (termojinald) to be running.\n\n\
+                         Start it with:\n  termojinald &\n\n\
+                         Or via Homebrew:\n  brew services start termojinal\n\n\
+                         Error: {e}"
+                    );
+                    let _ = Command::new("osascript")
+                        .args(["-e", &format!(
+                            "display dialog \"{}\" with title \"Termojinal\" buttons {{\"OK\"}} default button \"OK\" with icon stop",
+                            msg.replace('\"', "\\\"").replace('\n', "\\n")
+                        )])
+                        .output();
+                }
+                eprintln!("Error: termojinald is not running. Start it with: termojinald &");
                 event_loop.exit();
                 return;
             }

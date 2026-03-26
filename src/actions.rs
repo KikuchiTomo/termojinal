@@ -1,7 +1,6 @@
 //! Action dispatch.
 
 use crate::*;
-use crate::config;
 use termojinal_ipc::keybinding::Action;
 use termojinal_layout::{Direction, SplitDirection};
 use winit::event_loop::ActiveEventLoop;

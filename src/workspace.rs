@@ -1,6 +1,5 @@
 //! Workspace info, refresh, and agent state.
 
-use crate::config;
 use crate::daemon_client::daemon_socket_path;
 use crate::platform::get_child_cwd;
 use crate::UserEvent;

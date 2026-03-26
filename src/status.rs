@@ -1,6 +1,5 @@
 //! Status bar data collection and formatting.
 
-use crate::config;
 use crate::platform::{detect_ssh_from_pid, get_child_cwd};
 use crate::UserEvent;
 use std::sync::{Arc, Mutex};
