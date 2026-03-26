@@ -152,34 +152,26 @@ impl Daemon {
 
         log::info!("termojinald listening on {}", self.socket_path);
 
-        // --- Clean up stale session files, then restore saved sessions ---
+        // --- Clean up stale session files from previous daemon runs ---
+        // True session restoration (reattaching to an existing PTY) is not
+        // possible after a daemon restart because the kernel closes the master
+        // fd.  Instead we just remove stale persistence files so they don't
+        // accumulate.
         {
-            let mut manager = self.manager.lock().await;
+            let manager = self.manager.lock().await;
 
             match manager.load_saved_states() {
                 Ok(states) => {
-                    let (live, stale): (Vec<_>, Vec<_>) =
-                        states.into_iter().partition(|s| is_pid_alive(s.pid));
-
-                    for s in &stale {
-                        log::info!("removing stale session file: {} (pid={:?})", s.name, s.pid);
+                    for s in &states {
+                        log::info!(
+                            "cleaning up stale session file: {} (pid={:?})",
+                            s.name,
+                            s.pid
+                        );
                         manager.remove_saved(&s.id).ok();
                     }
-
-                    log::info!("restoring {} saved sessions", live.len());
-                    for saved in &live {
-                        match manager.create_session_with_manager(
-                            &saved.shell,
-                            &saved.cwd,
-                            saved.cols,
-                            saved.rows,
-                            Some(self.manager.clone()),
-                        ) {
-                            Ok(_) => {
-                                log::info!("restored session: {} (cwd={})", saved.name, saved.cwd)
-                            }
-                            Err(e) => log::warn!("failed to restore session {}: {e}", saved.name),
-                        }
+                    if !states.is_empty() {
+                        log::info!("removed {} stale session files", states.len());
                     }
                 }
                 Err(e) => log::warn!("failed to load saved sessions: {e}"),
@@ -225,13 +217,6 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         std::fs::remove_file(&self.socket_path).ok();
     }
-}
-
-fn is_pid_alive(pid: Option<i32>) -> bool {
-    let Some(pid) = pid else { return false };
-    use nix::sys::signal;
-    use nix::unistd::Pid;
-    signal::kill(Pid::from_raw(pid), None).is_ok()
 }
 
 /// Handle a single IPC connection.
