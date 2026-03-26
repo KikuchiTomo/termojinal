@@ -165,6 +165,20 @@ impl Pty {
         self.master.as_raw_fd()
     }
 
+    /// Consume the Pty and return the master OwnedFd and child pid.
+    /// The caller takes ownership of the fd and is responsible for
+    /// sending SIGHUP to the child when done.
+    pub fn into_parts(self) -> (OwnedFd, Pid) {
+        let pid = self.pid;
+        // Use ManuallyDrop to prevent Drop from running (which would send SIGHUP
+        // and close the fd). We then extract the OwnedFd via ptr::read.
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` is ManuallyDrop so its destructor won't run. We read
+        // the OwnedFd out, taking ownership. No other code will access `this`.
+        let fd = unsafe { std::ptr::read(&this.master) };
+        (fd, pid)
+    }
+
     /// Get the child process PID.
     pub fn pid(&self) -> Pid {
         self.pid

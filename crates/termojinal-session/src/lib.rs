@@ -615,23 +615,28 @@ async fn session_io_task(
 ) {
     use tokio::io::unix::AsyncFd;
 
+    // Consume the Pty to get the OwnedFd directly, avoiding BorrowedFdWrapper.
+    // The caller (session_io_task) is now responsible for sending SIGHUP on exit.
+    let (owned_fd, _pid) = pty.into_parts();
+    let master_fd = owned_fd.as_raw_fd();
+
     // Set the master fd to non-blocking for AsyncFd.
-    let master_fd = pty.master_fd();
     let flags = nix::fcntl::fcntl(master_fd, nix::fcntl::FcntlArg::F_GETFL).unwrap_or(0);
     let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
     let _ = nix::fcntl::fcntl(master_fd, nix::fcntl::FcntlArg::F_SETFL(oflags));
 
-    // SAFETY: We create an AsyncFd from a borrowed fd. The Pty struct outlives
-    // the AsyncFd because both are owned by this task. We use BorrowedFdWrapper
-    // to avoid transferring ownership.
-    let async_fd = match AsyncFd::new(BorrowedFdWrapper(master_fd)) {
+    // AsyncFd takes ownership of the OwnedFd, ensuring the fd stays valid
+    // for the entire lifetime of async_fd.
+    let async_fd = match AsyncFd::new(owned_fd) {
         Ok(fd) => fd,
         Err(e) => {
             log::error!("session {session_id}: failed to create AsyncFd: {e}");
             return;
         }
     };
+    // Get the raw fd for libc calls. The fd remains valid because async_fd owns it.
+    let master_fd = async_fd.as_raw_fd();
 
     let mut buf = vec![0u8; 65536];
     let mut exit_code: Option<i32> = None;
@@ -789,16 +794,6 @@ async fn session_io_task(
     }
 }
 
-/// Wrapper around a raw fd that implements AsRawFd for AsyncFd.
-/// SAFETY: The fd is valid for the lifetime of this wrapper because
-/// it is borrowed from a Pty that outlives it within session_io_task.
-struct BorrowedFdWrapper(std::os::fd::RawFd);
-
-impl AsRawFd for BorrowedFdWrapper {
-    fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        self.0
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
