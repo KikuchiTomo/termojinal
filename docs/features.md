@@ -148,7 +148,7 @@ no_response = "n\n"
 
 ## Quick Terminal
 
-`Ctrl+`` ` -- A Quake-style drop-down terminal from the top of the screen. Works even when Termojinal is not focused (requires daemon).
+`Cmd+`` ` -- A Quake-style drop-down terminal from the top of the screen. Works even when Termojinal is not focused (requires daemon).
 
 Press the hotkey again or Escape to dismiss. Sessions persist between toggles in a dedicated workspace.
 
@@ -383,7 +383,7 @@ Commands can be signed with Ed25519 for trust verification.
 | `Cmd+Shift+P` | Command palette |
 | `Cmd+O` | Quick Launch |
 | `Cmd+Shift+C` | Claudes Dashboard |
-| `Ctrl+`` ` | Quick Terminal (global) |
+| `Cmd+`` ` | Quick Terminal (global) |
 | `Cmd+D` | Split right |
 | `Cmd+Shift+D` | Split down |
 | `Cmd+]` / `[` | Next / previous pane |

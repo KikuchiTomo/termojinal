@@ -10,7 +10,7 @@ Termojinal は macOS 向けの GPU アクセラレーテッドターミナルエ
 brew tap KikuchiTomo/termojinal
 brew install termojinal              # CLI ツール + デーモン
 brew install --cask termojinal-app   # GUI アプリ (Termojinal.app → /Applications)
-brew services start termojinal       # デーモン起動 (Ctrl+` ホットキー)
+brew services start termojinal       # デーモン起動 (Cmd+` ホットキー)
 ```
 
 ### ソースから

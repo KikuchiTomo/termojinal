@@ -148,7 +148,7 @@ no_response = "n\n"
 
 ## Quick Terminal
 
-`Ctrl+`` ` -- 画面上部からスライドする Quake 風ドロップダウンターミナル。Termojinal がフォーカスされていなくても動作する（デーモンが必要）。
+`Cmd+`` ` -- 画面上部からスライドする Quake 風ドロップダウンターミナル。Termojinal がフォーカスされていなくても動作する（デーモンが必要）。
 
 もう一度ホットキーを押すか Escape で閉じる。専用ワークスペースでセッションが維持される。
 
@@ -383,7 +383,7 @@ Ed25519 でコマンドを暗号署名して信頼性を検証。
 | `Cmd+Shift+P` | コマンドパレット |
 | `Cmd+O` | Quick Launch |
 | `Cmd+Shift+C` | Claudes Dashboard |
-| `Ctrl+`` ` | Quick Terminal（グローバル） |
+| `Cmd+`` ` | Quick Terminal（グローバル） |
 | `Cmd+D` | 右に分割 |
 | `Cmd+Shift+D` | 下に分割 |
 | `Cmd+]` / `[` | 次/前のペイン |

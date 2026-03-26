@@ -65,7 +65,7 @@ Type **`>`** as the first character to switch to command mode. Fuzzy search acro
 | Command Palette | Cmd+Shift+P |
 | Quick Launch | Cmd+O |
 | Claudes Dashboard | Cmd+Shift+C |
-| Quick Terminal | Ctrl+\` |
+| Quick Terminal | Cmd+\` |
 | Split right | Cmd+D |
 | Split down | Cmd+Shift+D |
 | Next / prev pane | Cmd+] / Cmd+[ |
