@@ -20,18 +20,45 @@ async fn main() {
                 }
             });
 
-            // Wait for SIGTERM/SIGINT (Ctrl+C) for graceful shutdown.
-            tokio::signal::ctrl_c().await.ok();
-            log::info!("shutting down, saving sessions...");
+            // Wait for SIGINT (Ctrl+C) or SIGTERM for graceful shutdown.
+            let shutdown = async {
+                let ctrl_c = tokio::signal::ctrl_c();
 
-            // Save all session states before exiting.
-            let mgr = manager.lock().await;
-            if let Err(e) = mgr.save_all() {
-                log::error!("failed to save sessions on shutdown: {e}");
-            } else {
-                log::info!("sessions saved successfully");
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigterm =
+                        signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+                    tokio::select! {
+                        _ = ctrl_c => log::info!("received SIGINT"),
+                        _ = sigterm.recv() => log::info!("received SIGTERM"),
+                    }
+                }
+
+                #[cfg(not(unix))]
+                {
+                    ctrl_c.await.ok();
+                    log::info!("received SIGINT");
+                }
+            };
+            shutdown.await;
+
+            log::info!("shutting down, sending SIGHUP to sessions...");
+
+            // Send SIGHUP to all sessions, save state, then clean up.
+            {
+                let mut mgr = manager.lock().await;
+
+                // Send SIGHUP to all session shells and wait briefly for them to exit.
+                mgr.graceful_shutdown();
+
+                // Save all session states before exiting.
+                if let Err(e) = mgr.save_all() {
+                    log::error!("failed to save sessions on shutdown: {e}");
+                } else {
+                    log::info!("sessions saved successfully");
+                }
             }
-            drop(mgr);
 
             // Abort the daemon loop (it runs forever otherwise).
             daemon_handle.abort();

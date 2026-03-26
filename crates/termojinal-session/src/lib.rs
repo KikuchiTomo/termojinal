@@ -435,6 +435,29 @@ impl SessionManager {
         }
     }
 
+    /// Graceful shutdown: send SIGHUP to all session shells and wait for exit.
+    pub fn graceful_shutdown(&mut self) {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::sys::wait::{waitpid, WaitPidFlag};
+        use nix::unistd::Pid;
+
+        for session in self.sessions.values() {
+            if let Some(pid) = session.state.pid {
+                let _ = killpg(Pid::from_raw(pid), Signal::SIGHUP);
+            }
+        }
+
+        // Give processes a short time to exit.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Reap children.
+        for session in self.sessions.values() {
+            if let Some(pid) = session.state.pid {
+                let _ = waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG));
+            }
+        }
+    }
+
     /// Kill all sessions (daemon-owned and externally tracked).
     /// Daemon-owned sessions are dropped (SIGHUP sent to PTY child).
     /// Externally tracked sessions are sent SIGKILL.
