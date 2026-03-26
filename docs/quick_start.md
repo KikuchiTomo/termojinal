@@ -42,20 +42,25 @@ This single command:
 
 | Action | Shortcut |
 |--------|----------|
+| Command palette | Cmd+Shift+P |
+| Quick Launch | Cmd+O |
+| Claudes Dashboard | Cmd+Shift+C |
+| Quick Terminal | Cmd+\` |
 | Split right | Cmd+D |
 | Split down | Cmd+Shift+D |
 | Next pane | Cmd+] |
 | Previous pane | Cmd+[ |
 | Zoom pane | Cmd+Shift+Enter |
+| Extract pane to tab | Cmd+Shift+T |
 | New tab | Cmd+T |
 | Close tab | Cmd+W |
 | Next/prev tab | Cmd+Shift+} / { |
 | New workspace | Cmd+N |
 | Switch workspace | Cmd+1 through Cmd+9 |
-| Command palette | Cmd+Shift+P |
 | Toggle sidebar | Cmd+B |
 | Search | Cmd+F |
-| Quick Terminal | Ctrl+` |
+| Font size | Cmd+= / Cmd+- |
+| Option+click | Open URL in browser / path via `open` |
 | Quit | Cmd+Q |
 
 All keybindings are customizable in `~/.config/termojinal/keybindings.toml`.
@@ -85,12 +90,22 @@ Edit `~/.config/termojinal/config.toml` to customize fonts, colors, sidebar, sta
 
 See [configuration.md](configuration.md) for the complete reference.
 
+## Claudes Dashboard
+
+Open with `Cmd+Shift+C`. A lazygit-style 2-pane interface listing all Claude Code sessions across workspaces. See session status, switch between them, and manage permissions at a glance.
+
+## Quick Launch
+
+Open with `Cmd+O`. A fuzzy search overlay for quickly switching between workspaces, tabs, and panes. Type to filter, Enter to jump.
+
 ## Architecture
+
+Termojinal uses a **daemon-owned PTY** model. The GUI is a thin client; closing it (`tm exit`) disconnects the display while shells survive in the daemon. Use `tm kill` to terminate a shell.
 
 | Binary | Purpose |
 |--------|---------|
-| `Termojinal.app` | GUI application |
-| `termojinald` | Session daemon (global hotkeys, persistence) |
+| `Termojinal.app` | Thin-client GUI (wgpu + Metal + winit) |
+| `termojinald` | Session daemon (PTY owner, global hotkeys, persistence) |
 | `tm` | CLI tool (setup, notifications, allow flow) |
 | `termojinal-mcp` | MCP server for Claude Code integration |
 | `termojinal-sign` | Ed25519 command signer |

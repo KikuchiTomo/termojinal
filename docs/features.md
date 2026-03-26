@@ -7,9 +7,12 @@ Termojinal is a GPU-accelerated terminal emulator for macOS, built for developer
 ## Table of Contents
 
 - [GPU-Accelerated Rendering](#gpu-accelerated-rendering)
+- [Daemon-Owned PTY Architecture](#daemon-owned-pty-architecture)
 - [Workspaces](#workspaces)
 - [Tabs](#tabs)
 - [Split Panes](#split-panes)
+- [Claudes Dashboard](#claudes-dashboard)
+- [Quick Launch](#quick-launch)
 - [Sidebar](#sidebar)
 - [Command Palette](#command-palette)
 - [Allow Flow (AI Permission Management)](#allow-flow)
@@ -31,6 +34,7 @@ Termojinal is a GPU-accelerated terminal emulator for macOS, built for developer
 - [Command Signing](#command-signing)
 - [Git Integration](#git-integration)
 - [Port Detection](#port-detection)
+- [Brew Update Checker](#brew-update-checker)
 
 ---
 
@@ -51,6 +55,25 @@ Termojinal renders everything on the GPU using **wgpu** with a Metal backend on 
 - Scrolling through large outputs is buttery smooth.
 - Window resizing is instantaneous — no flash of blank space.
 - Semi-transparent windows and blur effects run at full frame rate.
+
+---
+
+## Daemon-Owned PTY Architecture
+
+Termojinal uses a **daemon-owned PTY** model. The GUI (`Termojinal.app`) is a thin client that connects to the daemon (`termojinald`) over a Unix socket using a binary framing protocol (JSON + binary frames).
+
+### What this means
+
+- **Sessions survive GUI restarts** — Close the GUI and reopen it; your shells are still running.
+- `tm exit` — Disconnects the GUI from the daemon. All shells continue running.
+- `tm kill` — Terminates a shell session in the daemon.
+
+### Security
+
+- Socket directory permissions: `0o700`
+- Socket file permissions: `0o600`
+- `read_line` enforces a 1 MB limit to prevent memory exhaustion
+- Shell path allowlist validation prevents execution of arbitrary binaries
 
 ---
 
@@ -139,6 +162,44 @@ The focused pane shows a colored border (supports alpha transparency). Both the 
 
 Each pane has its own scrollbar with configurable thumb and track opacity.
 
+### Tab drag pane split
+
+Drag a tab into the pane area to split the layout. Drop it on the left, right, top, or bottom edge to create a new split with that tab's content.
+
+### Extract pane to tab
+
+Press `Cmd+Shift+T` to extract the focused pane into its own new tab. Useful for promoting a split pane to a full tab.
+
+---
+
+## Claudes Dashboard
+
+Open with `Cmd+Shift+C`. A lazygit-style 2-pane interface for managing Claude Code sessions across all workspaces.
+
+### Layout
+
+- **Left pane** — List of all Claude Code sessions with status indicators
+- **Right pane** — Details and recent activity for the selected session
+
+### What it shows
+
+- Session status (active, idle, waiting for permission)
+- Workspace and tab where each session is running
+- Permission request history
+- Quick actions: jump to session, approve/deny pending requests
+
+---
+
+## Quick Launch
+
+Open with `Cmd+O`. A fuzzy search overlay for rapidly switching between workspaces, tabs, and panes.
+
+### Features
+
+- Fuzzy matching across all workspace names, tab titles, and pane content
+- Keyboard-driven: type to filter, arrow keys to select, Enter to jump
+- Shows workspace/tab/pane hierarchy in results
+
 ---
 
 ## Sidebar
@@ -159,9 +220,9 @@ For each workspace:
 - **Allow Flow indicator** — a left accent stripe when a workspace has pending AI permission requests
 - **AI agent status** — shows whether a Claude Code (or other AI agent) session is active, with configurable indicator styles
 
-### Agent status indicators
+### Agent status indicators (Hooks-based)
 
-When a Claude Code session is detected in a workspace, the sidebar shows its status:
+Claude Code status is detected via **Claude Code Hooks** (event-driven, no polling). When a Claude Code session is detected in a workspace, the sidebar shows its status:
 
 | Style | Behavior |
 |-------|----------|
@@ -257,7 +318,7 @@ no_response = "n\n"
 
 A Quake-style drop-down terminal that slides from the edge of the screen with a global hotkey — works even when Termojinal is not focused.
 
-**Default hotkey:** `Ctrl+`` ` (requires the daemon to be running)
+**Default hotkey:** `Cmd+`` ` (requires the daemon to be running)
 
 ### How it works
 
@@ -268,7 +329,7 @@ Press the hotkey anywhere on your Mac. A terminal window slides down from the to
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled` | `true` | Enable the feature |
-| `hotkey` | `"ctrl+\`"` | Global hotkey (customizable) |
+| `hotkey` | `"cmd+\`"` | Global hotkey (customizable) |
 | `animation` | `"slide_down"` | Animation: `slide_down`, `slide_up`, `fade`, `none` |
 | `animation_duration_ms` | `200` | Animation speed |
 | `height_ratio` | `0.4` | Height as fraction of screen (0.0–1.0) |
@@ -553,15 +614,19 @@ User overrides are **merged** with defaults — you only need to specify the bin
 | `Cmd+1`–`Cmd+9` | Switch to workspace N |
 | `Cmd+Shift+]` / `[` | Next / previous workspace |
 | `Cmd+Shift+P` | Command palette |
+| `Cmd+O` | Quick Launch |
+| `Cmd+Shift+C` | Claudes Dashboard |
 | `Cmd+B` | Toggle sidebar |
 | `Cmd+F` | Search |
 | `Cmd+=` / `Cmd+-` | Font size up / down |
+| `Cmd+Shift+T` | Extract pane to tab |
 | `Cmd+K` | Clear scrollback |
 | `Cmd+L` | Clear screen |
 | `Cmd+C` / `Cmd+V` | Copy / paste |
 | `Cmd+,` | Open settings |
 | `Cmd+Q` | Quit |
-| `Ctrl+`` ` | Toggle Quick Terminal (global) |
+| `Cmd+`` ` | Toggle Quick Terminal (global) |
+| Option+click | Open URL in browser / path via `open` |
 
 ### Special actions
 
@@ -684,12 +749,13 @@ Add to your Claude Code MCP config:
 
 ## Session Daemon
 
-The session daemon (`termojinald`) runs in the background and provides system-level features that require persistent processes.
+The session daemon (`termojinald`) runs in the background and **owns all PTY sessions**. The GUI is a thin client that connects over a Unix socket using a binary framing protocol.
 
 ### What it does
 
+- **PTY ownership** — The daemon owns all pseudo-terminal sessions. Shells survive GUI restarts.
+- **Binary framing protocol** — JSON + binary frames over a Unix socket for efficient GUI-daemon communication.
 - **Global hotkeys** — Intercepts keyboard events system-wide via macOS CGEventTap, enabling the Quick Terminal hotkey even when Termojinal is not focused.
-- **PTY management** — Manages pseudo-terminal sessions.
 - **Session persistence** — Saves and restores session state across app restarts.
 
 ### Requirements
@@ -719,7 +785,8 @@ launchctl load ~/Library/LaunchAgents/com.termojinal.daemon.plist
 | `tm setup` | One-command setup: creates config directory, installs Claude Code hooks, links bundled commands |
 | `tm list` | List active sessions (`--json` for machine-readable output) |
 | `tm new` | Create a new session |
-| `tm kill <id>` | Kill a session |
+| `tm exit` | Disconnect the GUI (shells keep running in the daemon) |
+| `tm kill <id>` | Terminate a shell session |
 | `tm resize <id> <cols> <rows>` | Resize a PTY |
 | `tm ping` | Check daemon status |
 | `tm notify` | Send a desktop notification |
@@ -766,6 +833,27 @@ Git information is updated automatically as you work.
 ## Port Detection
 
 Termojinal automatically detects listening ports in your terminal sessions and displays them in the sidebar and status bar via the `{ports}` template variable. This is useful for seeing which dev servers are running without having to run `lsof` or `netstat`.
+
+---
+
+## Copy with Colors
+
+Copy terminal content to the clipboard in **RTF format**, preserving foreground and background colors. Useful for pasting colored terminal output into documents, presentations, or chat.
+
+---
+
+## Option+Click Actions
+
+Hold Option and click on text in the terminal:
+
+- **URLs** (http/https) — Opens in the default browser
+- **File paths** — Opens via macOS `open` command
+
+---
+
+## Brew Update Checker
+
+On launch, Termojinal checks for available updates via Homebrew. If a newer version is available, a non-intrusive notification is shown.
 
 ---
 

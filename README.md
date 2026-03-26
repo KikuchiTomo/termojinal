@@ -18,16 +18,26 @@ For now, this is a selfish project — of my vibe, by my vibe, for my vibe. Like
 
 ## Features
 
+- **Daemon-owned PTY** — GUI is a thin client; the daemon owns all PTY sessions. GUI can disconnect (`tm exit`) while shells keep running
 - GPU-accelerated rendering (wgpu + Metal)
 - Workspaces, tabs, and split panes with immutable tree layout
+- **Claudes Dashboard** (Cmd+Shift+C) — lazygit-style 2-pane overview of all Claude Code sessions
+- **Quick Launch** (Cmd+O) — fuzzy search to switch between workspaces, tabs, and panes
+- **Tab drag pane split** — drag a tab into the pane area to split and rearrange
+- **Extract pane to tab** (Cmd+Shift+T) — pull a pane out into its own tab
 - Vertical sidebar with workspaces, git branches, ports, and AI status
 - Command palette with fuzzy search and extensible plugins via JSON stdio
 - Allow Flow — approve or deny AI agent permission requests from anywhere with a single key
-- Quick Terminal — global hotkey drops a terminal from the top of the screen
+- **Hooks-based Claude status** — event-driven via Claude Code Hooks (no polling)
+- Quick Terminal — global hotkey (Cmd+\`) drops a terminal from the top of the screen
 - Dark/light theme auto-switching following macOS appearance
 - CJK full-width characters and inline Japanese IME
 - Color emoji rendering via Core Text
 - Inline images (Kitty Graphics, Sixel, iTerm2)
+- **Option+click** — opens URLs in the browser, file paths via `open`
+- **Copy with colors** — RTF clipboard copy preserving terminal colors
+- OSC 10/11/12 color queries, DRCS/DECDLD, additional DEC modes
+- **Brew update checker** — checks for updates via Homebrew on launch
 - MCP server for Claude Code workspace control
 - Desktop notifications via Notification Center
 - Ed25519 command signing for verified plugins
@@ -41,7 +51,7 @@ For now, this is a selfish project — of my vibe, by my vibe, for my vibe. Like
 brew tap KikuchiTomo/termojinal
 brew install termojinal              # CLI tools + daemon
 brew install --cask termojinal-app   # GUI app (Termojinal.app → /Applications)
-brew services start termojinal       # start daemon (Ctrl+` hotkey)
+brew services start termojinal       # start daemon (Cmd+` hotkey)
 ```
 
 ### From source
@@ -63,7 +73,7 @@ Creates config directory, installs Claude Code hooks (Notification + PermissionR
 
 ### Daemon
 
-The daemon enables global hotkeys (Ctrl+\` Quick Terminal) even when Termojinal is not focused.
+The daemon owns all PTY sessions and enables global hotkeys (Cmd+\` Quick Terminal) even when Termojinal is not focused. The GUI is a thin client — closing it (`tm exit`) disconnects the display while shells survive in the daemon. Use `tm kill` to actually terminate a shell.
 
 ```bash
 brew services start termojinal     # Homebrew
@@ -94,11 +104,14 @@ Add to your Claude Code MCP config:
 | Action | Default |
 |--------|---------|
 | Command Palette | Cmd+Shift+P |
-| Quick Terminal | Ctrl+\` |
+| Quick Launch | Cmd+O |
+| Claudes Dashboard | Cmd+Shift+C |
+| Quick Terminal | Cmd+\` |
 | Split right | Cmd+D |
 | Split down | Cmd+Shift+D |
 | Next / prev pane | Cmd+] / Cmd+[ |
 | Zoom pane | Cmd+Shift+Enter |
+| Extract pane to tab | Cmd+Shift+T |
 | New tab | Cmd+T |
 | Close tab | Cmd+W |
 | Next / prev tab | Cmd+Shift+} / { |
@@ -107,6 +120,7 @@ Add to your Claude Code MCP config:
 | Toggle sidebar | Cmd+B |
 | Search | Cmd+F |
 | Font size | Cmd+= / Cmd+- |
+| Option+click | Open URL in browser / path via `open` |
 
 All keybindings are customizable. See [configuration docs](docs/configuration.md).
 
@@ -161,10 +175,21 @@ make fmt            # format
 
 ## Architecture
 
+Termojinal uses a **daemon-owned PTY** model with a binary framing protocol (JSON + binary frames). The GUI is a thin client that connects to the daemon over a Unix socket. Sessions survive GUI restarts.
+
+- `tm exit` — disconnect the GUI (shells keep running in the daemon)
+- `tm kill` — terminate a shell session
+
+### Security
+
+- Socket permissions (0o700 / 0o600)
+- `read_line` 1 MB limit
+- Shell path allowlist validation
+
 | Binary | Purpose |
 |--------|---------|
-| Termojinal.app | GUI application (wgpu + Metal + winit) |
-| termojinald | Session daemon (PTY management, global hotkeys) |
+| Termojinal.app | Thin-client GUI (wgpu + Metal + winit) |
+| termojinald | Session daemon (PTY owner, global hotkeys, persistence) |
 | tm | CLI tool (setup, IPC client, Allow Flow) |
 | termojinal-mcp | MCP server for Claude Code |
 | termojinal-sign | Ed25519 command signer |
@@ -174,13 +199,30 @@ make fmt            # format
 | Crate | Purpose |
 |-------|---------|
 | termojinal-pty | PTY fork/exec |
-| termojinal-vt | VT parser, cell grid, scrollback, images |
+| termojinal-vt | VT parser, cell grid, scrollback, images (Kitty, iTerm2, Sixel) |
 | termojinal-render | wgpu renderer, font/emoji atlas, SDF shaders |
 | termojinal-layout | Immutable split pane tree |
 | termojinal-session | Daemon, hotkeys, persistence |
-| termojinal-ipc | IPC protocol, keybindings, CLI, command system |
-| termojinal-claude | Allow Flow engine |
+| termojinal-ipc | IPC protocol (binary framing), keybindings, CLI, command system |
+| termojinal-claude | Allow Flow engine, Hooks-based status |
 | termojinal-mcp | MCP server |
+
+### Source layout
+
+```
+src/
+  main.rs
+  ui/ (tab_bar, sidebar, overlays, dashboard, etc.)
+  platform/macos/ (clipboard, window, process, context_menu)
+  types.rs, actions.rs, input.rs, palette.rs, workspace.rs, status.rs
+
+crates/
+  termojinal-vt/src/term/ (mod, print, csi, osc, dcs, modes, snapshot, command, tests)
+  termojinal-vt/src/image/ (mod, kitty, iterm2, sixel, tests)
+  termojinal-render/src/renderer/ (mod, types, pane, text, overlay, gpu)
+  termojinal-render/src/atlas/ (mod, procedural, font_loader, coretext, tests)
+  termojinal-layout/src/ (lib, types, node, tree, tests)
+```
 
 ## Documentation
 
