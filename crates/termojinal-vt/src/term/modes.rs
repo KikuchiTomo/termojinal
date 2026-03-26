@@ -113,17 +113,17 @@ impl Default for CursorShape {
 }
 
 /// Saved cursor state (DECSC/DECRC).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SavedCursor {
-    pub(crate) col: usize,
-    pub(crate) row: usize,
-    pub(crate) pen: Pen,
-    pub(crate) cursor_visible: bool,
-    pub(crate) cursor_shape: CursorShape,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SavedCursor {
+    pub col: usize,
+    pub row: usize,
+    pub pen: Pen,
+    pub cursor_visible: bool,
+    pub cursor_shape: CursorShape,
 }
 
 /// Which mouse events to report to the application.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseMode {
     #[default]
     None,
@@ -136,7 +136,7 @@ pub enum MouseMode {
 }
 
 /// How mouse coordinates are encoded in reports.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseFormat {
     #[default]
     /// Default legacy format.
@@ -159,7 +159,7 @@ pub enum ClipboardEvent {
 }
 
 /// Terminal mode flags.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Modes {
     pub alternate_screen: bool,
     pub bracketed_paste: bool,

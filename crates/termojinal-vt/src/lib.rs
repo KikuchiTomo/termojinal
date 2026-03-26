@@ -23,6 +23,6 @@ pub use image::{ApcExtractor, ImagePlacement, ImageStore, KittyAccumulator, Term
 pub use scrollback::ScrollbackBuffer;
 pub use term::{
     char_width, ClipboardEvent, CommandRecord, CursorShape, DrcsFontStore, DrcsGlyph,
-    FileTransferEvent, Modes, MouseFormat, MouseMode, NamedSnapshot, OscState, Terminal,
-    TerminalSnapshot,
+    FileTransferEvent, Modes, MouseFormat, MouseMode, NamedSnapshot, OscState, SavedCursor,
+    Terminal, TerminalSnapshot,
 };

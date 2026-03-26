@@ -20,7 +20,8 @@ pub use modes::{
     ClipboardEvent, CursorShape, DrcsFontStore, DrcsGlyph, FileTransferEvent, Modes, MouseFormat,
     MouseMode, OscState,
 };
-pub(crate) use modes::{DcsMode, SavedCursor};
+pub(crate) use modes::DcsMode;
+pub use modes::SavedCursor;
 pub use print::char_width;
 pub use snapshot::{NamedSnapshot, TerminalSnapshot};
 

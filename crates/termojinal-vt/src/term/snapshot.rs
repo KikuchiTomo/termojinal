@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use crate::cell::{Cell, Pen};
 
 use super::command::CommandRecord;
-use super::modes::CursorShape;
+use super::modes::{CursorShape, Modes, SavedCursor};
 use super::Terminal;
 
 /// A serializable snapshot of the terminal state, used for session persistence
@@ -32,6 +32,27 @@ pub struct TerminalSnapshot {
     pub title: String,
     /// Current working directory.
     pub cwd: String,
+    /// Terminal modes (bracketed paste, mouse, cursor keys, etc.).
+    #[serde(default)]
+    pub modes: Modes,
+    /// Scroll region top (inclusive).
+    #[serde(default)]
+    pub scroll_top: usize,
+    /// Scroll region bottom (inclusive).
+    #[serde(default)]
+    pub scroll_bottom: usize,
+    /// Alternate screen grid cells (row-major).
+    #[serde(default)]
+    pub alt_grid_cells: Option<Vec<Vec<Cell>>>,
+    /// Whether the terminal is currently on the alternate screen.
+    #[serde(default)]
+    pub using_alt: bool,
+    /// Saved cursor for main screen.
+    #[serde(default)]
+    pub saved_cursor_main: Option<SavedCursor>,
+    /// Saved cursor for alternate screen.
+    #[serde(default)]
+    pub saved_cursor_alt: Option<SavedCursor>,
 }
 
 /// A named snapshot that can be saved and restored.
@@ -58,6 +79,20 @@ impl Terminal {
             grid_cells.push(row_cells);
         }
 
+        // Capture alternate screen grid.
+        let alt_grid_cells = {
+            let ag = &self.alt_grid;
+            let mut cells = Vec::with_capacity(ag.rows());
+            for row in 0..ag.rows() {
+                let mut row_cells = Vec::with_capacity(ag.cols());
+                for col in 0..ag.cols() {
+                    row_cells.push(*ag.cell(col, row));
+                }
+                cells.push(row_cells);
+            }
+            Some(cells)
+        };
+
         TerminalSnapshot {
             grid_cells,
             cursor_col: self.cursor_col,
@@ -70,6 +105,13 @@ impl Terminal {
             total_scrolled_lines: self.total_scrolled_lines,
             title: self.osc.title.clone(),
             cwd: self.osc.cwd.clone(),
+            modes: self.modes,
+            scroll_top: self.scroll_top,
+            scroll_bottom: self.scroll_bottom,
+            alt_grid_cells,
+            using_alt: self.using_alt,
+            saved_cursor_main: self.saved_cursor_main,
+            saved_cursor_alt: self.saved_cursor_alt,
         }
     }
 
@@ -120,6 +162,29 @@ impl Terminal {
         term.next_command_id = snapshot.command_history.back().map_or(0, |c| c.id + 1);
         term.osc.title = snapshot.title.clone();
         term.osc.cwd = snapshot.cwd.clone();
+
+        // Restore modes.
+        term.modes = snapshot.modes;
+        term.scroll_top = snapshot.scroll_top;
+        term.scroll_bottom = snapshot.scroll_bottom.min(snapshot.rows.saturating_sub(1));
+        term.using_alt = snapshot.using_alt;
+        term.saved_cursor_main = snapshot.saved_cursor_main;
+        term.saved_cursor_alt = snapshot.saved_cursor_alt;
+
+        // Restore alternate screen grid.
+        if let Some(ref alt_cells) = snapshot.alt_grid_cells {
+            for (row_idx, row_cells) in alt_cells.iter().enumerate() {
+                if row_idx >= term.alt_grid.rows() {
+                    break;
+                }
+                for (col_idx, cell) in row_cells.iter().enumerate() {
+                    if col_idx >= term.alt_grid.cols() {
+                        break;
+                    }
+                    *term.alt_grid.cell_mut(col_idx, row_idx) = *cell;
+                }
+            }
+        }
 
         term
     }
