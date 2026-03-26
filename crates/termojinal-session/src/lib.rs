@@ -282,7 +282,7 @@ impl SessionManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
-        session.clients.lock().unwrap().push(client);
+        session.clients.lock().unwrap_or_else(|e| e.into_inner()).push(client);
         Ok(())
     }
 
@@ -295,7 +295,7 @@ impl SessionManager {
         session
             .clients
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|c| c.id != client_id);
         Ok(())
     }

@@ -110,7 +110,7 @@ impl HooksStateStore {
 
     /// Record a status event from a hook.
     pub fn record_event(&self, event: HooksStatusEvent) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pid) = event.pid {
             if let Some(ref agent_id) = event.agent_id {
                 inner
@@ -125,14 +125,14 @@ impl HooksStateStore {
     /// Look up the latest state for a given PID. Returns `None` if no hook
     /// event has been recorded for this PID.
     pub fn get_state(&self, pid: i32) -> Option<SessionState> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let event = inner.pid_events.get(&pid)?;
         Some(parse_hook_state(&event.state, event.received_at))
     }
 
     /// Get active subagents for a given PID.
     pub fn get_subagents(&self, pid: i32) -> Vec<SubAgentState> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut subagents = Vec::new();
         for ((p, _), event) in &inner.subagent_events {
             if *p != pid {
@@ -155,7 +155,7 @@ impl HooksStateStore {
     /// Evict entries for PIDs that are no longer alive or have not reported
     /// in a long time (> 10 minutes).
     pub fn evict_stale(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let cutoff = Instant::now() - Duration::from_secs(600);
         inner.pid_events.retain(|pid, evt| {
             evt.received_at > cutoff && is_process_alive(*pid)
@@ -230,7 +230,7 @@ impl ClaudeSessionMonitor {
                     // Wait 3 seconds or wake immediately.
                     {
                         let (lock, cvar) = &*wake;
-                        let mut nudged = lock.lock().unwrap();
+                        let mut nudged = lock.lock().unwrap_or_else(|e| e.into_inner());
                         if !*nudged {
                             let (mut g, _) = cvar.wait_timeout(
                                 nudged,
@@ -243,9 +243,9 @@ impl ClaudeSessionMonitor {
                     }
 
                     // Get current pane list.
-                    let infos: Vec<PaneInfo> = panes.lock().unwrap().clone();
+                    let infos: Vec<PaneInfo> = panes.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if infos.is_empty() {
-                        *sess.lock().unwrap() = Vec::new();
+                        *sess.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
                         continue;
                     }
 
@@ -313,7 +313,7 @@ impl ClaudeSessionMonitor {
                     let live_pids: Vec<i32> = detected.iter().map(|s| s.claude_pid).collect();
                     title_cache.retain(|pid, _| live_pids.contains(pid));
 
-                    *sess.lock().unwrap() = detected;
+                    *sess.lock().unwrap_or_else(|e| e.into_inner()) = detected;
 
                     // Periodically evict stale hooks store entries (every ~10 cycles = 30s).
                     evict_counter += 1;

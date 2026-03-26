@@ -58,7 +58,7 @@ pub(crate) fn spawn_pane(
     let vt_parser = vte::Parser::new();
 
     // Insert buffer for this pane.
-    buffers.lock().unwrap().insert(id, VecDeque::new());
+    buffers.lock().unwrap_or_else(|e| e.into_inner()).insert(id, VecDeque::new());
 
     // Create write channel for sending key input and resize to the daemon reader thread.
     let (write_tx, write_rx) = std::sync::mpsc::channel::<termojinal_ipc::daemon_connection::WriteCommand>();
