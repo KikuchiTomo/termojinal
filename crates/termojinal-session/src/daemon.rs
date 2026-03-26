@@ -537,21 +537,26 @@ async fn handle_binary_connection(
     let (client_tx, mut client_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMessage>();
     let client = ClientSender::new(client_id, client_tx);
 
-    // Send the current terminal snapshot before streaming live output.
+    // Attach first, then send snapshot. This avoids a race where PTY output
+    // arrives between snapshot and attach, causing the client to miss data.
     {
         let mgr = manager.lock().await;
-        if let Some(snapshot) = mgr.get_snapshot(&session_id) {
-            let snapshot_bytes = serde_json::to_vec(&snapshot).unwrap_or_default();
-            let snap_frame = Frame::snapshot(&session_id, &snapshot_bytes);
-            if write_frame(&mut writer, &snap_frame).await.is_err() {
-                return Ok(());
-            }
-        }
         if let Err(e) = mgr.attach_session(&session_id, client) {
             let resp = json!({"success": false, "error": format!("attach failed: {e}")});
             let resp_frame = Frame::control_response(&resp);
             let _ = write_frame(&mut writer, &resp_frame).await;
             return Ok(());
+        }
+        // Send snapshot after attach so the client sees a consistent view.
+        // Any PTY output that arrives between attach and snapshot delivery
+        // will be queued in the client's channel and delivered after the snapshot.
+        if let Some(snapshot) = mgr.get_snapshot(&session_id) {
+            let snapshot_bytes = serde_json::to_vec(&snapshot).unwrap_or_default();
+            let snap_frame = Frame::snapshot(&session_id, &snapshot_bytes);
+            if write_frame(&mut writer, &snap_frame).await.is_err() {
+                let _ = mgr.detach_session(&session_id, client_id);
+                return Ok(());
+            }
         }
     }
 
