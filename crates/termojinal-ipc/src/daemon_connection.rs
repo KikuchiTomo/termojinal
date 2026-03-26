@@ -179,9 +179,50 @@ pub fn daemon_reader_thread(
         return;
     }
 
-    // Set the stream to non-blocking for the read loop so we can check
-    // for pending writes. Actually, using non-blocking I/O in a synchronous
-    // thread is complex. Instead, clone the stream for reading and writing.
+    // Read the attach response and verify success.
+    // Use a timeout for the initial handshake to avoid hanging forever.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+    let mut attach_ok = false;
+    // Read frames until we get the control response (skip any snapshot frames).
+    loop {
+        match read_frame_sync(&mut stream) {
+            Ok(frame) if frame.msg_type == MSG_SNAPSHOT => {
+                // Snapshot arrives before the success response; forward it and continue.
+                if let Some((_sid, data)) = frame.parse_session_payload() {
+                    proxy(DaemonReaderEvent::Snapshot(data.to_vec()));
+                }
+            }
+            Ok(frame) if frame.msg_type == MSG_CONTROL => {
+                if let Ok(resp) = serde_json::from_slice::<serde_json::Value>(&frame.payload) {
+                    if resp.get("success").and_then(|v| v.as_bool()) == Some(true) {
+                        attach_ok = true;
+                    } else {
+                        let err = resp
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error");
+                        log::error!("pane {pane_id}: attach failed: {err}");
+                    }
+                }
+                break;
+            }
+            Ok(_) => {
+                // Unexpected frame type during handshake; ignore and continue.
+            }
+            Err(e) => {
+                log::error!("pane {pane_id}: failed to read attach response: {e}");
+                break;
+            }
+        }
+    }
+    if !attach_ok {
+        proxy(DaemonReaderEvent::Exited);
+        return;
+    }
+
+    // Clone the stream for the writer thread.
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
