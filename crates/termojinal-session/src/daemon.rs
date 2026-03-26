@@ -168,11 +168,12 @@ impl Daemon {
 
                     log::info!("restoring {} saved sessions", live.len());
                     for saved in &live {
-                        match manager.create_session(
+                        match manager.create_session_with_manager(
                             &saved.shell,
                             &saved.cwd,
                             saved.cols,
                             saved.rows,
+                            Some(self.manager.clone()),
                         ) {
                             Ok(_) => {
                                 log::info!("restored session: {} (cwd={})", saved.name, saved.cwd)
@@ -333,7 +334,7 @@ async fn handle_json_connection(
                     let cols = req.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                     let rows = req.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
                     let mut mgr = manager.lock().await;
-                    match mgr.create_session(&shell, &cwd, cols, rows) {
+                    match mgr.create_session_with_manager(&shell, &cwd, cols, rows, Some(manager.clone())) {
                         Ok(session) => json!({
                             "success": true,
                             "data": {"id": session.state.id, "name": session.state.name, "pid": session.state.pid}

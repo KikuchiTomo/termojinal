@@ -188,6 +188,19 @@ impl SessionManager {
         cols: u16,
         rows: u16,
     ) -> Result<&DaemonSession, SessionError> {
+        self.create_session_with_manager(shell, cwd, cols, rows, None)
+    }
+
+    /// Create and spawn a new daemon-owned session with a reference to the
+    /// manager for automatic cleanup when the session exits.
+    pub fn create_session_with_manager(
+        &mut self,
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        manager_ref: Option<Arc<tokio::sync::Mutex<SessionManager>>>,
+    ) -> Result<&DaemonSession, SessionError> {
         let mut state = SessionState::new(shell, cwd, cols, rows);
 
         // Spawn PTY via termojinal-pty.
@@ -224,6 +237,8 @@ impl SessionManager {
         let sid = session_id.clone();
 
         // Spawn per-session I/O task.
+        let mgr_ref = manager_ref
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(SessionManager::new().unwrap())));
         tokio::spawn(async move {
             session_io_task(
                 pty,
@@ -233,6 +248,7 @@ impl SessionManager {
                 control_rx,
                 terminal_clone,
                 vt_parser_clone,
+                mgr_ref,
             )
             .await;
         });
@@ -585,6 +601,7 @@ async fn session_io_task(
     mut control_rx: tokio::sync::mpsc::Receiver<SessionControl>,
     terminal: Arc<Mutex<termojinal_vt::Terminal>>,
     vt_parser: Arc<Mutex<vte::Parser>>,
+    manager: Arc<tokio::sync::Mutex<SessionManager>>,
 ) {
     use tokio::io::unix::AsyncFd;
 
@@ -751,6 +768,14 @@ async fn session_io_task(
         for client in clients.iter() {
             let _ = client.send_session_exited(&session_id, exit_code);
         }
+    }
+
+    // Remove the session from the manager so it's no longer listed.
+    {
+        let mut mgr = manager.lock().await;
+        mgr.sessions.remove(&session_id);
+        let _ = mgr.persistence.remove(&session_id);
+        log::info!("session {session_id}: removed from manager");
     }
 }
 
