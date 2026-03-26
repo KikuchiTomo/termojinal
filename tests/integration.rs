@@ -41,16 +41,29 @@ fn pty_echo_input() {
 
     // Send a command.
     pty.write(b"echo hello_termojinal\r").expect("write");
-    std::thread::sleep(std::time::Duration::from_millis(500));
 
-    let n = pty.read(&mut buf).expect("read");
-    let output = String::from_utf8_lossy(&buf[..n]);
+    // Read output in a loop until we see our marker or timeout.
+    let mut all_output = String::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        match pty.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                all_output.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if all_output.contains("hello_termojinal") {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
     eprintln!(
-        "after echo ({n} bytes): {:?}",
-        &output[..output.len().min(500)]
+        "after echo ({} bytes): {:?}",
+        all_output.len(),
+        &all_output[..all_output.len().min(500)]
     );
     assert!(
-        output.contains("hello_termojinal"),
+        all_output.contains("hello_termojinal"),
         "expected 'hello_termojinal' in output"
     );
 }
