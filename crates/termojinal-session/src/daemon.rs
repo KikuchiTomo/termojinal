@@ -358,7 +358,7 @@ async fn handle_json_connection(
                         .to_string();
                     let cols = req.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                     let rows = req.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-                    let mgr = manager.lock().await;
+                    let mut mgr = manager.lock().await;
                     match mgr.resize_session(&id, cols, rows).await {
                         Ok(()) => json!({"success": true}),
                         Err(e) => json!({"success": false, "error": format!("{e}")}),
@@ -615,7 +615,7 @@ async fn handle_binary_connection(
                                             let id = ctrl_req.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                             let cols = ctrl_req.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                                             let rows = ctrl_req.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-                                            let mgr = manager.lock().await;
+                                            let mut mgr = manager.lock().await;
                                             let _ = mgr.resize_session(&id, cols, rows).await;
                                         }
                                         _ => {}

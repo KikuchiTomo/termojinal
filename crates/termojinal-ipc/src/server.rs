@@ -222,7 +222,7 @@ async fn dispatch(
         }
 
         IpcRequest::ResizeSession { id, cols, rows } => {
-            let mgr = manager.lock().await;
+            let mut mgr = manager.lock().await;
             match mgr.resize_session(&id, cols, rows).await {
                 Ok(()) => IpcResponse::ok_empty(),
                 Err(e) => IpcResponse::err(format!("resize failed: {e}")),

@@ -569,15 +569,18 @@ impl SessionManager {
 
     /// Resize a session's PTY via its control channel.
     pub async fn resize_session(
-        &self,
+        &mut self,
         session_id: &str,
         cols: u16,
         rows: u16,
     ) -> Result<(), SessionError> {
         let session = self
             .sessions
-            .get(session_id)
+            .get_mut(session_id)
             .ok_or_else(|| SessionError::NotFound(session_id.to_string()))?;
+        // Update the stored state so snapshots reflect the new size.
+        session.state.cols = cols;
+        session.state.rows = rows;
         session
             .control_tx
             .send(SessionControl::Resize { cols, rows })
