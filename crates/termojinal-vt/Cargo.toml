@@ -1,6 +1,6 @@
 [package]
 name = "termojinal-vt"
-version = "0.9.2-beta"
+version = "0.9.3-beta"
 edition.workspace = true
 description = "VT parser and cell grid for termojinal"
 
