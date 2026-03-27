@@ -63,6 +63,28 @@ make install && make app
 open target/release/Termojinal.app
 ```
 
+## Update
+
+```bash
+brew update
+brew upgrade termojinal              # CLI tools + daemon
+brew upgrade --cask termojinal-app   # GUI app
+brew services restart termojinal     # restart daemon to load new binary
+```
+
+The daemon must be restarted after upgrading — `brew services restart` sends a stop signal, but if the old process survives, kill it manually:
+
+```bash
+pkill -f termojinald
+brew services start termojinal
+```
+
+Verify the new daemon is running:
+
+```bash
+tm list   # ATTACHED column should show yes/no (not -)
+```
+
 ## Setup
 
 ```bash
