@@ -168,9 +168,9 @@ async fn dispatch(
         IpcRequest::ListSessionDetails => {
             let mgr = manager.lock().await;
             let details: Vec<serde_json::Value> = mgr
-                .list_details()
+                .list_details_with_attached()
                 .iter()
-                .map(|s| {
+                .map(|(s, attached)| {
                     serde_json::json!({
                         "id": s.id,
                         "name": s.name,
@@ -180,6 +180,8 @@ async fn dispatch(
                         "cols": s.cols,
                         "rows": s.rows,
                         "created_at": s.created_at.to_rfc3339(),
+                        "attached": attached,
+                        "workspace_name": s.workspace_name,
                     })
                 })
                 .collect();
@@ -302,6 +304,14 @@ async fn dispatch(
             let count = mgr.kill_all();
             log::info!("killed all {count} sessions");
             IpcResponse::ok(serde_json::json!({"killed": count}))
+        }
+
+        IpcRequest::UpdateSessionWorkspace { id, workspace_name } => {
+            let mut mgr = manager.lock().await;
+            match mgr.update_session_workspace(&id, &workspace_name) {
+                Ok(()) => IpcResponse::ok_empty(),
+                Err(e) => IpcResponse::err(format!("failed to update workspace: {e}")),
+            }
         }
 
         IpcRequest::ClaudeStatusUpdate {

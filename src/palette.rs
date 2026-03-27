@@ -293,6 +293,12 @@ impl CommandPalette {
                 action: Action::ClaudesDashboard,
                 kind: CommandKind::Builtin,
             },
+            PaletteCommand {
+                name: "Attach Session".to_string(),
+                description: "Attach to an unattached daemon session".to_string(),
+                action: Action::AttachSession,
+                kind: CommandKind::Builtin,
+            },
         ];
         let filtered: Vec<usize> = (0..commands.len()).collect();
         Self {

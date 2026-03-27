@@ -100,6 +100,8 @@ pub enum Action {
     ExtractPaneToTab,
     /// Open the Claudes Dashboard (Multi-Agent Dashboard).
     ClaudesDashboard,
+    /// Open the Session Picker overlay to attach to an unattached daemon session.
+    AttachSession,
 }
 
 /// 3-layer keybinding configuration.

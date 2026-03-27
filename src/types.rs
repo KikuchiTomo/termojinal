@@ -499,6 +499,8 @@ pub(crate) struct AppState {
     pub(crate) selection_auto_scroll: Option<i32>,
     /// Quick Launch overlay state.
     pub(crate) quick_launch: QuickLaunchState,
+    /// Session Picker overlay state (for attach-or-new on Cmd+T / split).
+    pub(crate) session_picker: crate::session_picker::SessionPicker,
     /// Homebrew update checker state.
     pub(crate) update_checker: UpdateChecker,
     /// Shared result from background brew update check thread.

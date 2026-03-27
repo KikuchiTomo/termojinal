@@ -412,6 +412,11 @@ pub(crate) fn query_daemon_sessions() -> Vec<DaemonSessionInfo> {
         .iter()
         .filter_map(|s| {
             let id = s.get("id")?.as_str()?.to_string();
+            let name = s
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let shell = s
                 .get("shell")
                 .and_then(|v| v.as_str())
@@ -424,12 +429,29 @@ pub(crate) fn query_daemon_sessions() -> Vec<DaemonSessionInfo> {
                 .to_string();
             let pid = s.get("pid").and_then(|v| v.as_i64()).map(|p| p as i32);
             let pane_id = s.get("pane_id").and_then(|v| v.as_u64());
+            let attached = s
+                .get("attached")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let workspace_name = s
+                .get("workspace_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let created_at = s
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             Some(DaemonSessionInfo {
                 id,
+                name,
                 shell,
                 cwd,
                 pid,
                 pane_id,
+                attached,
+                workspace_name,
+                created_at,
             })
         })
         .collect()
@@ -444,5 +466,9 @@ pub(crate) struct DaemonSessionInfo {
     pub(crate) cwd: String,
     pub(crate) pid: Option<i32>,
     pub(crate) pane_id: Option<u64>,
+    pub(crate) attached: bool,
+    pub(crate) workspace_name: Option<String>,
+    pub(crate) name: String,
+    pub(crate) created_at: String,
 }
 

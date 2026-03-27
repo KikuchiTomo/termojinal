@@ -46,6 +46,9 @@ pub struct SessionState {
     pub rows: u16,
     pub created_at: DateTime<Utc>,
     pub pid: Option<i32>,
+    /// The workspace name this session belongs to (for restore on GUI restart).
+    #[serde(default)]
+    pub workspace_name: Option<String>,
 }
 
 impl SessionState {
@@ -61,6 +64,7 @@ impl SessionState {
             rows,
             created_at: Utc::now(),
             pid: None,
+            workspace_name: None,
         }
     }
 }
@@ -307,6 +311,9 @@ impl SessionManager {
 
     /// Remove a session (kills the shell).
     pub fn remove(&mut self, id: &str) -> Result<(), SessionError> {
+        if !self.sessions.contains_key(id) {
+            return Err(SessionError::NotFound(id.to_string()));
+        }
         if let Some(session) = self.sessions.get(id) {
             if let Some(pid) = session.state.pid {
                 use nix::sys::signal::{killpg, Signal};
@@ -335,6 +342,28 @@ impl SessionManager {
             .map(|s| &s.state)
             .chain(self.tracked.values())
             .collect()
+    }
+
+    /// List all session details with attachment status.
+    pub fn list_details_with_attached(&self) -> Vec<(&SessionState, bool)> {
+        self.sessions
+            .values()
+            .map(|s| (&s.state, s.is_attached()))
+            .chain(self.tracked.values().map(|s| (s, false)))
+            .collect()
+    }
+
+    /// Update a session's workspace name and persist it.
+    pub fn update_session_workspace(
+        &mut self,
+        id: &str,
+        workspace_name: &str,
+    ) -> Result<(), SessionError> {
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.state.workspace_name = Some(workspace_name.to_string());
+            self.persistence.save(&session.state)?;
+        }
+        Ok(())
     }
 
     /// Save all session states to disk.

@@ -111,10 +111,11 @@ impl DaemonHandle {
     }
 
     /// List all sessions with details from the daemon.
-    /// Returns a list of (session_id, name, shell, cwd, pid, cols, rows).
+    /// Returns a list of (session_id, name, shell, cwd, pid, cols, rows, attached, workspace_name).
+    #[allow(clippy::type_complexity)]
     pub fn list_session_details(
         &self,
-    ) -> Vec<(String, String, String, String, i32, u16, u16)> {
+    ) -> Vec<(String, String, String, String, i32, u16, u16, bool, Option<String>)> {
         let req = serde_json::json!({"type": "list_session_details"});
         let resp = match self.send_request_json(&req) {
             Some(r) => r,
@@ -150,9 +151,24 @@ impl DaemonHandle {
                 let pid = s.get("pid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 let cols = s.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
                 let rows = s.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-                Some((id, name, shell, cwd, pid, cols, rows))
+                let attached = s.get("attached").and_then(|v| v.as_bool()).unwrap_or(false);
+                let workspace_name = s
+                    .get("workspace_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                Some((id, name, shell, cwd, pid, cols, rows, attached, workspace_name))
             })
             .collect()
+    }
+
+    /// Update a session's workspace name on the daemon.
+    pub fn update_session_workspace(&self, session_id: &str, workspace_name: &str) {
+        let req = serde_json::json!({
+            "type": "update_session_workspace",
+            "id": session_id,
+            "workspace_name": workspace_name,
+        });
+        self.send_request_json(&req);
     }
 
     /// Kill a session via the daemon.

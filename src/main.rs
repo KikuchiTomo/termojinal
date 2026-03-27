@@ -10,6 +10,7 @@ mod notification;
 mod palette;
 mod platform;
 mod quick_terminal;
+mod session_picker;
 mod ui;
 
 pub(crate) use dir_tree::*;
@@ -657,57 +658,73 @@ impl ApplicationHandler<UserEvent> for App {
         let existing_sessions = daemon.list_session_details();
         let mut next_pane_id: PaneId = 0;
 
-        let initial_workspace = if !existing_sessions.is_empty() {
+        let initial_workspaces: Vec<Workspace> = if !existing_sessions.is_empty() {
             log::info!(
                 "found {} existing daemon session(s), re-attaching",
                 existing_sessions.len()
             );
-            let mut tabs = Vec::new();
-            for (i, (session_id, _name, shell, _cwd, pid, _s_cols, _s_rows)) in
-                existing_sessions.into_iter().enumerate()
-            {
-                let pane_id = next_pane_id;
-                next_pane_id += 1;
+            // Group sessions by workspace_name.
+            let mut ws_groups: std::collections::BTreeMap<String, Vec<_>> =
+                std::collections::BTreeMap::new();
+            for session in existing_sessions {
+                let (session_id, _name, shell, _cwd, pid, _s_cols, _s_rows, _attached, workspace_name) = session;
+                let ws_name = workspace_name.unwrap_or_else(|| "Workspace 1".to_string());
+                ws_groups.entry(ws_name).or_default().push((session_id, shell, pid));
+            }
 
-                // Resize the existing session to match the current window size.
-                daemon.resize_session(&session_id, cols, rows);
+            let mut workspaces = Vec::new();
+            for (ws_name, sessions) in &ws_groups {
+                let mut tabs = Vec::new();
+                for (i, (session_id, shell, pid)) in sessions.iter().enumerate() {
+                    let pane_id = next_pane_id;
+                    next_pane_id += 1;
 
-                match attach_existing_session(
-                    pane_id,
-                    session_id,
-                    shell,
-                    pid,
-                    cols,
-                    rows,
-                    &self.proxy,
-                    &self.pty_buffers,
-                    Some(&cfg.time_travel),
-                    cjk_width,
-                ) {
-                    Some(pane) => {
-                        let layout = LayoutTree::new(pane_id);
-                        let mut panes = HashMap::new();
-                        panes.insert(pane_id, pane);
-                        let tab_num = i + 1;
-                        tabs.push(Tab {
-                            layout,
-                            panes,
-                            name: format!("Tab {tab_num}"),
-                            display_title: format_tab_title(
-                                &cfg.tab_bar.format,
-                                "",
-                                "",
-                                tab_num,
-                            ),
-                        });
+                    daemon.resize_session(session_id, cols, rows);
+
+                    match attach_existing_session(
+                        pane_id,
+                        session_id.clone(),
+                        shell.clone(),
+                        *pid,
+                        cols,
+                        rows,
+                        &self.proxy,
+                        &self.pty_buffers,
+                        Some(&cfg.time_travel),
+                        cjk_width,
+                    ) {
+                        Some(pane) => {
+                            let layout = LayoutTree::new(pane_id);
+                            let mut panes = HashMap::new();
+                            panes.insert(pane_id, pane);
+                            let tab_num = i + 1;
+                            tabs.push(Tab {
+                                layout,
+                                panes,
+                                name: format!("Tab {tab_num}"),
+                                display_title: format_tab_title(
+                                    &cfg.tab_bar.format,
+                                    "",
+                                    "",
+                                    tab_num,
+                                ),
+                            });
+                        }
+                        None => {
+                            log::warn!("failed to re-attach pane {pane_id}, skipping");
+                        }
                     }
-                    None => {
-                        log::warn!("failed to re-attach pane {pane_id}, skipping");
-                    }
+                }
+                if !tabs.is_empty() {
+                    workspaces.push(Workspace {
+                        tabs,
+                        active_tab: 0,
+                        name: ws_name.clone(),
+                    });
                 }
             }
 
-            if tabs.is_empty() {
+            if workspaces.is_empty() {
                 // All re-attach attempts failed; fall back to new session.
                 log::warn!("all re-attach attempts failed, creating new session");
                 let pane_id = next_pane_id;
@@ -724,10 +741,11 @@ impl ApplicationHandler<UserEvent> for App {
                     cjk_width,
                 ) {
                     Ok(pane) => {
+                        daemon.update_session_workspace(&pane.session_id, "Workspace 1");
                         let layout = LayoutTree::new(pane_id);
                         let mut panes = HashMap::new();
                         panes.insert(pane_id, pane);
-                        Workspace {
+                        vec![Workspace {
                             tabs: vec![Tab {
                                 layout,
                                 panes,
@@ -741,7 +759,7 @@ impl ApplicationHandler<UserEvent> for App {
                             }],
                             active_tab: 0,
                             name: "Workspace 1".to_string(),
-                        }
+                        }]
                     }
                     Err(e) => {
                         log::error!("failed to spawn initial pane: {e}");
@@ -751,11 +769,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             } else {
-                Workspace {
-                    tabs,
-                    active_tab: 0,
-                    name: "Workspace 1".to_string(),
-                }
+                workspaces
             }
         } else {
             // No existing sessions — create a new one.
@@ -773,7 +787,10 @@ impl ApplicationHandler<UserEvent> for App {
                 Some(&cfg.time_travel),
                 cjk_width,
             ) {
-                Ok(p) => p,
+                Ok(p) => {
+                    daemon.update_session_workspace(&p.session_id, "Workspace 1");
+                    p
+                }
                 Err(e) => {
                     log::error!("failed to spawn initial pane: {e}");
                     show_daemon_error(e);
@@ -785,7 +802,7 @@ impl ApplicationHandler<UserEvent> for App {
             let mut panes = HashMap::new();
             panes.insert(initial_id, pane);
 
-            Workspace {
+            vec![Workspace {
                 tabs: vec![Tab {
                     layout,
                     panes,
@@ -794,7 +811,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }],
                 active_tab: 0,
                 name: "Workspace 1".to_string(),
-            }
+            }]
         };
 
         let keybindings = KeybindingConfig::load();
@@ -823,7 +840,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.state = Some(AppState {
             window,
             renderer,
-            workspaces: vec![initial_workspace],
+            workspaces: initial_workspaces,
             active_workspace: 0,
             keybindings,
             modifiers: ModifiersState::empty(),
@@ -874,6 +891,7 @@ impl ApplicationHandler<UserEvent> for App {
             scroll_accum: 0.0,
             selection_auto_scroll: None,
             quick_launch: QuickLaunchState::new(),
+            session_picker: session_picker::SessionPicker::new(),
             update_checker: UpdateChecker::new(),
             update_check_result: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -1428,11 +1446,14 @@ impl ApplicationHandler<UserEvent> for App {
                 if is_ctrl
                     && (state.command_palette.visible
                         || state.command_execution.is_some()
-                        || state.quick_launch.visible)
+                        || state.quick_launch.visible
+                        || state.session_picker.visible)
                 {
                     match &event.logical_key {
                         Key::Character(c) if c.as_str() == "n" || c.as_str() == "\x0e" => {
-                            if state.quick_launch.visible {
+                            if state.session_picker.visible {
+                                state.session_picker.select_next();
+                            } else if state.quick_launch.visible {
                                 state.quick_launch.select_next();
                             } else if let Some(ref mut exec) = state.command_execution {
                                 exec.selected = if exec.filtered_items.is_empty() {
@@ -1451,7 +1472,9 @@ impl ApplicationHandler<UserEvent> for App {
                             return;
                         }
                         Key::Character(c) if c.as_str() == "p" || c.as_str() == "\x10" => {
-                            if state.quick_launch.visible {
+                            if state.session_picker.visible {
+                                state.session_picker.select_prev();
+                            } else if state.quick_launch.visible {
                                 state.quick_launch.select_prev();
                             } else if let Some(ref mut exec) = state.command_execution {
                                 exec.selected = if exec.filtered_items.is_empty() {
@@ -1526,6 +1549,84 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         TimelineKeyResult::Pass => {}
                     }
+                }
+
+                // Session Picker overlay intercepts keyboard input when visible.
+                if state.session_picker.visible {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            state.session_picker.dismiss();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            state.session_picker.select_prev();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            state.session_picker.select_next();
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(entry) = state.session_picker.selected_entry().cloned() {
+                                let pending_action = state.session_picker.pending_action.clone();
+                                state.session_picker.dismiss();
+
+                                if let Some(session_id) = entry.session_id {
+                                    // Attach to existing session.
+                                    handle_session_picker_attach(
+                                        state,
+                                        &session_id,
+                                        &entry.shell,
+                                        entry.pid.unwrap_or(0),
+                                        &pending_action,
+                                        &self.proxy,
+                                        &self.pty_buffers,
+                                    );
+                                } else {
+                                    // "New Session" selected — spawn normally.
+                                    let focused_id = active_tab(state).layout.focused();
+                                    match &pending_action {
+                                        Action::SplitRight => {
+                                            do_split(state, focused_id, SplitDirection::Horizontal, &self.proxy, &self.pty_buffers);
+                                        }
+                                        Action::SplitDown => {
+                                            do_split(state, focused_id, SplitDirection::Vertical, &self.proxy, &self.pty_buffers);
+                                        }
+                                        Action::NewTab => {
+                                            do_new_tab(state, &self.proxy, &self.pty_buffers);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                state.window.request_redraw();
+                            }
+                            return;
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if state.session_picker.input.is_empty() {
+                                state.session_picker.dismiss();
+                            } else {
+                                state.session_picker.input.pop();
+                                state.session_picker.update_filter();
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        _ => {
+                            if let Some(ref text) = event.text {
+                                if !text.is_empty() && !text.contains('\r') {
+                                    state.session_picker.input.push_str(text);
+                                    state.session_picker.update_filter();
+                                    state.window.request_redraw();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    return; // Consume all keys when Session Picker is visible.
                 }
 
                 // Quick Launch overlay intercepts keyboard input when visible.

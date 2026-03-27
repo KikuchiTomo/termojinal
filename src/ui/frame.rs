@@ -268,6 +268,11 @@ pub(crate) fn render_frame(state: &mut AppState) -> Result<(), termojinal_render
         render_quick_launch(state, &view, phys_w, phys_h);
     }
 
+    // Render Session Picker overlay if visible.
+    if state.session_picker.visible {
+        render_session_picker(state, &view, phys_w, phys_h);
+    }
+
     // Render command timeline overlay if visible.
     if state.timeline_visible {
         render_command_timeline(state, &view, phys_w, phys_h);

@@ -307,6 +307,9 @@ pub enum IpcRequest {
     /// Kill all sessions (daemon-owned and externally tracked).
     KillAll,
 
+    /// Update a session's workspace name.
+    UpdateSessionWorkspace { id: String, workspace_name: String },
+
     /// Claude Code status update from hooks.
     ///
     /// Sent by `tm status` when a Claude Code hook fires (PreToolUse,
@@ -628,6 +631,10 @@ mod tests {
                 id: "test-id".to_string(),
             },
             IpcRequest::KillAll,
+            IpcRequest::UpdateSessionWorkspace {
+                id: "test-id".to_string(),
+                workspace_name: "Workspace 1".to_string(),
+            },
             IpcRequest::ClaudeStatusUpdate {
                 session_id: Some("sess-1".to_string()),
                 state: "running".to_string(),

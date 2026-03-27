@@ -19,79 +19,35 @@ pub(crate) fn dispatch_action(
 
     let focused_id = active_tab(state).layout.focused();
     match action {
-        Action::SplitRight => {
-            let cwd = resolve_new_pane_cwd(state);
-            let next_id = state.next_pane_id;
-            let tab = active_tab_mut(state);
-            tab.layout.set_next_id(next_id);
-            let (new_layout, new_id) = tab.layout.split(focused_id, SplitDirection::Horizontal);
-            tab.layout = new_layout;
-            state.next_pane_id = new_id + 1;
-            let pane_rects = active_pane_rects(state);
-            let new_rect = pane_rects
-                .iter()
-                .find(|(id, _)| *id == new_id)
-                .map(|(_, r)| *r);
-            if let Some(rect) = new_rect {
-                let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(
-                    new_id,
-                    cols.max(1),
-                    rows.max(1),
-                    proxy,
-                    buffers,
-                    cwd,
-                    Some(&state.config.time_travel),
-                    state.renderer.cjk_width,
-                ) {
-                    Ok(pane) => {
-                        active_tab_mut(state).panes.insert(new_id, pane);
-                    }
-                    Err(e) => {
-                        log::error!("failed to spawn pane: {e}");
-                    }
-                }
+        Action::SplitRight | Action::SplitDown | Action::NewTab => {
+            // Check for unattached sessions in the current workspace.
+            let ws_name = state.workspaces[state.active_workspace].name.clone();
+            let unattached: Vec<_> = state
+                .workspace_refresher
+                .get_daemon_sessions()
+                .into_iter()
+                .filter(|s| {
+                    !s.attached
+                        && s.workspace_name.as_deref() == Some(&ws_name)
+                })
+                .collect();
+
+            if !unattached.is_empty() {
+                // Show session picker overlay instead of spawning immediately.
+                state
+                    .session_picker
+                    .open(&unattached, action.clone());
+                state.window.request_redraw();
+                return true;
             }
-            resize_all_panes(state);
-            state.window.request_redraw();
-            true
-        }
-        Action::SplitDown => {
-            let cwd = resolve_new_pane_cwd(state);
-            let next_id = state.next_pane_id;
-            let tab = active_tab_mut(state);
-            tab.layout.set_next_id(next_id);
-            let (new_layout, new_id) = tab.layout.split(focused_id, SplitDirection::Vertical);
-            tab.layout = new_layout;
-            state.next_pane_id = new_id + 1;
-            let pane_rects = active_pane_rects(state);
-            let new_rect = pane_rects
-                .iter()
-                .find(|(id, _)| *id == new_id)
-                .map(|(_, r)| *r);
-            if let Some(rect) = new_rect {
-                let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
-                match spawn_pane(
-                    new_id,
-                    cols.max(1),
-                    rows.max(1),
-                    proxy,
-                    buffers,
-                    cwd,
-                    Some(&state.config.time_travel),
-                    state.renderer.cjk_width,
-                ) {
-                    Ok(pane) => {
-                        active_tab_mut(state).panes.insert(new_id, pane);
-                    }
-                    Err(e) => {
-                        log::error!("failed to spawn pane: {e}");
-                    }
-                }
+
+            // No unattached sessions — proceed with normal spawn.
+            match action {
+                Action::SplitRight => do_split(state, focused_id, SplitDirection::Horizontal, proxy, buffers),
+                Action::SplitDown => do_split(state, focused_id, SplitDirection::Vertical, proxy, buffers),
+                Action::NewTab => do_new_tab(state, proxy, buffers),
+                _ => unreachable!(),
             }
-            resize_all_panes(state);
-            state.window.request_redraw();
-            true
         }
         Action::ZoomPane => {
             let tab = active_tab_mut(state);
@@ -126,58 +82,6 @@ pub(crate) fn dispatch_action(
             update_window_title(state);
             update_tree_root_for_focused_pane(state);
             state.window.request_redraw();
-            true
-        }
-        Action::NewTab => {
-            // Create a new tab in the current workspace.
-            let cwd = resolve_new_pane_cwd(state);
-            let new_id = state.next_pane_id;
-            state.next_pane_id += 1;
-            let layout = LayoutTree::new(new_id);
-            let size = state.window.inner_size();
-            let phys_w = size.width as f32;
-            let phys_h = size.height as f32;
-            // When we add a new tab, the workspace will have >1 tabs, so tab bar will appear.
-            let sidebar_w = if state.sidebar_visible {
-                state.sidebar_width
-            } else {
-                0.0
-            };
-            let cw = (phys_w - sidebar_w).max(1.0);
-            let ch = (phys_h - state.config.tab_bar.height).max(1.0);
-            let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
-            match spawn_pane(
-                new_id,
-                cols.max(1),
-                rows.max(1),
-                proxy,
-                buffers,
-                cwd,
-                Some(&state.config.time_travel),
-                state.renderer.cjk_width,
-            ) {
-                Ok(pane) => {
-                    let mut panes = HashMap::new();
-                    panes.insert(new_id, pane);
-                    let fmt = state.config.tab_bar.format.clone();
-                    let ws = active_ws_mut(state);
-                    let tab_num = ws.tabs.len() + 1;
-                    let tab = Tab {
-                        layout,
-                        panes,
-                        name: format!("Tab {tab_num}"),
-                        display_title: format_tab_title(&fmt, "", "", tab_num),
-                    };
-                    ws.tabs.push(tab);
-                    ws.active_tab = ws.tabs.len() - 1;
-                    resize_all_panes(state);
-                    update_window_title(state);
-                    state.window.request_redraw();
-                }
-                Err(e) => {
-                    log::error!("failed to spawn pane for new tab: {e}");
-                }
-            }
             true
         }
         Action::CloseTab => {
@@ -228,9 +132,12 @@ pub(crate) fn dispatch_action(
                 state.renderer.cjk_width,
             ) {
                 Ok(pane) => {
+                    let ws_num = state.workspaces.len() + 1;
+                    let ws_name = format!("Workspace {ws_num}");
+                    let daemon = DaemonHandle::new();
+                    daemon.update_session_workspace(&pane.session_id, &ws_name);
                     let mut panes = HashMap::new();
                     panes.insert(new_id, pane);
-                    let ws_num = state.workspaces.len() + 1;
                     let fmt = state.config.tab_bar.format.clone();
                     let tab = Tab {
                         layout,
@@ -241,7 +148,7 @@ pub(crate) fn dispatch_action(
                     let ws = Workspace {
                         tabs: vec![tab],
                         active_tab: 0,
-                        name: format!("Workspace {ws_num}"),
+                        name: ws_name,
                     };
                     state.workspaces.push(ws);
                     state.agent_infos.push(AgentSessionInfo::default());
@@ -704,9 +611,244 @@ pub(crate) fn dispatch_action(
             }
             true
         }
+        Action::AttachSession => {
+            // Open the session picker to attach an unattached session as new tab.
+            let ws_name = state.workspaces[state.active_workspace].name.clone();
+            let unattached: Vec<_> = state
+                .workspace_refresher
+                .get_daemon_sessions()
+                .into_iter()
+                .filter(|s| !s.attached && s.workspace_name.as_deref() == Some(&ws_name))
+                .collect();
+
+            if unattached.is_empty() {
+                log::info!("no unattached sessions available");
+            } else {
+                state.session_picker.open(&unattached, Action::NewTab);
+            }
+            state.window.request_redraw();
+            true
+        }
         Action::UnreadJump | Action::OpenSettings => {
             log::debug!("unhandled action: {:?}", action);
             true
         }
     }
+}
+
+/// Helper: perform a pane split (used by both direct action and session picker fallback).
+pub(crate) fn do_split(
+    state: &mut AppState,
+    focused_id: PaneId,
+    direction: SplitDirection,
+    proxy: &EventLoopProxy<UserEvent>,
+    buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+) -> bool {
+    let cwd = resolve_new_pane_cwd(state);
+    let ws_name = state.workspaces[state.active_workspace].name.clone();
+    let next_id = state.next_pane_id;
+    let tab = active_tab_mut(state);
+    tab.layout.set_next_id(next_id);
+    let (new_layout, new_id) = tab.layout.split(focused_id, direction);
+    tab.layout = new_layout;
+    state.next_pane_id = new_id + 1;
+    let pane_rects = active_pane_rects(state);
+    let new_rect = pane_rects
+        .iter()
+        .find(|(id, _)| *id == new_id)
+        .map(|(_, r)| *r);
+    if let Some(rect) = new_rect {
+        let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
+        match spawn_pane(
+            new_id,
+            cols.max(1),
+            rows.max(1),
+            proxy,
+            buffers,
+            cwd,
+            Some(&state.config.time_travel),
+            state.renderer.cjk_width,
+        ) {
+            Ok(pane) => {
+                let daemon = DaemonHandle::new();
+                daemon.update_session_workspace(&pane.session_id, &ws_name);
+                active_tab_mut(state).panes.insert(new_id, pane);
+            }
+            Err(e) => {
+                log::error!("failed to spawn pane: {e}");
+            }
+        }
+    }
+    resize_all_panes(state);
+    state.window.request_redraw();
+    true
+}
+
+/// Helper: create a new tab with a fresh session.
+pub(crate) fn do_new_tab(
+    state: &mut AppState,
+    proxy: &EventLoopProxy<UserEvent>,
+    buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+) -> bool {
+    let cwd = resolve_new_pane_cwd(state);
+    let ws_name = state.workspaces[state.active_workspace].name.clone();
+    let new_id = state.next_pane_id;
+    state.next_pane_id += 1;
+    let layout = LayoutTree::new(new_id);
+    let size = state.window.inner_size();
+    let phys_w = size.width as f32;
+    let phys_h = size.height as f32;
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
+    let cw = (phys_w - sidebar_w).max(1.0);
+    let ch = (phys_h - state.config.tab_bar.height).max(1.0);
+    let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
+    match spawn_pane(
+        new_id,
+        cols.max(1),
+        rows.max(1),
+        proxy,
+        buffers,
+        cwd,
+        Some(&state.config.time_travel),
+        state.renderer.cjk_width,
+    ) {
+        Ok(pane) => {
+            let daemon = DaemonHandle::new();
+            daemon.update_session_workspace(&pane.session_id, &ws_name);
+            let mut panes = HashMap::new();
+            panes.insert(new_id, pane);
+            let fmt = state.config.tab_bar.format.clone();
+            let ws = active_ws_mut(state);
+            let tab_num = ws.tabs.len() + 1;
+            let tab = Tab {
+                layout,
+                panes,
+                name: format!("Tab {tab_num}"),
+                display_title: format_tab_title(&fmt, "", "", tab_num),
+            };
+            ws.tabs.push(tab);
+            ws.active_tab = ws.tabs.len() - 1;
+            resize_all_panes(state);
+            update_window_title(state);
+            state.window.request_redraw();
+        }
+        Err(e) => {
+            log::error!("failed to spawn pane for new tab: {e}");
+        }
+    }
+    true
+}
+
+/// Handle session picker confirm: attach an existing daemon session
+/// as a new tab or into a split pane.
+pub(crate) fn handle_session_picker_attach(
+    state: &mut AppState,
+    session_id: &str,
+    shell: &str,
+    shell_pid: i32,
+    pending_action: &Action,
+    proxy: &EventLoopProxy<UserEvent>,
+    buffers: &Arc<Mutex<HashMap<PaneId, VecDeque<Vec<u8>>>>>,
+) {
+    let size = state.window.inner_size();
+    let phys_w = size.width as f32;
+    let phys_h = size.height as f32;
+    let sidebar_w = if state.sidebar_visible {
+        state.sidebar_width
+    } else {
+        0.0
+    };
+
+    let daemon = DaemonHandle::new();
+
+    match pending_action {
+        Action::NewTab => {
+            let new_id = state.next_pane_id;
+            state.next_pane_id += 1;
+            let cw = (phys_w - sidebar_w).max(1.0);
+            let ch = (phys_h - state.config.tab_bar.height).max(1.0);
+            let (cols, rows) = state.renderer.grid_size_raw(cw as u32, ch as u32);
+
+            daemon.resize_session(session_id, cols, rows);
+
+            if let Some(pane) = attach_existing_session(
+                new_id,
+                session_id.to_string(),
+                shell.to_string(),
+                shell_pid,
+                cols,
+                rows,
+                proxy,
+                buffers,
+                Some(&state.config.time_travel),
+                state.renderer.cjk_width,
+            ) {
+                let layout = LayoutTree::new(new_id);
+                let mut panes = HashMap::new();
+                panes.insert(new_id, pane);
+                let fmt = state.config.tab_bar.format.clone();
+                let ws = active_ws_mut(state);
+                let tab_num = ws.tabs.len() + 1;
+                let tab = Tab {
+                    layout,
+                    panes,
+                    name: format!("Tab {tab_num}"),
+                    display_title: format_tab_title(&fmt, "", "", tab_num),
+                };
+                ws.tabs.push(tab);
+                ws.active_tab = ws.tabs.len() - 1;
+                resize_all_panes(state);
+                update_window_title(state);
+            } else {
+                log::error!("failed to attach session {session_id}");
+            }
+        }
+        Action::SplitRight | Action::SplitDown => {
+            let direction = if matches!(pending_action, Action::SplitRight) {
+                SplitDirection::Horizontal
+            } else {
+                SplitDirection::Vertical
+            };
+            let focused_id = active_tab(state).layout.focused();
+            let next_id = state.next_pane_id;
+            let tab = active_tab_mut(state);
+            tab.layout.set_next_id(next_id);
+            let (new_layout, new_id) = tab.layout.split(focused_id, direction);
+            tab.layout = new_layout;
+            state.next_pane_id = new_id + 1;
+            let pane_rects = active_pane_rects(state);
+            let new_rect = pane_rects
+                .iter()
+                .find(|(id, _)| *id == new_id)
+                .map(|(_, r)| *r);
+            if let Some(rect) = new_rect {
+                let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
+                daemon.resize_session(session_id, cols.max(1), rows.max(1));
+
+                if let Some(pane) = attach_existing_session(
+                    new_id,
+                    session_id.to_string(),
+                    shell.to_string(),
+                    shell_pid,
+                    cols.max(1),
+                    rows.max(1),
+                    proxy,
+                    buffers,
+                    Some(&state.config.time_travel),
+                    state.renderer.cjk_width,
+                ) {
+                    active_tab_mut(state).panes.insert(new_id, pane);
+                } else {
+                    log::error!("failed to attach session {session_id} into split");
+                }
+            }
+            resize_all_panes(state);
+        }
+        _ => {}
+    }
+    state.window.request_redraw();
 }

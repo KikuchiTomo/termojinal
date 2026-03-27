@@ -447,6 +447,7 @@ fn print_session_table(sessions: &[serde_json::Value]) {
         pid: String,
         size: String,
         created: String,
+        attached: String,
     }
 
     let rows: Vec<Row> = sessions
@@ -474,6 +475,12 @@ fn print_session_table(sessions: &[serde_json::Value]) {
             let size = format!("{cols}x{rows_val}");
             let created_at = s.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
             let created = format_relative_time(created_at);
+            let attached = s
+                .get("attached")
+                .and_then(|v| v.as_bool())
+                .map(|a| if a { "yes" } else { "no" })
+                .unwrap_or("-")
+                .to_string();
 
             Row {
                 id_short: id_short.to_string(),
@@ -483,6 +490,7 @@ fn print_session_table(sessions: &[serde_json::Value]) {
                 pid,
                 size,
                 created,
+                attached,
             }
         })
         .collect();
@@ -511,19 +519,25 @@ fn print_session_table(sessions: &[serde_json::Value]) {
         .max()
         .unwrap_or(0)
         .max(7);
+    let w_attached = rows
+        .iter()
+        .map(|r| r.attached.len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
 
     // Print header.
     println!(
-        "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}",
-        "ID", "NAME", "SHELL", "CWD", "PID", "SIZE", "CREATED",
+        "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}  {:<w_attached$}",
+        "ID", "NAME", "SHELL", "CWD", "PID", "SIZE", "CREATED", "ATTACHED",
     );
 
     // Print rows.
     for r in &rows {
         let cwd_display = truncate(&r.cwd, w_cwd);
         println!(
-            "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}",
-            r.id_short, r.name, r.shell, cwd_display, r.pid, r.size, r.created,
+            "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}  {:<w_attached$}",
+            r.id_short, r.name, r.shell, cwd_display, r.pid, r.size, r.created, r.attached,
         );
     }
 
