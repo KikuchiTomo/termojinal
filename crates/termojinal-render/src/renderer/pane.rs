@@ -18,6 +18,7 @@ impl Renderer {
         selection: Option<((usize, usize), (usize, usize))>,
         search_matches: Option<&[(usize, usize, usize)]>, // (row, col_start, col_end)
         search_current_idx: Option<usize>,
+        link_hover: Option<(usize, usize, usize)>, // (row, col_start, col_end) inclusive
     ) -> Vec<CellInstance> {
         let grid = terminal.grid();
         let cols = grid.cols();
@@ -137,6 +138,13 @@ impl Renderer {
                         }
                         break;
                     }
+                }
+            }
+
+            // Mark link hover cells with underline.
+            if let Some((h_row, h_col_start, h_col_end)) = link_hover {
+                if row == h_row && col >= h_col_start && col <= h_col_end {
+                    flags |= FLAG_UNDERLINE;
                 }
             }
 
@@ -287,6 +295,7 @@ impl Renderer {
         selection: Option<((usize, usize), (usize, usize))>,
         search_matches: Option<&[(usize, usize, usize)]>,
         search_current_idx: Option<usize>,
+        link_hover: Option<(usize, usize, usize)>,
     ) -> usize {
         let key = self.current_pane_key;
         self.pane_caches.entry(key).or_default();
@@ -302,11 +311,13 @@ impl Renderer {
         let selection_match = cache.selection == selection;
         let search_match = cache.search_matches.as_deref() == search_matches
             && cache.search_current_idx == search_current_idx;
+        let link_hover_match = cache.link_hover == link_hover;
 
         let can_incremental = dims_match
             && scroll_match
             && selection_match
             && search_match
+            && link_hover_match
             && !cache.instances.is_empty()
             && grid.any_dirty();
 
@@ -334,6 +345,7 @@ impl Renderer {
                     selection,
                     search_matches,
                     search_current_idx,
+                    link_hover,
                 );
 
                 let cache = &self.pane_caches[&key];
@@ -344,6 +356,7 @@ impl Renderer {
                         selection,
                         search_matches,
                         search_current_idx,
+                        link_hover,
                     );
                 }
                 let row_start_instance: usize = cache.row_instance_counts[..row].iter().sum();
@@ -356,6 +369,7 @@ impl Renderer {
                             selection,
                             search_matches,
                             search_current_idx,
+                            link_hover,
                         );
                     };
                     // Guard against instance buffer out-of-bounds
@@ -365,6 +379,7 @@ impl Renderer {
                             selection,
                             search_matches,
                             search_current_idx,
+                            link_hover,
                         );
                     }
                     for (i, inst) in new_row_instances.iter().enumerate() {
@@ -382,6 +397,7 @@ impl Renderer {
                         selection,
                         search_matches,
                         search_current_idx,
+                        link_hover,
                     );
                 }
             }
@@ -397,12 +413,13 @@ impl Renderer {
             && scroll_match
             && selection_match
             && search_match
+            && link_hover_match
             && !cache.instances.is_empty()
         {
             return cache.instance_count;
         }
 
-        self.full_rebuild(terminal, selection, search_matches, search_current_idx)
+        self.full_rebuild(terminal, selection, search_matches, search_current_idx, link_hover)
     }
 
     /// Perform a full rebuild of all instance data for the current pane.
@@ -412,6 +429,7 @@ impl Renderer {
         selection: Option<((usize, usize), (usize, usize))>,
         search_matches: Option<&[(usize, usize, usize)]>,
         search_current_idx: Option<usize>,
+        link_hover: Option<(usize, usize, usize)>,
     ) -> usize {
         let grid = terminal.grid();
         let cols = grid.cols();
@@ -429,6 +447,7 @@ impl Renderer {
                 selection,
                 search_matches,
                 search_current_idx,
+                link_hover,
             );
             row_counts.push(row_instances.len());
             instances.extend_from_slice(&row_instances);
@@ -464,6 +483,7 @@ impl Renderer {
         cache.row_instance_counts = row_counts;
         cache.search_matches = search_matches.map(|m| m.to_vec());
         cache.search_current_idx = search_current_idx;
+        cache.link_hover = link_hover;
 
         grid.clear_dirty();
         count
@@ -688,6 +708,7 @@ impl Renderer {
         view: &wgpu::TextureView,
         search_matches: Option<&[(usize, usize, usize)]>,
         search_current_idx: Option<usize>,
+        link_hover: Option<(usize, usize, usize)>,
     ) -> Result<(), RenderError> {
         let (vp_x, vp_y, vp_w, vp_h) = viewport;
 
@@ -700,7 +721,7 @@ impl Renderer {
         // Select the per-pane cache so dirty optimization works across panes.
         self.set_active_pane(pane_key);
         let instance_count =
-            self.update_instances(terminal, selection, search_matches, search_current_idx);
+            self.update_instances(terminal, selection, search_matches, search_current_idx, link_hover);
 
         // Re-upload atlas if needed.
         let current_glyph_count = self.atlas.glyph_count();
@@ -798,7 +819,7 @@ impl Renderer {
         view: &wgpu::TextureView,
     ) -> Result<(), RenderError> {
         // Build/update instance data (with dirty-row optimization).
-        let instance_count = self.update_instances(terminal, selection, None, None);
+        let instance_count = self.update_instances(terminal, selection, None, None, None);
 
         // Re-upload atlas texture if new glyphs were rasterized.
         let current_glyph_count = self.atlas.glyph_count();

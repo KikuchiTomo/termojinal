@@ -435,6 +435,8 @@ pub(crate) struct AppState {
     /// Application start time for animation calculations.
     pub(crate) app_start_time: std::time::Instant,
     pub(crate) tab_drag: Option<TabDrag>,
+    /// Link hover highlight: (row, col_start, col_end) inclusive, shown when modifier+hover over a link.
+    pub(crate) link_hover_cells: Option<(usize, usize, usize)>,
     /// Pending tab click: mouse-down recorded but not yet committed as click or drag.
     pub(crate) pending_tab_click: Option<PendingTabClick>,
     /// Tab-to-pane drag state: active when a tab is being dragged into a pane area.
