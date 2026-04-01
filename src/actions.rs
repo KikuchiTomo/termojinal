@@ -16,6 +16,10 @@ pub(crate) fn dispatch_action(
     if state.pending_close_confirm.is_some() && !matches!(action, Action::CloseTab) {
         state.pending_close_confirm = None;
     }
+    // Dismiss pane↔tab confirmation dialog when any other action is dispatched.
+    if state.pending_pane_tab_confirm.is_some() {
+        state.pending_pane_tab_confirm = None;
+    }
 
     let focused_id = active_tab(state).layout.focused();
     match action {
