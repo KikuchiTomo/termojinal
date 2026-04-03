@@ -3,7 +3,7 @@
 //! Communicates with the `termojinald` daemon over a Unix domain socket using
 //! the JSON IPC protocol defined in `termojinal_ipc::protocol`.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use termojinal_ipc::app_protocol::AppIpcRequest;
 use termojinal_ipc::client::IpcClient;
 use termojinal_ipc::protocol::IpcRequest;
@@ -124,6 +124,13 @@ enum Commands {
         #[arg(long)]
         description: Option<String>,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[tokio::main]
@@ -131,6 +138,13 @@ async fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
+
+    // Completions run locally, no daemon needed.
+    if let Commands::Completions { shell } = &cli.command {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell.clone(), &mut cmd, "tm", &mut std::io::stdout());
+        return;
+    }
 
     // Setup runs locally, no daemon needed.
     if matches!(&cli.command, Commands::Setup) {
@@ -215,7 +229,8 @@ async fn main() {
         Commands::Notify { .. }
         | Commands::Setup
         | Commands::AllowRequest
-        | Commands::Status { .. } => {
+        | Commands::Status { .. }
+        | Commands::Completions { .. } => {
             unreachable!("handled above")
         }
     };
@@ -298,7 +313,8 @@ async fn main() {
                     | Commands::AllowRequest
                     | Commands::Notify { .. }
                     | Commands::Exit { .. }
-                    | Commands::Status { .. } => {
+                    | Commands::Status { .. }
+                    | Commands::Completions { .. } => {
                         unreachable!("handled above")
                     }
                 }
@@ -1158,6 +1174,24 @@ exec tm allow-request\n";
     } else {
         println!("[ok] hooks already in settings.json");
     }
+
+    // 6. Install shell completions
+    let completions_dir = config_dir.join("completions");
+    fs::create_dir_all(&completions_dir).ok();
+    let zsh_completion_file = completions_dir.join("_tm");
+    {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "tm", &mut buf);
+        fs::write(&zsh_completion_file, buf).ok();
+    }
+    println!("[ok] zsh completions: {}", zsh_completion_file.display());
+    println!("     To enable, add to your .zshrc:");
+    println!(
+        "       fpath=({}  $fpath)",
+        completions_dir.display()
+    );
+    println!("       autoload -Uz compinit && compinit");
 
     println!();
     println!("==> setup complete!");
