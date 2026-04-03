@@ -703,15 +703,18 @@ pub fn read_session_jsonl_stats(session_id: &str, cwd: &str) -> SessionJsonlStat
         let entry_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         if entry_type == "assistant" {
+            // The Claude Code JSONL nests `model` and `usage` inside `message`.
+            let msg = json.get("message");
+
             // Extract model name from assistant messages.
-            if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
+            if let Some(model) = msg.and_then(|m| m.get("model")).and_then(|v| v.as_str()) {
                 if !model.is_empty() {
                     stats.model = model.to_string();
                 }
             }
 
             // Extract usage stats.
-            if let Some(usage) = json.get("usage") {
+            if let Some(usage) = msg.and_then(|m| m.get("usage")) {
                 if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                     stats.input_tokens += input;
                 }
@@ -724,7 +727,7 @@ pub fn read_session_jsonl_stats(session_id: &str, cwd: &str) -> SessionJsonlStat
             }
 
             // Count tool_use blocks in assistant content.
-            if let Some(content) = json.get("message")
+            if let Some(content) = msg
                 .and_then(|m| m.get("content"))
                 .and_then(|c| c.as_array())
             {
