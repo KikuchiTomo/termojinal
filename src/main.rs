@@ -646,7 +646,11 @@ impl ApplicationHandler<UserEvent> for App {
         };
         let content_w = (phys_w - initial_sidebar_w).max(1.0);
         let content_h = (phys_h - initial_tab_bar_h - initial_status_bar_h).max(1.0);
-        let (cols, rows) = renderer.grid_size_raw(content_w as u32, content_h as u32);
+        let pane_pad = 4u32;
+        let (cols, rows) = renderer.grid_size_raw(
+            (content_w as u32).saturating_sub(pane_pad * 2),
+            (content_h as u32).saturating_sub(pane_pad * 2),
+        );
         log::info!(
             "window {}x{} -> grid {cols}x{rows}",
             size.width,
@@ -3887,7 +3891,11 @@ pub(crate) fn resize_all_panes(state: &mut AppState) {
     let cell_h = cell_size.height as u32;
     let pane_rects = active_pane_rects(state);
     for (pid, rect) in &pane_rects {
-        let (cols, rows) = state.renderer.grid_size_raw(rect.w as u32, rect.h as u32);
+        let pane_pad = 4u32;
+        let (cols, rows) = state.renderer.grid_size_raw(
+            (rect.w as u32).saturating_sub(pane_pad * 2),
+            (rect.h as u32).saturating_sub(pane_pad * 2),
+        );
         let cols = cols.max(1);
         let rows = rows.max(1);
         let tab = active_tab_mut(state);
