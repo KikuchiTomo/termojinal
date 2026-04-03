@@ -2,12 +2,54 @@
 
 use crate::{Pane, UserEvent};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use termojinal_layout::PaneId;
 use termojinal_vt::Terminal;
 use winit::event_loop::EventLoopProxy;
 
 pub(crate) use termojinal_ipc::daemon_connection::DaemonHandle;
+
+// ---------------------------------------------------------------------------
+// Per-pane pending-event flags.
+//
+// When a daemon reader thread pushes data into the buffer it sets the flag
+// to `true` via `swap`.  Only the thread that actually flipped the flag from
+// `false → true` sends a `UserEvent::PtyOutput` event, preventing the event
+// queue from being flooded when a single pane produces output rapidly.
+//
+// The event handler in main.rs calls `clear_pty_pending` after draining the
+// buffer so that the next chunk of output can trigger a new event.
+// ---------------------------------------------------------------------------
+
+static PTY_PENDING: Mutex<Option<HashMap<PaneId, Arc<AtomicBool>>>> = Mutex::new(None);
+
+fn get_or_create_pending(id: PaneId) -> Arc<AtomicBool> {
+    let mut guard = PTY_PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(HashMap::new);
+    map.entry(id).or_insert_with(|| Arc::new(AtomicBool::new(false))).clone()
+}
+
+/// Clear the pending-event flag for a pane so the reader thread can send
+/// another `PtyOutput` event once new data arrives.
+pub(crate) fn clear_pty_pending(id: PaneId) {
+    if let Ok(guard) = PTY_PENDING.lock() {
+        if let Some(map) = guard.as_ref() {
+            if let Some(flag) = map.get(&id) {
+                flag.store(false, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Remove the pending-event flag when a pane is destroyed.
+pub(crate) fn remove_pty_pending(id: PaneId) {
+    if let Ok(mut guard) = PTY_PENDING.lock() {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&id);
+        }
+    }
+}
 
 
 
@@ -72,6 +114,7 @@ pub(crate) fn spawn_pane(
     let buffers_clone = buffers.clone();
     let sid = session_id.clone();
     let sock_path = daemon_socket_path();
+    let pending_flag = get_or_create_pending(id);
     std::thread::Builder::new()
         .name(format!("daemon-reader-{id}"))
         .spawn(move || {
@@ -89,7 +132,11 @@ pub(crate) fn spawn_pane(
                                     q.push_back(data);
                                 }
                             }
-                            let _ = proxy_clone.send_event(UserEvent::PtyOutput(id));
+                            // Only send an event if one isn't already pending,
+                            // preventing event-queue flooding from busy panes.
+                            if !pending_flag.swap(true, Ordering::Relaxed) {
+                                let _ = proxy_clone.send_event(UserEvent::PtyOutput(id));
+                            }
                         }
                         DaemonReaderEvent::Snapshot(data) => {
                             let _ = proxy_clone.send_event(UserEvent::SnapshotReceived(id, data));
@@ -167,6 +214,7 @@ pub(crate) fn attach_existing_session(
     let buffers_clone = buffers.clone();
     let sid = session_id.clone();
     let sock_path = daemon_socket_path();
+    let pending_flag = get_or_create_pending(id);
     if let Err(e) = std::thread::Builder::new()
         .name(format!("daemon-reader-{id}"))
         .spawn(move || {
@@ -184,7 +232,11 @@ pub(crate) fn attach_existing_session(
                                     q.push_back(data);
                                 }
                             }
-                            let _ = proxy_clone.send_event(UserEvent::PtyOutput(id));
+                            // Only send an event if one isn't already pending,
+                            // preventing event-queue flooding from busy panes.
+                            if !pending_flag.swap(true, Ordering::Relaxed) {
+                                let _ = proxy_clone.send_event(UserEvent::PtyOutput(id));
+                            }
                         }
                         DaemonReaderEvent::Snapshot(data) => {
                             let _ =
