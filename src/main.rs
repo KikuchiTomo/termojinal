@@ -896,6 +896,7 @@ impl ApplicationHandler<UserEvent> for App {
             sessions_collapsed: false,
             daemon_sessions: Vec::new(),
             pending_close_confirm: None, // (proc_name, pane_id)
+            pending_kill_confirm: None,
             pending_pane_tab_confirm: None,
             needs_animation_frame: false,
             last_animation_redraw: std::time::Instant::now(),
@@ -1152,6 +1153,41 @@ impl ApplicationHandler<UserEvent> for App {
                         // Any other key dismisses the about screen.
                         state.about_visible = false;
                         state.window.request_redraw();
+                    }
+                    return;
+                }
+
+                // Kill-and-close confirmation dialog intercepts keyboard input.
+                if let Some((ref session_id, confirm_pane_id)) = state.pending_kill_confirm.clone() {
+                    let buffers = &self.pty_buffers;
+                    match &event.logical_key {
+                        Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y" => {
+                            state.pending_kill_confirm = None;
+                            let current_focused = active_tab(state).layout.focused();
+                            if current_focused == confirm_pane_id {
+                                // Kill the daemon session first.
+                                let daemon = DaemonHandle::new();
+                                daemon.kill_session(&session_id);
+                                close_focused_pane(state, buffers, event_loop);
+                            } else {
+                                state.window.request_redraw();
+                            }
+                        }
+                        Key::Character(c) if c.as_str() == "n" || c.as_str() == "N" => {
+                            state.pending_kill_confirm = None;
+                            // Close pane only (detach, don't kill).
+                            let current_focused = active_tab(state).layout.focused();
+                            if current_focused == confirm_pane_id {
+                                close_focused_pane(state, buffers, event_loop);
+                            } else {
+                                state.window.request_redraw();
+                            }
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            state.pending_kill_confirm = None;
+                            state.window.request_redraw();
+                        }
+                        _ => {}
                     }
                     return;
                 }

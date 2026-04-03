@@ -30,6 +30,8 @@ pub enum Action {
     NewTab,
     /// Close the current pane (cascades to tab/workspace/app).
     CloseTab,
+    /// Close the current pane and optionally kill the daemon session.
+    CloseAndKillSession,
     /// Create a new workspace.
     NewWorkspace,
     /// Switch to next tab within the current workspace.
@@ -134,6 +136,7 @@ impl Default for KeybindingConfig {
         // Tab management
         normal.insert("cmd+t".to_string(), Action::NewTab);
         normal.insert("cmd+w".to_string(), Action::CloseTab);
+        normal.insert("cmd+shift+w".to_string(), Action::CloseAndKillSession);
         normal.insert("cmd+n".to_string(), Action::NewWorkspace);
 
         // Workspace switching (Cmd+1 through Cmd+9)
@@ -489,6 +492,7 @@ mod tests {
             Action::QuickLaunch,
             Action::ExtractPaneToTab,
             Action::ClaudesDashboard,
+            Action::CloseAndKillSession,
         ];
 
         for action in &actions {
