@@ -444,6 +444,9 @@ fn print_session_table(sessions: &[serde_json::Value]) {
         name: String,
         shell: String,
         cwd: String,
+        pwd: String,
+        title: String,
+        workspace: String,
         pid: String,
         size: String,
         created: String,
@@ -460,6 +463,12 @@ fn print_session_table(sessions: &[serde_json::Value]) {
             // Show only the shell binary name (e.g. "zsh" instead of "/bin/zsh").
             let shell_name = shell_path.rsplit('/').next().unwrap_or(shell_path);
             let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            let pwd_raw = s.get("pwd").and_then(|v| v.as_str()).unwrap_or("");
+            let title_raw = s.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let workspace_raw = s
+                .get("workspace_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let pid = s
                 .get("pid")
                 .map(|v| {
@@ -487,6 +496,21 @@ fn print_session_table(sessions: &[serde_json::Value]) {
                 name: name.to_string(),
                 shell: shell_name.to_string(),
                 cwd: shorten_path(cwd),
+                pwd: if pwd_raw.is_empty() {
+                    "-".to_string()
+                } else {
+                    shorten_path(pwd_raw)
+                },
+                title: if title_raw.is_empty() {
+                    "-".to_string()
+                } else {
+                    title_raw.to_string()
+                },
+                workspace: if workspace_raw.is_empty() {
+                    "-".to_string()
+                } else {
+                    workspace_raw.to_string()
+                },
                 pid,
                 size,
                 created,
@@ -511,6 +535,26 @@ fn print_session_table(sessions: &[serde_json::Value]) {
         .unwrap_or(0)
         .max(3)
         .min(40); // cap CWD column width
+    let w_pwd = rows
+        .iter()
+        .map(|r| r.pwd.len())
+        .max()
+        .unwrap_or(0)
+        .max(3)
+        .min(40); // cap PWD column width
+    let w_title = rows
+        .iter()
+        .map(|r| r.title.len())
+        .max()
+        .unwrap_or(0)
+        .max(5)
+        .min(30); // cap TITLE column width
+    let w_workspace = rows
+        .iter()
+        .map(|r| r.workspace.len())
+        .max()
+        .unwrap_or(0)
+        .max(9);
     let w_pid = rows.iter().map(|r| r.pid.len()).max().unwrap_or(0).max(3);
     let w_size = rows.iter().map(|r| r.size.len()).max().unwrap_or(0).max(4);
     let w_created = rows
@@ -528,16 +572,18 @@ fn print_session_table(sessions: &[serde_json::Value]) {
 
     // Print header.
     println!(
-        "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}  {:<w_attached$}",
-        "ID", "NAME", "SHELL", "CWD", "PID", "SIZE", "CREATED", "ATTACHED",
+        "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:<w_pwd$}  {:<w_title$}  {:<w_workspace$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}  {:<w_attached$}",
+        "ID", "NAME", "SHELL", "CWD", "PWD", "TITLE", "WORKSPACE", "PID", "SIZE", "CREATED", "ATTACHED",
     );
 
     // Print rows.
     for r in &rows {
         let cwd_display = truncate(&r.cwd, w_cwd);
+        let pwd_display = truncate(&r.pwd, w_pwd);
+        let title_display = truncate(&r.title, w_title);
         println!(
-            "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}  {:<w_attached$}",
-            r.id_short, r.name, r.shell, cwd_display, r.pid, r.size, r.created, r.attached,
+            "{:<w_id$}  {:<w_name$}  {:<w_shell$}  {:<w_cwd$}  {:<w_pwd$}  {:<w_title$}  {:<w_workspace$}  {:>w_pid$}  {:<w_size$}  {:<w_created$}  {:<w_attached$}",
+            r.id_short, r.name, r.shell, cwd_display, pwd_display, title_display, r.workspace, r.pid, r.size, r.created, r.attached,
         );
     }
 

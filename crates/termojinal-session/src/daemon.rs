@@ -295,15 +295,17 @@ async fn handle_json_connection(
                         log::info!("reaped {} dead session(s) during list", dead.len());
                     }
                     let details: Vec<serde_json::Value> = mgr
-                        .list_details_with_attached()
+                        .list_details_extended()
                         .iter()
-                        .map(|(s, attached)| {
+                        .map(|(s, attached, title, pwd)| {
                             json!({
                                 "id": s.id, "name": s.name, "shell": s.shell,
                                 "cwd": s.cwd, "pid": s.pid, "cols": s.cols,
                                 "rows": s.rows, "created_at": s.created_at.to_rfc3339(),
                                 "attached": attached,
                                 "workspace_name": s.workspace_name,
+                                "title": title,
+                                "pwd": pwd,
                             })
                         })
                         .collect();
