@@ -340,6 +340,23 @@ pub(crate) struct TabPaneDrag {
 }
 
 // ---------------------------------------------------------------------------
+// Pane ↔ Tab confirmation dialog
+// ---------------------------------------------------------------------------
+
+/// Pending pane/tab move operation awaiting user confirmation.
+#[derive(Debug, Clone)]
+pub(crate) enum PaneTabConfirm {
+    /// Cmd+Click: extract a pane into a new tab.
+    PaneToTab { pane_id: PaneId },
+    /// Tab dragged into pane area: merge tab as a pane split.
+    TabToPane {
+        tab_idx: usize,
+        target_pane: PaneId,
+        zone: DropZone,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Scrollbar drag state
 // ---------------------------------------------------------------------------
 
@@ -494,6 +511,8 @@ pub(crate) struct AppState {
     /// Pending close confirmation: pane has running child process.
     /// Stores (process_name, pane_id) to ensure the correct pane is closed.
     pub(crate) pending_close_confirm: Option<(String, PaneId)>,
+    /// Pending pane↔tab move confirmation dialog.
+    pub(crate) pending_pane_tab_confirm: Option<PaneTabConfirm>,
     /// Set to `true` during RedrawRequested when continuous animation is needed
     /// (pulse indicator, command polling, etc.).  Consumed in `about_to_wait`
     /// to schedule the next frame via `WaitUntil` instead of an immediate

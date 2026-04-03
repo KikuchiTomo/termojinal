@@ -895,6 +895,7 @@ impl ApplicationHandler<UserEvent> for App {
             sessions_collapsed: false,
             daemon_sessions: Vec::new(),
             pending_close_confirm: None, // (proc_name, pane_id)
+            pending_pane_tab_confirm: None,
             needs_animation_frame: false,
             last_animation_redraw: std::time::Instant::now(),
             scroll_accum: 0.0,
@@ -1167,6 +1168,34 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
                             state.pending_close_confirm = None;
+                            state.window.request_redraw();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // Pane↔Tab confirmation dialog intercepts keyboard input.
+                if let Some(confirm) = state.pending_pane_tab_confirm.clone() {
+                    match &event.logical_key {
+                        Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y" => {
+                            state.pending_pane_tab_confirm = None;
+                            match confirm {
+                                PaneTabConfirm::PaneToTab { pane_id } => {
+                                    execute_pane_to_tab(state, pane_id);
+                                }
+                                PaneTabConfirm::TabToPane { tab_idx, target_pane, zone } => {
+                                    execute_tab_to_pane(state, tab_idx, target_pane, zone);
+                                }
+                            }
+                            state.window.request_redraw();
+                        }
+                        Key::Character(c) if c.as_str() == "n" || c.as_str() == "N" => {
+                            state.pending_pane_tab_confirm = None;
+                            state.window.request_redraw();
+                        }
+                        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                            state.pending_pane_tab_confirm = None;
                             state.window.request_redraw();
                         }
                         _ => {}
@@ -2396,51 +2425,15 @@ impl ApplicationHandler<UserEvent> for App {
                         break 'mouse_input;
                     }
                     if let Some(drag) = state.tab_pane_drag.take() {
-                        // Execute the tab-to-pane split.
+                        // Show confirmation dialog before executing the tab-to-pane split.
                         let ws = active_ws(state);
-                        // Ensure the source tab still exists and is not the only tab.
                         if drag.tab_idx < ws.tabs.len() && ws.tabs.len() > 1 {
-                            let (direction, insert_first) = match drag.zone {
-                                DropZone::Left => (SplitDirection::Horizontal, true),
-                                DropZone::Right => (SplitDirection::Horizontal, false),
-                                DropZone::Top => (SplitDirection::Vertical, true),
-                                DropZone::Bottom => (SplitDirection::Vertical, false),
-                            };
-                            // Take all panes from the dragged tab.
-                            let ws = active_ws_mut(state);
-                            let source_tab = ws.tabs.remove(drag.tab_idx);
-                            // Fix active_tab index after removal.
-                            if ws.active_tab >= ws.tabs.len() {
-                                ws.active_tab = ws.tabs.len().saturating_sub(1);
-                            } else if ws.active_tab > drag.tab_idx {
-                                ws.active_tab -= 1;
-                            }
-                            // Insert each pane from the source tab into the target pane's layout.
-                            let pane_ids: Vec<PaneId> = source_tab.layout.pane_ids();
-                            let mut first_inserted = None;
-                            for pid in &pane_ids {
-                                let tab = active_tab_mut(state);
-                                let anchor = first_inserted.unwrap_or(drag.target_pane);
-                                tab.layout = tab.layout.split_insert(
-                                    anchor,
-                                    direction,
-                                    *pid,
-                                    insert_first,
-                                );
-                                if first_inserted.is_none() {
-                                    first_inserted = Some(*pid);
-                                }
-                            }
-                            // Move panes from source tab into the active tab's pane map.
-                            for (pid, pane) in source_tab.panes {
-                                active_tab_mut(state).panes.insert(pid, pane);
-                            }
-                            // Focus the first inserted pane.
-                            if let Some(fid) = first_inserted {
-                                let tab = active_tab_mut(state);
-                                tab.layout = tab.layout.focus(fid);
-                            }
-                            resize_all_panes(state);
+                            state.pending_pane_tab_confirm =
+                                Some(PaneTabConfirm::TabToPane {
+                                    tab_idx: drag.tab_idx,
+                                    target_pane: drag.target_pane,
+                                    zone: drag.zone,
+                                });
                         }
                         state.window.request_redraw();
                         break 'mouse_input;
@@ -2664,7 +2657,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
 
-                // --- Priority 1.5: Cmd+click on a pane → extract to new tab (Feature 4) ---
+                // --- Priority 1.5: Cmd+click on a pane → ask to extract to new tab ---
                 if btn_state == ElementState::Pressed
                     && button == MouseButton::Left
                     && state.modifiers.super_key()
@@ -2682,43 +2675,10 @@ impl ApplicationHandler<UserEvent> for App {
                                 && cy < rect.y + rect.h
                             {
                                 let target_pane = *pid;
-                                let tab = active_tab(state);
-                                if let Some((remaining, _extracted)) =
-                                    tab.layout.extract_pane(target_pane)
-                                {
-                                    // Remove the pane from current tab and create a new tab with it.
-                                    let pane = active_tab_mut(state).panes.remove(&target_pane);
-                                    active_tab_mut(state).layout = remaining;
-
-                                    if let Some(pane) = pane {
-                                        let new_layout = LayoutTree::new(target_pane);
-                                        let mut new_panes = HashMap::new();
-                                        new_panes.insert(target_pane, pane);
-                                        let fmt = state.config.tab_bar.format.clone();
-                                        let fb_cwd = state.pane_git_cache.cwd.clone();
-                                        let ws = active_ws_mut(state);
-                                        let tab_num = ws.tabs.len() + 1;
-                                        let new_tab = Tab {
-                                            layout: new_layout,
-                                            panes: new_panes,
-                                            name: format!("Tab {tab_num}"),
-                                            display_title: format_tab_title(&fmt, "", "", tab_num),
-                                        };
-                                        ws.tabs.push(new_tab);
-                                        let new_tab_idx = ws.tabs.len() - 1;
-                                        ws.active_tab = new_tab_idx;
-                                        update_tab_title(
-                                            &mut ws.tabs[new_tab_idx],
-                                            &fmt,
-                                            tab_num,
-                                            &fb_cwd,
-                                        );
-                                    }
-                                    resize_all_panes(state);
-                                    state.window.request_redraw();
-                                    break 'mouse_input;
-                                }
-                                break;
+                                state.pending_pane_tab_confirm =
+                                    Some(PaneTabConfirm::PaneToTab { pane_id: target_pane });
+                                state.window.request_redraw();
+                                break 'mouse_input;
                             }
                         }
                     }
@@ -3892,6 +3852,83 @@ pub(crate) fn detach_all_ptys(_state: &mut AppState) {
 
 /// Compute the drop zone for a cursor position within a pane rect.
 ///
+/// Extract a pane from the current tab and move it to a new tab.
+fn execute_pane_to_tab(state: &mut AppState, pane_id: PaneId) {
+    let tab = active_tab(state);
+    if tab.layout.pane_count() <= 1 {
+        return;
+    }
+    if let Some((remaining, _extracted)) = tab.layout.extract_pane(pane_id) {
+        let pane = active_tab_mut(state).panes.remove(&pane_id);
+        active_tab_mut(state).layout = remaining;
+
+        if let Some(pane) = pane {
+            let new_layout = LayoutTree::new(pane_id);
+            let mut new_panes = HashMap::new();
+            new_panes.insert(pane_id, pane);
+            let fmt = state.config.tab_bar.format.clone();
+            let fb_cwd = state.pane_git_cache.cwd.clone();
+            let ws = active_ws_mut(state);
+            let tab_num = ws.tabs.len() + 1;
+            let new_tab = Tab {
+                layout: new_layout,
+                panes: new_panes,
+                name: format!("Tab {tab_num}"),
+                display_title: format_tab_title(&fmt, "", "", tab_num),
+            };
+            ws.tabs.push(new_tab);
+            let new_tab_idx = ws.tabs.len() - 1;
+            ws.active_tab = new_tab_idx;
+            update_tab_title(&mut ws.tabs[new_tab_idx], &fmt, tab_num, &fb_cwd);
+        }
+        resize_all_panes(state);
+    }
+}
+
+/// Move a tab's panes into the current tab as a pane split.
+fn execute_tab_to_pane(
+    state: &mut AppState,
+    tab_idx: usize,
+    target_pane: PaneId,
+    zone: DropZone,
+) {
+    let ws = active_ws(state);
+    if tab_idx >= ws.tabs.len() || ws.tabs.len() <= 1 {
+        return;
+    }
+    let (direction, insert_first) = match zone {
+        DropZone::Left => (SplitDirection::Horizontal, true),
+        DropZone::Right => (SplitDirection::Horizontal, false),
+        DropZone::Top => (SplitDirection::Vertical, true),
+        DropZone::Bottom => (SplitDirection::Vertical, false),
+    };
+    let ws = active_ws_mut(state);
+    let source_tab = ws.tabs.remove(tab_idx);
+    if ws.active_tab >= ws.tabs.len() {
+        ws.active_tab = ws.tabs.len().saturating_sub(1);
+    } else if ws.active_tab > tab_idx {
+        ws.active_tab -= 1;
+    }
+    let pane_ids: Vec<PaneId> = source_tab.layout.pane_ids();
+    let mut first_inserted = None;
+    for pid in &pane_ids {
+        let tab = active_tab_mut(state);
+        let anchor = first_inserted.unwrap_or(target_pane);
+        tab.layout = tab.layout.split_insert(anchor, direction, *pid, insert_first);
+        if first_inserted.is_none() {
+            first_inserted = Some(*pid);
+        }
+    }
+    for (pid, pane) in source_tab.panes {
+        active_tab_mut(state).panes.insert(pid, pane);
+    }
+    if let Some(fid) = first_inserted {
+        let tab = active_tab_mut(state);
+        tab.layout = tab.layout.focus(fid);
+    }
+    resize_all_panes(state);
+}
+
 /// Layout (no dead zone):
 /// - Top 20%: Top
 /// - Bottom 20%: Bottom

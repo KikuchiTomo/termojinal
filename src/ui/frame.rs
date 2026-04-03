@@ -298,6 +298,11 @@ pub(crate) fn render_frame(state: &mut AppState) -> Result<(), termojinal_render
         render_close_confirm_dialog(state, &view, phys_w, phys_h, proc_name);
     }
 
+    // Render pane↔tab move confirmation dialog if pending.
+    if let Some(ref confirm) = state.pending_pane_tab_confirm.clone() {
+        render_pane_tab_confirm_dialog(state, &view, phys_w, phys_h, confirm);
+    }
+
     output.present();
     Ok(())
 }
