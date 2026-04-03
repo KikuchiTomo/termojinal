@@ -34,7 +34,7 @@ Each package is listed with its license.
 | bitflags | 2.11.0 | MIT OR Apache-2.0 | [link](https://github.com/bitflags/bitflags) |
 | block | 0.1.6 | MIT | [link](http://github.com/SSheldon/rust-block) |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 | [link](https://github.com/RustCrypto/utils) |
-| block2 | 0.6.2 | MIT | [link](https://github.com/madsmtm/objc2) |
+| block2 | 0.5.1 | MIT | [link](https://github.com/madsmtm/objc2) |
 | bumpalo | 3.20.2 | MIT OR Apache-2.0 | [link](https://github.com/fitzgen/bumpalo) |
 | bytemuck | 1.25.0 | Zlib OR Apache-2.0 OR MIT | [link](https://github.com/Lokathor/bytemuck) |
 | bytemuck_derive | 1.10.2 | Zlib OR Apache-2.0 OR MIT | [link](https://github.com/Lokathor/bytemuck) |
@@ -49,6 +49,7 @@ Each package is listed with its license.
 | chrono | 0.4.44 | MIT OR Apache-2.0 | [link](https://github.com/chronotope/chrono) |
 | clap | 4.6.0 | MIT OR Apache-2.0 | [link](https://github.com/clap-rs/clap) |
 | clap_builder | 4.6.0 | MIT OR Apache-2.0 | [link](https://github.com/clap-rs/clap) |
+| clap_complete | 4.6.0 | MIT OR Apache-2.0 | [link](https://github.com/clap-rs/clap) |
 | clap_derive | 4.6.0 | MIT OR Apache-2.0 | [link](https://github.com/clap-rs/clap) |
 | clap_lex | 1.1.0 | MIT OR Apache-2.0 | [link](https://github.com/clap-rs/clap) |
 | clipboard-win | 5.4.1 | BSL-1.0 | [link](https://github.com/DoumanAsh/clipboard-win) |
@@ -71,7 +72,6 @@ Each package is listed with its license.
 | curve25519-dalek | 4.1.3 | BSD-3-Clause | [link](https://github.com/dalek-cryptography/curve25519-dalek/tree/main/curve25519-dalek) |
 | curve25519-dalek-derive | 0.1.1 | MIT/Apache-2.0 | [link](https://github.com/dalek-cryptography/curve25519-dalek) |
 | der | 0.7.10 | Apache-2.0 OR MIT | [link](https://github.com/RustCrypto/formats/tree/master/der) |
-| deranged | 0.5.8 | MIT OR Apache-2.0 | [link](https://github.com/jhpratt/deranged) |
 | digest | 0.10.7 | MIT OR Apache-2.0 | [link](https://github.com/RustCrypto/traits) |
 | dirs | 6.0.0 | MIT OR Apache-2.0 | [link](https://github.com/soc/dirs-rs) |
 | dirs-sys | 0.5.0 | MIT OR Apache-2.0 | [link](https://github.com/dirs-dev/dirs-sys-rs) |
@@ -142,7 +142,6 @@ Each package is listed with its license.
 | litrs | 1.0.0 | MIT OR Apache-2.0 | [link](https://github.com/LukasKalbertodt/litrs) |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | [link](https://github.com/Amanieu/parking_lot) |
 | log | 0.4.29 | MIT OR Apache-2.0 | [link](https://github.com/rust-lang/log) |
-| mac-notification-sys | 0.6.12 | MIT/Apache-2.0 | [link](https://github.com/h4llow3En/mac-notification-sys) |
 | malloc_buf | 0.0.6 | MIT | [link](https://github.com/SSheldon/malloc_buf) |
 | memchr | 2.8.0 | Unlicense OR MIT | [link](https://github.com/BurntSushi/memchr) |
 | memmap2 | 0.9.10 | MIT OR Apache-2.0 | [link](https://github.com/RazrFalcon/memmap2-rs) |
@@ -155,7 +154,6 @@ Each package is listed with its license.
 | ndk-context | 0.1.1 | MIT OR Apache-2.0 | [link](https://github.com/rust-windowing/android-ndk-rs) |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 | [link](https://github.com/rust-mobile/ndk) |
 | nix | 0.29.0 | MIT | [link](https://github.com/nix-rust/nix) |
-| num-conv | 0.2.0 | MIT OR Apache-2.0 | [link](https://github.com/jhpratt/num-conv) |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | [link](https://github.com/rust-num/num-traits) |
 | num_enum | 0.7.5 | BSD-3-Clause OR MIT OR Apache-2.0 | [link](https://github.com/illicitonion/num_enum) |
 | num_enum_derive | 0.7.5 | BSD-3-Clause OR MIT OR Apache-2.0 | [link](https://github.com/illicitonion/num_enum) |
@@ -201,7 +199,6 @@ Each package is listed with its license.
 | pollster | 0.4.0 | Apache-2.0/MIT | [link](https://github.com/zesterer/pollster) |
 | portable-atomic | 1.13.1 | Apache-2.0 OR MIT | [link](https://github.com/taiki-e/portable-atomic) |
 | portable-atomic-util | 0.2.6 | Apache-2.0 OR MIT | [link](https://github.com/taiki-e/portable-atomic-util) |
-| powerfmt | 0.2.0 | MIT OR Apache-2.0 | [link](https://github.com/jhpratt/powerfmt) |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | [link](https://github.com/cryptocorrosion/cryptocorrosion) |
 | presser | 0.3.1 | MIT OR Apache-2.0 | [link](https://github.com/EmbarkStudios/presser) |
 | prettyplease | 0.2.37 | MIT OR Apache-2.0 | [link](https://github.com/dtolnay/prettyplease) |
@@ -263,8 +260,6 @@ Each package is listed with its license.
 | thiserror | 2.0.18 | MIT OR Apache-2.0 | [link](https://github.com/dtolnay/thiserror) |
 | thiserror-impl | 2.0.18 | MIT OR Apache-2.0 | [link](https://github.com/dtolnay/thiserror) |
 | tiff | 0.11.3 | MIT | [link](https://github.com/image-rs/image-tiff) |
-| time | 0.3.47 | MIT OR Apache-2.0 | [link](https://github.com/time-rs/time) |
-| time-core | 0.1.8 | MIT OR Apache-2.0 | [link](https://github.com/time-rs/time) |
 | tiny-skia | 0.11.4 | BSD-3-Clause | [link](https://github.com/RazrFalcon/tiny-skia) |
 | tiny-skia-path | 0.11.4 | BSD-3-Clause | [link](https://github.com/RazrFalcon/tiny-skia/tree/master/path) |
 | tokio | 1.50.0 | MIT | [link](https://github.com/tokio-rs/tokio) |
@@ -362,4 +357,4 @@ Each package is listed with its license.
 
 ---
 
-Generated on 2026-03-21 by `dist/generate-licenses.sh`.
+Generated on 2026-04-03 by `dist/generate-licenses.sh`.
