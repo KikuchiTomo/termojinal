@@ -1039,6 +1039,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if focused {
                     // Re-enable IME when window gains focus.
                     state.window.set_ime_allowed(true);
+                    // Immediate redraw on focus to reduce Cmd+Tab latency.
+                    state.window.request_redraw();
                 }
                 // Send focus in/out events to the focused pane if it has focus_events mode.
                 let focused_id = active_tab(state).layout.focused();
