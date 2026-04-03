@@ -867,6 +867,7 @@ impl ApplicationHandler<UserEvent> for App {
             agent_infos: (0..num_workspaces).map(|_| AgentSessionInfo::default()).collect(),
             app_start_time: std::time::Instant::now(),
             tab_drag: None,
+            link_hover_cells: None,
             pending_tab_click: None,
             tab_pane_drag: None,
             config: cfg.clone(),
@@ -1059,7 +1060,15 @@ impl ApplicationHandler<UserEvent> for App {
             }
 
             WindowEvent::ModifiersChanged(mods) => {
+                let prev_alt = state.modifiers.alt_key();
                 state.modifiers = mods.state();
+                // Clear link hover when alt key is released.
+                if prev_alt && !state.modifiers.alt_key() {
+                    if state.link_hover_cells.is_some() {
+                        state.link_hover_cells = None;
+                        state.window.request_redraw();
+                    }
+                }
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
@@ -2327,7 +2336,66 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                             if on_scrollbar {
                                 state.window.set_cursor(CursorIcon::Default);
+                                if state.link_hover_cells.is_some() {
+                                    state.link_hover_cells = None;
+                                    state.window.request_redraw();
+                                }
+                            } else if state.modifiers.alt_key()
+                                && !state.modifiers.super_key()
+                            {
+                                // Check for link hover when alt is held.
+                                let cell_size = state.renderer.cell_size();
+                                let focused_id = active_tab(state).layout.focused();
+                                let mut found_link = false;
+                                for (pid, rect) in &pane_rects {
+                                    if *pid == focused_id
+                                        && mx >= rect.x
+                                        && mx < rect.x + rect.w
+                                        && my >= rect.y
+                                        && my < rect.y + rect.h
+                                    {
+                                        let local_x = (mx - rect.x).max(0.0);
+                                        let local_y = (my - rect.y).max(0.0);
+                                        let hover_col =
+                                            (local_x / cell_size.width).floor() as usize;
+                                        let hover_row =
+                                            (local_y / cell_size.height).floor() as usize;
+                                        let tab = active_tab(state);
+                                        if let Some(pane) = tab.panes.get(&focused_id) {
+                                            if let Some((col_start, col_end)) =
+                                                extract_clickable_col_range(
+                                                    &pane.terminal,
+                                                    hover_row,
+                                                    hover_col,
+                                                )
+                                            {
+                                                let new_hover =
+                                                    Some((hover_row, col_start, col_end));
+                                                if state.link_hover_cells != new_hover {
+                                                    state.link_hover_cells = new_hover;
+                                                    state.window.request_redraw();
+                                                }
+                                                state
+                                                    .window
+                                                    .set_cursor(CursorIcon::Pointer);
+                                                found_link = true;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                                if !found_link {
+                                    if state.link_hover_cells.is_some() {
+                                        state.link_hover_cells = None;
+                                        state.window.request_redraw();
+                                    }
+                                    state.window.set_cursor(CursorIcon::Text);
+                                }
                             } else {
+                                if state.link_hover_cells.is_some() {
+                                    state.link_hover_cells = None;
+                                    state.window.request_redraw();
+                                }
                                 state.window.set_cursor(CursorIcon::Text);
                             }
                         }
@@ -4054,35 +4122,26 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Extract a clickable target (URL or file path) from the terminal text at
-/// the given screen position. Scans the row containing (click_row, click_col)
-/// for URLs (`https://`, `http://`) and absolute file paths starting with `/`.
-///
-/// Returns `Some(target_string)` if a clickable target is found at or around
-/// the click position, `None` otherwise.
-fn extract_clickable_target(
+/// Helper: extract row text and column-to-char-index mapping for a terminal row.
+fn extract_row_text(
     terminal: &termojinal_vt::Terminal,
-    click_row: usize,
-    click_col: usize,
-) -> Option<String> {
+    row: usize,
+) -> Option<(String, Vec<usize>)> {
     let grid = terminal.grid();
     let cols = grid.cols();
-    if click_row >= grid.rows() {
+    if row >= grid.rows() {
         return None;
     }
 
-    // Extract the full row text as a string, tracking character-to-column mapping.
     let mut row_text = String::new();
     let mut col_to_char_idx: Vec<usize> = Vec::with_capacity(cols);
     for col in 0..cols {
-        let cell = grid.cell(col, click_row);
+        let cell = grid.cell(col, row);
         let char_idx = row_text.len();
         col_to_char_idx.push(char_idx);
         if cell.width > 0 && cell.c != '\0' {
             row_text.push(cell.c);
         } else if cell.width == 0 {
-            // Continuation of wide char — map to same char index as the lead cell.
-            // col_to_char_idx already pushed, overwrite with previous value.
             if col > 0 {
                 let prev_val = col_to_char_idx[col - 1];
                 if let Some(last) = col_to_char_idx.last_mut() {
@@ -4094,74 +4153,116 @@ fn extract_clickable_target(
         }
     }
     let row_text = row_text.trim_end().to_string();
-
     if row_text.is_empty() {
         return None;
     }
+    Some((row_text, col_to_char_idx))
+}
 
+/// Characters that can appear in URLs or paths.
+fn is_target_char(c: char) -> bool {
+    !c.is_whitespace() && c != '\'' && c != '"' && c != '<' && c != '>' && c != '|'
+}
+
+/// Find a clickable target's char-index range within the row text.
+/// Returns `(target_string, char_start, char_end_exclusive)`.
+fn find_clickable_in_row(
+    row_text: &str,
+    click_char_idx: usize,
+) -> Option<(String, usize, usize)> {
+    // Scan for URL patterns first (higher priority).
+    for prefix in &["https://", "http://"] {
+        if let Some(start_byte) = row_text.find(prefix) {
+            let end_byte = row_text[start_byte..]
+                .find(|c: char| !is_target_char(c))
+                .map(|e| start_byte + e)
+                .unwrap_or(row_text.len());
+            let url = row_text[start_byte..end_byte]
+                .trim_end_matches(|c: char| matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':'));
+            if click_char_idx >= start_byte && click_char_idx < start_byte + url.len() {
+                return Some((url.to_string(), start_byte, start_byte + url.len()));
+            }
+        }
+    }
+
+    // Scan for absolute file paths.
+    let chars: Vec<char> = row_text.chars().collect();
+    if click_char_idx < chars.len() && is_target_char(chars[click_char_idx]) {
+        let mut start = click_char_idx;
+        while start > 0 && is_target_char(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = click_char_idx;
+        while end < chars.len() && is_target_char(chars[end]) {
+            end += 1;
+        }
+        let candidate: String = chars[start..end].iter().collect();
+        let candidate = candidate
+            .trim_end_matches(|c: char| matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':'));
+        let trimmed_end = start + candidate.chars().count();
+        if candidate.starts_with('/') && candidate.len() > 1 {
+            return Some((candidate.to_string(), start, trimmed_end));
+        }
+        if candidate.starts_with("~/") && candidate.len() > 2 {
+            let expanded = if let Some(home) = dirs::home_dir() {
+                format!("{}{}", home.display(), &candidate[1..])
+            } else {
+                candidate.to_string()
+            };
+            return Some((expanded, start, trimmed_end));
+        }
+    }
+
+    None
+}
+
+/// Extract a clickable target (URL or file path) from the terminal text at
+/// the given screen position. Scans the row containing (click_row, click_col)
+/// for URLs (`https://`, `http://`) and absolute file paths starting with `/`.
+///
+/// Returns `Some(target_string)` if a clickable target is found at or around
+/// the click position, `None` otherwise.
+fn extract_clickable_target(
+    terminal: &termojinal_vt::Terminal,
+    click_row: usize,
+    click_col: usize,
+) -> Option<String> {
+    let (row_text, col_to_char_idx) = extract_row_text(terminal, click_row)?;
     let click_char_idx = if click_col < col_to_char_idx.len() {
         col_to_char_idx[click_col]
     } else {
         row_text.len()
     };
+    find_clickable_in_row(&row_text, click_char_idx).map(|(target, _, _)| target)
+}
 
-    // Characters that can appear in URLs or paths.
-    let is_target_char = |c: char| -> bool {
-        !c.is_whitespace() && c != '\'' && c != '"' && c != '<' && c != '>' && c != '|'
+/// Extract the column range of a clickable target at the given position.
+/// Returns `Some((col_start, col_end))` (inclusive) if a clickable target is found.
+fn extract_clickable_col_range(
+    terminal: &termojinal_vt::Terminal,
+    click_row: usize,
+    click_col: usize,
+) -> Option<(usize, usize)> {
+    let (row_text, col_to_char_idx) = extract_row_text(terminal, click_row)?;
+    let click_char_idx = if click_col < col_to_char_idx.len() {
+        col_to_char_idx[click_col]
+    } else {
+        row_text.len()
     };
+    let (_, char_start, char_end) = find_clickable_in_row(&row_text, click_char_idx)?;
 
-    // Scan for URL patterns first (higher priority).
-    for prefix in &["https://", "http://"] {
-        if let Some(start_byte) = row_text.find(prefix) {
-            // Find the end of the URL.
-            let end_byte = row_text[start_byte..]
-                .find(|c: char| !is_target_char(c))
-                .map(|e| start_byte + e)
-                .unwrap_or(row_text.len());
-            // Trim trailing punctuation that is unlikely to be part of the URL.
-            let url = row_text[start_byte..end_byte]
-                .trim_end_matches(|c: char| matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':'));
-            // Check if the click position falls within this URL.
-            if click_char_idx >= start_byte && click_char_idx < start_byte + url.len() {
-                return Some(url.to_string());
-            }
-        }
-    }
-
-    // Scan for absolute file paths (starting with /).
-    // Walk backwards from click position to find start, forwards to find end.
-    let chars: Vec<char> = row_text.chars().collect();
-    if click_char_idx < chars.len() {
-        // Check if the character at the click position could be part of a path.
-        if is_target_char(chars[click_char_idx]) {
-            let mut start = click_char_idx;
-            while start > 0 && is_target_char(chars[start - 1]) {
-                start -= 1;
-            }
-            let mut end = click_char_idx;
-            while end < chars.len() && is_target_char(chars[end]) {
-                end += 1;
-            }
-            let candidate: String = chars[start..end].iter().collect();
-            // Trim trailing punctuation.
-            let candidate = candidate
-                .trim_end_matches(|c: char| matches!(c, ')' | ']' | '}' | '.' | ',' | ';' | ':'));
-            // Accept if it looks like an absolute path.
-            if candidate.starts_with('/') && candidate.len() > 1 {
-                return Some(candidate.to_string());
-            }
-            // Also accept ~/... paths.
-            if candidate.starts_with("~/") && candidate.len() > 2 {
-                // Expand ~ to home directory.
-                if let Some(home) = dirs::home_dir() {
-                    return Some(format!("{}{}", home.display(), &candidate[1..]));
-                }
-                return Some(candidate.to_string());
-            }
-        }
-    }
-
-    None
+    // Map char indices back to column indices.
+    // Find the first column whose char_idx == char_start.
+    let col_start = col_to_char_idx
+        .iter()
+        .position(|&ci| ci >= char_start)
+        .unwrap_or(0);
+    // Find the last column whose char_idx < char_end.
+    let col_end = col_to_char_idx
+        .iter()
+        .rposition(|&ci| ci < char_end)
+        .unwrap_or(col_start);
+    Some((col_start, col_end))
 }
 
 

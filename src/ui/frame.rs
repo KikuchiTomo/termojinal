@@ -111,6 +111,12 @@ pub(crate) fn render_frame(state: &mut AppState) -> Result<(), termojinal_render
                 (rect.w as u32).max(1),
                 (rect.h as u32).max(1),
             );
+            // Pass link hover only for the focused pane.
+            let link_hover = if *pid == focused_id {
+                state.link_hover_cells
+            } else {
+                None
+            };
             state.renderer.render_pane(
                 &pane.terminal,
                 sel_bounds,
@@ -120,6 +126,7 @@ pub(crate) fn render_frame(state: &mut AppState) -> Result<(), termojinal_render
                 &view,
                 s_matches,
                 s_current_idx,
+                link_hover,
             )?;
         }
     }

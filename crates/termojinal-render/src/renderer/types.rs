@@ -14,6 +14,8 @@ pub(crate) struct PaneCache {
     /// Cached search matches so we can detect changes and force rebuild.
     pub(crate) search_matches: Option<Vec<(usize, usize, usize)>>,
     pub(crate) search_current_idx: Option<usize>,
+    /// Cached link hover range (row, col_start, col_end) for change detection.
+    pub(crate) link_hover: Option<(usize, usize, usize)>,
 }
 
 /// Per-cell instance data sent to the GPU.
