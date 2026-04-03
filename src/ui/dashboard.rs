@@ -285,15 +285,25 @@ pub(crate) fn render_claudes_dashboard(
             "\u{2588}".repeat(filled.min(bar_len)),
             "\u{2591}".repeat(bar_len.saturating_sub(filled)),
         );
-        let context_str = format!(
-            "  {} \u{2502} {}/{}k {} {:.0}%",
-            model_short,
-            format_token_count(entry.context_used),
-            entry.context_max / 1000,
-            bar,
-            pct,
-        );
-        let bar_color = if pct < 70.0 {
+        let context_str = if entry.context_max > 0 {
+            format!(
+                "  {} \u{2502} {}/{}k {} {:.0}%",
+                model_short,
+                format_token_count(entry.context_used),
+                entry.context_max / 1000,
+                bar,
+                pct,
+            )
+        } else {
+            format!(
+                "  {} \u{2502} {} tokens",
+                model_short,
+                format_token_count(entry.context_used),
+            )
+        };
+        let bar_color = if entry.context_max == 0 {
+            dim_fg
+        } else if pct < 70.0 {
             green
         } else if pct < 90.0 {
             yellow
@@ -363,13 +373,22 @@ pub(crate) fn render_claudes_dashboard(
             "\u{2588}".repeat(filled.min(bar_len)),
             "\u{2591}".repeat(bar_len.saturating_sub(filled)),
         );
-        let ctx_line = format!(
-            "Context:  {} {}/{}k",
-            bar,
-            format_token_count(entry.context_used),
-            entry.context_max / 1000,
-        );
-        let bar_color = if pct < 70.0 {
+        let ctx_line = if entry.context_max > 0 {
+            format!(
+                "Context:  {} {}/{}k",
+                bar,
+                format_token_count(entry.context_used),
+                entry.context_max / 1000,
+            )
+        } else {
+            format!(
+                "Context:  {} tokens used",
+                format_token_count(entry.context_used),
+            )
+        };
+        let bar_color = if entry.context_max == 0 {
+            dim_fg
+        } else if pct < 70.0 {
             green
         } else if pct < 90.0 {
             yellow
