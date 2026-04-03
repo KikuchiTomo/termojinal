@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "arboard",
  "base64",
@@ -2584,7 +2584,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-claude"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "dirs",
  "libc",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-ipc"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "chrono",
  "clap",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-layout"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "log",
  "serde",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-mcp"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "dirs",
  "env_logger",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-pty"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "libc",
  "log",
@@ -2652,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-render"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "bytemuck",
  "core-foundation 0.10.1",
@@ -2673,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-session"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "termojinal-vt"
-version = "0.9.8-beta"
+version = "0.9.9-beta"
 dependencies = [
  "base64",
  "bitflags 2.11.0",
