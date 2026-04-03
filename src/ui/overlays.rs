@@ -1107,6 +1107,64 @@ pub(crate) fn render_close_confirm_dialog(
     );
 }
 
+/// Render the kill-and-close confirmation dialog (Cmd+Shift+W).
+pub(crate) fn render_kill_confirm_dialog(
+    state: &mut AppState,
+    view: &wgpu::TextureView,
+    phys_w: f32,
+    phys_h: f32,
+) {
+    let cell_w = state.renderer.cell_size().width;
+    let cell_h = state.renderer.cell_size().height;
+
+    // Dark overlay behind the dialog.
+    let overlay_color = [0.0, 0.0, 0.0, 0.55];
+    state
+        .renderer
+        .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
+
+    // Dialog box dimensions.
+    let dialog_w = (cell_w * 42.0).min(phys_w * 0.8);
+    let dialog_h = cell_h * 5.0;
+    let dialog_x = (phys_w - dialog_w) / 2.0;
+    let dialog_y = (phys_h - dialog_h) / 2.0;
+
+    // Dialog background.
+    let bg = [0.12, 0.12, 0.16, 0.97];
+    let border_color = [0.35, 0.35, 0.50, 0.9];
+    state.renderer.submit_rounded_rects(
+        view,
+        &[RoundedRect {
+            rect: [dialog_x, dialog_y, dialog_w, dialog_h],
+            color: bg,
+            border_color,
+            params: [8.0, 1.0, 0.0, 0.0],
+        }],
+    );
+
+    let text_x = dialog_x + cell_w * 1.5;
+    let text_fg = [0.92, 0.92, 0.96, 1.0];
+    let hint_fg = [0.60, 0.60, 0.68, 1.0];
+    let warn_fg = [0.95, 0.75, 0.30, 1.0];
+
+    // Warning message.
+    let line1_y = dialog_y + cell_h * 1.0;
+    state
+        .renderer
+        .render_text(view, "Kill daemon session for this pane?", text_x, line1_y, warn_fg, bg);
+
+    // Key hints.
+    let line2_y = line1_y + cell_h * 1.4;
+    state.renderer.render_text(
+        view,
+        "Y = Kill & Close  N = Close only  Esc = Cancel",
+        text_x,
+        line2_y,
+        hint_fg,
+        bg,
+    );
+}
+
 /// Render the pane↔tab move confirmation dialog.
 pub(crate) fn render_pane_tab_confirm_dialog(
     state: &mut AppState,

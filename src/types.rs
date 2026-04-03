@@ -513,6 +513,9 @@ pub(crate) struct AppState {
     /// Pending close confirmation: pane has running child process.
     /// Stores (process_name, pane_id) to ensure the correct pane is closed.
     pub(crate) pending_close_confirm: Option<(String, PaneId)>,
+    /// Pending close-and-kill confirmation dialog.
+    /// Stores (session_id, pane_id).
+    pub(crate) pending_kill_confirm: Option<(String, PaneId)>,
     /// Pending pane↔tab move confirmation dialog.
     pub(crate) pending_pane_tab_confirm: Option<PaneTabConfirm>,
     /// Set to `true` during RedrawRequested when continuous animation is needed

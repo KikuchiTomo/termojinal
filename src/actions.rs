@@ -16,6 +16,10 @@ pub(crate) fn dispatch_action(
     if state.pending_close_confirm.is_some() && !matches!(action, Action::CloseTab) {
         state.pending_close_confirm = None;
     }
+    // Dismiss kill confirmation dialog when any other action is dispatched.
+    if state.pending_kill_confirm.is_some() && !matches!(action, Action::CloseAndKillSession) {
+        state.pending_kill_confirm = None;
+    }
     // Dismiss pane↔tab confirmation dialog when any other action is dispatched.
     if state.pending_pane_tab_confirm.is_some() {
         state.pending_pane_tab_confirm = None;
@@ -105,6 +109,18 @@ pub(crate) fn dispatch_action(
                 }
             }
             close_focused_pane(state, buffers, event_loop);
+            true
+        }
+        Action::CloseAndKillSession => {
+            let pane_info = {
+                let tab = active_tab(state);
+                let focused_id = tab.layout.focused();
+                tab.panes.get(&focused_id).map(|p| (focused_id, p.session_id.clone()))
+            };
+            if let Some((pane_id, session_id)) = pane_info {
+                state.pending_kill_confirm = Some((session_id, pane_id));
+                state.window.request_redraw();
+            }
             true
         }
         Action::NewWorkspace => {
