@@ -105,11 +105,12 @@ pub(crate) fn render_frame(state: &mut AppState) -> Result<(), termojinal_render
             } else {
                 (None, None)
             };
+            let pad = 4u32;
             let viewport = (
-                rect.x as u32,
-                rect.y as u32,
-                (rect.w as u32).max(1),
-                (rect.h as u32).max(1),
+                rect.x as u32 + pad,
+                rect.y as u32 + pad,
+                (rect.w as u32).saturating_sub(pad * 2).max(1),
+                (rect.h as u32).saturating_sub(pad * 2).max(1),
             );
             // Pass link hover only for the focused pane.
             let link_hover = if *pid == focused_id {
