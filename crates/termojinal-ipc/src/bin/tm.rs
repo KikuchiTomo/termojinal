@@ -109,8 +109,9 @@ enum Commands {
     ///   tm status subagent-start <agent_id> [--type <type>] [--description <desc>]
     ///   tm status subagent-done <agent_id>
     Status {
-        /// State: "running", "done", "subagent-start", "subagent-done"
-        state: String,
+        /// State to report: "running", "done", "subagent-start", "subagent-done".
+        /// If omitted, shows usage help.
+        state: Option<String>,
 
         /// Agent ID (for subagent-start / subagent-done)
         agent_id: Option<String>,
@@ -174,13 +175,26 @@ async fn main() {
         description,
     } = &cli.command
     {
-        send_status(
-            state.clone(),
-            agent_id.clone(),
-            agent_type.clone(),
-            description.clone(),
-        )
-        .await;
+        if let Some(state) = state {
+            send_status(
+                state.clone(),
+                agent_id.clone(),
+                agent_type.clone(),
+                description.clone(),
+            )
+            .await;
+        } else {
+            println!("tm status — Report Claude Code status to termojinal (used by hooks)");
+            println!();
+            println!("Usage:");
+            println!("  tm status running              Claude Code is actively working");
+            println!("  tm status done                 Claude Code task completed");
+            println!("  tm status subagent-start <id>  A subagent started");
+            println!("  tm status subagent-done <id>   A subagent finished");
+            println!();
+            println!("This command is typically called automatically by Claude Code hooks.");
+            println!("Run `tm setup` to configure hooks.");
+        }
         return;
     }
 
