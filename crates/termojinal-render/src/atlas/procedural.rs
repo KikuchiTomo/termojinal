@@ -3,13 +3,36 @@
 use super::{Atlas, GlyphInfo};
 
 impl Atlas {
-    /// Try to draw block elements, shade characters, and box-drawing characters
-    /// procedurally. Returns None if the character is not handled.
+    /// Try to draw block elements, shade characters, box-drawing characters,
+    /// and commonly-misrendered symbols procedurally.
+    /// Returns None if the character is not handled.
     pub(crate) fn try_procedural_block(&mut self, c: char) -> Option<GlyphInfo> {
         let w = self.cell_w;
         let h = self.cell_h;
         let hw = w / 2; // half width
         let hh = h / 2; // half height
+
+        // --- Characters that need procedural rendering for correctness ---
+        // Backslash (U+005C): many Japanese fonts map this to ¥ (yen sign).
+        // Render procedurally to guarantee a proper reverse solidus.
+        if c == '\\' {
+            return self.procedural_backslash();
+        }
+        // ⏵ (U+23F5 BLACK MEDIUM RIGHT-POINTING TRIANGLE): often missing from
+        // monospace/system fonts, displays as '?' on many systems.
+        if c == '\u{23F5}' {
+            return self.procedural_right_pointing_triangle();
+        }
+        // ✔ (U+2714 HEAVY CHECK MARK): Apple Color Emoji renders this upside-down
+        // due to sbix bitmap orientation issues; also missing from many fonts.
+        if c == '\u{2714}' {
+            return self.procedural_check_mark();
+        }
+        // ⏺ (U+23FA BLACK CIRCLE FOR RECORD): often missing from monospace/system
+        // fonts, displays as '?' on many systems.
+        if c == '\u{23FA}' {
+            return self.procedural_filled_circle();
+        }
 
         // --- Shade characters ---
         let shade = match c {
@@ -282,6 +305,197 @@ impl Atlas {
             let is_double = style == 3;
             let thickness = if style == 2 { heavy } else { thin };
             draw_segment(&mut fill, dir, thickness, is_double);
+        }
+
+        let info = self.pack_cell_bitmap(&bitmap, w, h);
+        Some(info)
+    }
+
+    /// Draw backslash (U+005C) procedurally as a diagonal line from
+    /// upper-right to lower-left, avoiding the ¥ rendering bug in Japanese fonts.
+    fn procedural_backslash(&mut self) -> Option<GlyphInfo> {
+        let w = self.cell_w;
+        let h = self.cell_h;
+        let mut bitmap = vec![0u8; (w * h) as usize];
+
+        // Use font metrics: draw within the ascent area, matching how a font
+        // would render the character.  Leave some padding at edges.
+        let pad_x = (w as f32 * 0.15).round() as u32;
+        let pad_top = (self.cell_h as f32 * 0.15).round() as u32;
+        let pad_bot = (self.cell_h as f32 * 0.10).round() as u32;
+
+        let x0 = pad_x as f32;
+        let y0 = pad_top as f32;
+        let x1 = (w - pad_x) as f32;
+        let y1 = (h - pad_bot) as f32;
+
+        // Stroke thickness proportional to cell width, minimum 1px.
+        let thickness = (w as f32 * 0.10).ceil().max(1.0);
+
+        // Draw anti-aliased diagonal line using distance from line segment.
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let len = (dx * dx + dy * dy).sqrt();
+
+        for row in 0..h {
+            for col in 0..w {
+                let px = col as f32 + 0.5;
+                let py = row as f32 + 0.5;
+                // Distance from point to line segment.
+                let t = ((px - x0) * dx + (py - y0) * dy) / (len * len);
+                let t = t.clamp(0.0, 1.0);
+                let closest_x = x0 + t * dx;
+                let closest_y = y0 + t * dy;
+                let dist = ((px - closest_x).powi(2) + (py - closest_y).powi(2)).sqrt();
+                let half_t = thickness / 2.0;
+                let alpha = (half_t + 0.5 - dist).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    bitmap[(row * w + col) as usize] = (alpha * 255.0) as u8;
+                }
+            }
+        }
+
+        let info = self.pack_cell_bitmap(&bitmap, w, h);
+        Some(info)
+    }
+
+    /// Draw ⏵ (U+23F5 BLACK MEDIUM RIGHT-POINTING TRIANGLE) procedurally.
+    fn procedural_right_pointing_triangle(&mut self) -> Option<GlyphInfo> {
+        let w = self.cell_w;
+        let h = self.cell_h;
+        let mut bitmap = vec![0u8; (w * h) as usize];
+
+        // Triangle pointing right, centered in cell with some padding.
+        let pad_x = (w as f32 * 0.20).round() as f32;
+        let pad_y = (h as f32 * 0.20).round() as f32;
+
+        let left = pad_x;
+        let right = w as f32 - pad_x;
+        let top = pad_y;
+        let bottom = h as f32 - pad_y;
+        let mid_y = (top + bottom) / 2.0;
+
+        // Triangle vertices: left-top, left-bottom, right-center
+        for row in 0..h {
+            for col in 0..w {
+                let px = col as f32 + 0.5;
+                let py = row as f32 + 0.5;
+
+                // Check if point is inside the triangle using edge tests.
+                // Edge 1: left-top to right-center (top edge)
+                let e1 = (right - left) * (py - top) - (mid_y - top) * (px - left);
+                // Edge 2: right-center to left-bottom (right-bottom edge)
+                let e2 = (left - right) * (py - mid_y) - (bottom - mid_y) * (px - right);
+                let inside = e1 >= -0.5 && e2 >= -0.5 && px >= left - 0.5;
+
+                if inside {
+                    // Anti-alias edges using distance to nearest edge.
+                    // Normalize: approximate distance in pixels.
+                    let tri_h = bottom - top;
+                    let tri_w = right - left;
+                    let edge_len1 = (tri_w * tri_w + (tri_h / 2.0).powi(2)).sqrt();
+                    let d1 = e1 / edge_len1;
+                    let d2 = e2 / edge_len1;
+                    let d3 = px - left;
+                    let min_d = d1.min(d2).min(d3);
+                    let alpha = min_d.clamp(0.0, 1.0);
+                    bitmap[(row * w + col) as usize] = (alpha * 255.0) as u8;
+                }
+            }
+        }
+
+        let info = self.pack_cell_bitmap(&bitmap, w, h);
+        Some(info)
+    }
+
+    /// Draw ✔ (U+2714 HEAVY CHECK MARK) procedurally.
+    fn procedural_check_mark(&mut self) -> Option<GlyphInfo> {
+        let w = self.cell_w;
+        let h = self.cell_h;
+        let mut bitmap = vec![0u8; (w * h) as usize];
+
+        // Check mark shape: short stroke going down-right, then long stroke going up-right.
+        // Coordinates relative to cell.
+        let pad_x = (w as f32 * 0.10).round();
+        let pad_y = (h as f32 * 0.15).round();
+
+        // The "valley" point where the two strokes meet.
+        let valley_x = pad_x + (w as f32 - 2.0 * pad_x) * 0.30;
+        let valley_y = h as f32 - pad_y;
+
+        // Left endpoint (start of short stroke, upper-left of valley).
+        let left_x = pad_x;
+        let left_y = h as f32 * 0.50;
+
+        // Right endpoint (end of long stroke, upper-right).
+        let right_x = w as f32 - pad_x;
+        let right_y = pad_y;
+
+        let thickness = (w as f32 * 0.14).ceil().max(1.5);
+
+        // Draw two line segments with anti-aliasing.
+        let segments: [(f32, f32, f32, f32); 2] = [
+            (left_x, left_y, valley_x, valley_y),
+            (valley_x, valley_y, right_x, right_y),
+        ];
+
+        for row in 0..h {
+            for col in 0..w {
+                let px = col as f32 + 0.5;
+                let py = row as f32 + 0.5;
+
+                let mut min_dist = f32::MAX;
+                for &(x0, y0, x1, y1) in &segments {
+                    let dx = x1 - x0;
+                    let dy = y1 - y0;
+                    let len_sq = dx * dx + dy * dy;
+                    let t = if len_sq > 0.0 {
+                        ((px - x0) * dx + (py - y0) * dy) / len_sq
+                    } else {
+                        0.0
+                    };
+                    let t = t.clamp(0.0, 1.0);
+                    let cx = x0 + t * dx;
+                    let cy = y0 + t * dy;
+                    let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+                    min_dist = min_dist.min(dist);
+                }
+
+                let half_t = thickness / 2.0;
+                let alpha = (half_t + 0.5 - min_dist).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    let idx = (row * w + col) as usize;
+                    bitmap[idx] = (alpha * 255.0).min(255.0) as u8;
+                }
+            }
+        }
+
+        let info = self.pack_cell_bitmap(&bitmap, w, h);
+        Some(info)
+    }
+
+    /// Draw ⏺ (U+23FA BLACK CIRCLE FOR RECORD) procedurally.
+    fn procedural_filled_circle(&mut self) -> Option<GlyphInfo> {
+        let w = self.cell_w;
+        let h = self.cell_h;
+        let mut bitmap = vec![0u8; (w * h) as usize];
+
+        let cx = w as f32 / 2.0;
+        let cy = h as f32 / 2.0;
+        // Radius: fit within the cell with some padding.
+        let radius = (w.min(h) as f32 / 2.0) * 0.72;
+
+        for row in 0..h {
+            for col in 0..w {
+                let px = col as f32 + 0.5;
+                let py = row as f32 + 0.5;
+                let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+                // Anti-alias the edge: fully opaque inside, smooth transition at edge.
+                let alpha = (radius + 0.5 - dist).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    bitmap[(row * w + col) as usize] = (alpha * 255.0) as u8;
+                }
+            }
         }
 
         let info = self.pack_cell_bitmap(&bitmap, w, h);
