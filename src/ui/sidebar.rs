@@ -688,10 +688,10 @@ pub(crate) fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phy
         if !is_active {
             if let Some(inf) = info {
                 if inf.has_unread {
-                    let notif_d = cell_h * 0.22;
+                    let notif_d = cell_h * 0.26;
                     let notif_r = notif_d / 2.0;
-                    let notif_x = dot_cx + dot_radius * 0.5;
-                    let notif_y = dot_cy - dot_radius * 0.7;
+                    let notif_x = dot_cx + dot_radius * 0.7;
+                    let notif_y = dot_cy - dot_radius * 0.9;
                     state.renderer.submit_rounded_rects(
                         view,
                         &[RoundedRect {
