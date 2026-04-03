@@ -1,6 +1,7 @@
 use crate::*;
 use config::color_or;
 use termojinal_claude::monitor::SessionState;
+use termojinal_render::color_convert::color_to_rgba;
 use termojinal_render::RoundedRect;
 
 // ---------------------------------------------------------------------------
@@ -563,24 +564,31 @@ pub(crate) fn render_claudes_dashboard(
                             if dy + cell_h > box_y + content_h {
                                 break;
                             }
-                            let mut line_chars = String::new();
-                            line_chars.push_str("\u{2502} ");
-                            for c in 0..preview_cols.min(grid.cols()) {
-                                let cell = grid.cell(c, r);
-                                if cell.c == '\0' || cell.c == ' ' {
-                                    line_chars.push(' ');
-                                } else {
-                                    line_chars.push(cell.c);
-                                }
-                            }
+                            // Render the border character in dim color.
                             state.renderer.render_text(
                                 view,
-                                &line_chars,
+                                "\u{2502} ",
                                 detail_x,
                                 dy,
                                 dim_fg,
                                 box_bg,
                             );
+                            // Render each cell with its actual terminal color.
+                            let col_start_x = detail_x + cell_w * 2.0;
+                            let mut cx = col_start_x;
+                            for c in 0..preview_cols.min(grid.cols()) {
+                                let cell = grid.cell(c, r);
+                                if cell.c == '\0' || cell.c == ' ' {
+                                    cx += cell_w;
+                                    continue;
+                                }
+                                let fg = color_to_rgba(cell.fg, true);
+                                let ch_str = cell.c.to_string();
+                                state.renderer.render_text(
+                                    view, &ch_str, cx, dy, fg, box_bg,
+                                );
+                                cx += cell_w;
+                            }
                             dy += cell_h;
                         }
                         break;
