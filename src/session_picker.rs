@@ -12,8 +12,10 @@ pub(crate) struct SessionPickerEntry {
     pub(crate) label: String,
     pub(crate) detail: String,
     pub(crate) shell: String,
+    #[allow(dead_code)]
     pub(crate) cwd: String,
     pub(crate) pid: Option<i32>,
+    #[allow(dead_code)]
     pub(crate) created_at: String,
 }
 
