@@ -757,16 +757,29 @@ pub fn read_session_jsonl_stats(session_id: &str, cwd: &str) -> SessionJsonlStat
 }
 
 /// Estimate the context window size for a given model name.
+///
+/// Returns 0 if the context size cannot be determined from the model string.
+/// The dashboard should handle 0 gracefully (e.g. show tokens without a max).
 fn model_context_size(model: &str) -> u64 {
-    if model.contains("opus") {
-        200_000
-    } else if model.contains("sonnet") {
-        200_000
-    } else if model.contains("haiku") {
-        200_000
-    } else {
-        200_000 // default
+    // Parse explicit context annotation like "[1m]" or "[200k]".
+    // This is the only reliable source; model version numbers change.
+    let lower = model.to_lowercase();
+    if let Some(start) = lower.find('[') {
+        if let Some(end) = lower[start..].find(']') {
+            let inner = &lower[start + 1..start + end];
+            if let Some(num_end) = inner.find(|c: char| !c.is_ascii_digit()) {
+                if let Ok(num) = inner[..num_end].parse::<u64>() {
+                    let suffix = &inner[num_end..];
+                    return match suffix {
+                        "m" => num * 1_000_000,
+                        "k" => num * 1_000,
+                        _ => 0,
+                    };
+                }
+            }
+        }
     }
+    0
 }
 
 /// Estimate cost in USD based on model pricing and token usage.
