@@ -3130,6 +3130,10 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::PtyOutput(pane_id) => {
+                // Clear the pending-event flag so the reader thread can send
+                // a new event once more data arrives after we drain the buffer.
+                clear_pty_pending(pane_id);
+
                 let Some(state) = &mut self.state else {
                     return;
                 };
@@ -3380,6 +3384,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::PtyExited(pane_id) => {
                 log::info!("pane {pane_id}: shell exited");
+                remove_pty_pending(pane_id);
                 let Some(state) = &mut self.state else {
                     return;
                 };
