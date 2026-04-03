@@ -372,6 +372,28 @@ impl SessionManager {
             .collect()
     }
 
+    /// List all session details with attachment status, title, and pwd from the
+    /// daemon-side terminal (OSC state).
+    pub fn list_details_extended(&self) -> Vec<(&SessionState, bool, String, String)> {
+        self.sessions
+            .values()
+            .map(|s| {
+                let (title, pwd) = s
+                    .terminal
+                    .lock()
+                    .ok()
+                    .map(|term| (term.osc.title.clone(), term.osc.cwd.clone()))
+                    .unwrap_or_default();
+                (&s.state, s.is_attached(), title, pwd)
+            })
+            .chain(
+                self.tracked
+                    .values()
+                    .map(|s| (s, false, String::new(), String::new())),
+            )
+            .collect()
+    }
+
     /// Update a session's workspace name and persist it.
     pub fn update_session_workspace(
         &mut self,
