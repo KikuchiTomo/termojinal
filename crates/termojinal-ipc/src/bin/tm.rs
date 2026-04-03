@@ -22,7 +22,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// List all active sessions
-    List {
+    #[command(name = "ls", alias = "list")]
+    Ls {
         /// Output raw JSON instead of a table
         #[arg(long)]
         json: bool,
@@ -188,7 +189,7 @@ async fn main() {
 
     let request = match &cli.command {
         Commands::Ping => IpcRequest::Ping,
-        Commands::List { .. } => IpcRequest::ListSessionDetails,
+        Commands::Ls { .. } => IpcRequest::ListSessionDetails,
         Commands::New { shell, cwd } => IpcRequest::CreateSession {
             shell: shell.clone(),
             cwd: cwd.clone(),
@@ -223,7 +224,7 @@ async fn main() {
 
     // If ListSessionDetails failed (e.g. older daemon), fall back to ListSessions.
     let response = match (&cli.command, &response) {
-        (Commands::List { .. }, Ok(r)) if !r.success => {
+        (Commands::Ls { .. }, Ok(r)) if !r.success => {
             let r2 = r.error.as_deref().unwrap_or("");
             if r2.contains("unknown request type") {
                 client.send(&IpcRequest::ListSessions).await
@@ -241,7 +242,7 @@ async fn main() {
                     Commands::Ping => {
                         println!("termojinald is running");
                     }
-                    Commands::List { json } => {
+                    Commands::Ls { json } => {
                         if let Some(data) = &response.data {
                             if let Some(sessions) = data.get("sessions") {
                                 if let Some(arr) = sessions.as_array() {
