@@ -3193,9 +3193,25 @@ impl ApplicationHandler<UserEvent> for App {
                                 // Sync cell size so image protocols compute
                                 // correct cell spans before processing data.
                                 pane.terminal.image_store.set_cell_size(cell_w, cell_h);
+                                let old_scrollback_len = pane.terminal.scrollback_len();
                                 while let Some(data) = q.pop_front() {
                                     total += data.len();
                                     pane.terminal.feed(&mut pane.vt_parser, &data);
+                                }
+                                // When new output pushes lines into scrollback,
+                                // adjust the active selection's scroll offsets so
+                                // it stays anchored to the same logical content.
+                                let scrollback_delta = pane.terminal.scrollback_len() as isize
+                                    - old_scrollback_len as isize;
+                                if scrollback_delta > 0 {
+                                    if let Some(ref mut sel) = pane.selection {
+                                        sel.scroll_offset_at_start = sel
+                                            .scroll_offset_at_start
+                                            .saturating_add(scrollback_delta as usize);
+                                        sel.scroll_offset_at_end = sel
+                                            .scroll_offset_at_end
+                                            .saturating_add(scrollback_delta as usize);
+                                    }
                                 }
                                 found_ws_idx = Some(wi);
                                 break 'outer_feed;
