@@ -1,6 +1,6 @@
 [package]
 name = "termojinal-session"
-version = "0.9.9-beta"
+version = "0.9.10-beta"
 edition.workspace = true
 description = "Session management daemon for termojinal"
 
