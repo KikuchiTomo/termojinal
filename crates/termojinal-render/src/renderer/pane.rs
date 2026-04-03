@@ -643,14 +643,29 @@ impl Renderer {
 
     /// Get the surface texture for multi-pane rendering.
     pub fn get_surface_texture(&mut self) -> Result<wgpu::SurfaceTexture, RenderError> {
-        Ok(self.surface.get_current_texture()?)
+        match self.surface.get_current_texture() {
+            Ok(output) => Ok(output),
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                // Reconfigure after the surface goes stale (e.g. window was backgrounded).
+                self.surface.configure(&self.device, &self.surface_config);
+                Ok(self.surface.get_current_texture()?)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Begin a frame: get the surface texture and encoder.
     pub fn begin_frame(
         &mut self,
     ) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder), RenderError> {
-        let output = self.surface.get_current_texture()?;
+        let output = match self.surface.get_current_texture() {
+            Ok(t) => t,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                self.surface.get_current_texture()?
+            }
+            Err(e) => return Err(e.into()),
+        };
         let encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
