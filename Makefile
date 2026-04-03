@@ -37,9 +37,9 @@ app-dev: build-dev
 	./dist/macos/build-app.sh --debug
 	@echo "==> Termojinal.app (debug) ready at target/debug/Termojinal.app"
 
-# Build all dev binaries (termojinal-dev, termojinald, tm)
+# Build all dev binaries (termojinal, termojinald, tm)
 build-dev:
-	cargo build --bin termojinal-dev
+	cargo build --bin termojinal
 	cargo build -p termojinal-session --bin termojinald
 	cargo build -p termojinal-ipc --bin tm
 

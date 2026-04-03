@@ -284,8 +284,8 @@ fn rasterize_emoji_ct(
 
     let glyph_id = glyphs[0];
 
-    // Get glyph bounding box for positioning.
-    let _bbox = ct_font.get_bounding_rects_for_glyphs(kCTFontOrientationDefault, &[glyph_id]);
+    // Get glyph bounding box for positioning and sizing.
+    let bbox = ct_font.get_bounding_rects_for_glyphs(kCTFontOrientationDefault, &[glyph_id]);
 
     // Use Core Text CTLine for reliable emoji rendering (works with bitmap emoji).
     use core_foundation::attributed_string::CFMutableAttributedString;
@@ -334,14 +334,9 @@ fn rasterize_emoji_ct(
         return None;
     }
 
-    // Compute emoji metrics for centering and square fitting.
-    let ascent = ct_font.ascent();
-    let descent = ct_font.descent();
-    let text_h = (ascent + descent.abs()).max(1.0);
-
     // Get the glyph advance width to center horizontally and maintain
     // correct aspect ratio.  Apple Color Emoji glyphs have advance_w ≠
-    // text_h, so naively placing at x=0 causes right-edge clipping and
+    // bbox size, so naively placing at x=0 causes right-edge clipping and
     // the non-square metrics cause vertical stretching.
     extern "C" {
         fn CTFontGetAdvancesForGlyphs(
@@ -367,8 +362,13 @@ fn rasterize_emoji_ct(
     // Fit the emoji into a square region within the bitmap.  Since the
     // bitmap-to-screen-quad mapping is uniform (same scale factor for
     // both axes), a square region in the bitmap appears square on screen.
-    let glyph_max = advance_w.max(text_h);
-    let target_side = (bmp_w.min(bmp_h) as f64) * 0.92; // 92% to avoid clipping
+    // Use the per-glyph bounding box dimensions when available, as
+    // font-level ascent+descent is much larger than the actual visible
+    // glyph for Apple Color Emoji (sbix bitmap font).
+    let bbox_h = bbox.size.height.max(1.0);
+    let bbox_w = bbox.size.width.max(1.0);
+    let glyph_max = advance_w.max(bbox_w).max(bbox_h);
+    let target_side = bmp_w.min(bmp_h) as f64; // fill the cell fully
     let fit_scale = if glyph_max > 0.0 {
         target_side / glyph_max
     } else {
@@ -386,8 +386,12 @@ fn rasterize_emoji_ct(
 
     // Center horizontally.
     let text_x = ((scaled_bmp_w - advance_w) / 2.0).max(0.0);
-    // Center vertically (CG coordinate system: origin bottom-left, Y up).
-    let baseline_y = ((scaled_bmp_h - text_h) / 2.0 + descent.abs()).max(0.0);
+    // Center vertically using the bounding box for accurate placement.
+    // bbox.origin.y is the glyph's bottom edge relative to the baseline.
+    let glyph_bottom = bbox.origin.y;
+    let glyph_top = glyph_bottom + bbox_h;
+    let glyph_center = (glyph_bottom + glyph_top) / 2.0;
+    let baseline_y = (scaled_bmp_h / 2.0 - glyph_center).max(0.0);
 
     ctx.set_text_position(text_x, baseline_y);
 
@@ -396,11 +400,12 @@ fn rasterize_emoji_ct(
         CFRelease(line);
     }
 
-    // Extract pixel data with vertical flip.
-    // CG bitmap context uses a bottom-left origin (Y axis points up).
-    // CTLineDraw renders into this coordinate system, so the resulting
-    // pixel data in memory is bottom-up.  Our atlas and wgpu textures
-    // use a top-left origin, so we must flip rows vertically.
+    // Extract pixel data — NO vertical flip for Apple Color Emoji.
+    // Apple Color Emoji is an sbix (bitmap) font.  When CTLineDraw
+    // composites an sbix PNG into the CGBitmapContext, it handles the
+    // CG-to-bitmap coordinate transform internally, so the pixel data
+    // in memory is already in top-down order.  Flipping rows here would
+    // double-flip the image and render emoji upside-down.
     let cg_data = ctx.data();
     let pixel_count = (bmp_w * bmp_h) as usize;
     let total_bytes = pixel_count * 4;
@@ -408,14 +413,7 @@ fn rasterize_emoji_ct(
         return None;
     }
 
-    let mut rgba = vec![0u8; total_bytes];
-    let row_bytes = (bmp_w * 4) as usize;
-    for row in 0..bmp_h {
-        let src_row = bmp_h - 1 - row;
-        let src_off = (src_row * bmp_w * 4) as usize;
-        let dst_off = (row * bmp_w * 4) as usize;
-        rgba[dst_off..dst_off + row_bytes].copy_from_slice(&cg_data[src_off..src_off + row_bytes]);
-    }
+    let rgba = cg_data[..total_bytes].to_vec();
 
     Some((rgba, bmp_w, bmp_h))
 }

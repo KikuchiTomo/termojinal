@@ -75,11 +75,11 @@ impl Renderer {
                 // as a Core Text fallback.  Also try the emoji atlas for
                 // "text emoji" characters (Emoji=Yes, Emoji_Presentation=No,
                 // e.g. ⏺ U+23FA, ✔ U+2714) that the mono atlas may lack.
+                let mono_empty = mono_glyph.atlas_w > 0.0 && self.atlas.is_glyph_empty(c);
                 let try_emoji_fallback = (c > ' '
                     && !c.is_control()
-                    && mono_glyph.atlas_w > 0.0
-                    && self.atlas.is_glyph_empty(c))
-                    || emoji_atlas::is_text_emoji(c);
+                    && mono_empty)
+                    || (emoji_atlas::is_text_emoji(c) && mono_empty);
                 if try_emoji_fallback {
                     if let Some(eg) = self.emoji_atlas.get_glyph(c) {
                         (eg, true)

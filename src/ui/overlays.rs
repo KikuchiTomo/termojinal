@@ -1143,7 +1143,6 @@ pub(crate) fn render_kill_confirm_dialog(
     );
 
     let text_x = dialog_x + cell_w * 1.5;
-    let text_fg = [0.92, 0.92, 0.96, 1.0];
     let hint_fg = [0.60, 0.60, 0.68, 1.0];
     let warn_fg = [0.95, 0.75, 0.30, 1.0];
 
@@ -1356,13 +1355,13 @@ pub(crate) fn render_session_picker(
         .submit_separator(view, 0, 0, phys_w as u32, phys_h as u32, overlay_color);
 
     // 2. Centered floating box — match QuickLaunch layout exactly.
-    let max_visible_items: usize = 12;
+    let max_visible_items: usize = 10;
     let box_w = (phys_w * pc.width_ratio).min(phys_w - 40.0).max(200.0);
     let item_count = state.session_picker.filtered.len();
     let visible_items = item_count.min(max_visible_items);
     let rows_needed = 1 + visible_items.max(1);
-    let row_h = cell_h * 1.5;
-    let box_h = ((rows_needed as f32) * row_h + cell_h).min(pc.max_height);
+    let row_h = cell_h * 2.2; // label + detail line + gap
+    let box_h = ((rows_needed as f32) * row_h + cell_h * 2.0).min(pc.max_height);
     let box_x = (phys_w - box_w) / 2.0;
     let box_y = (phys_h * 0.18).min(phys_h - box_h - 20.0).max(20.0);
 
@@ -1492,9 +1491,20 @@ pub(crate) fn render_session_picker(
         );
     }
 
-    // Hint at bottom.
+    // Separator above hint.
+    let hint_sep_y = box_y + box_h - cell_h * 1.8;
+    state.renderer.submit_separator(
+        view,
+        (box_x + cell_w * 0.5) as u32,
+        hint_sep_y as u32,
+        (box_w - cell_w) as u32,
+        1,
+        sep_color,
+    );
+
+    // Hint at bottom — keep inside the box with padding from the border.
     let hint = "\u{21B5} Select  \u{2191}\u{2193} Navigate  esc Cancel";
-    let hint_y = box_y + box_h - cell_h * 0.8;
+    let hint_y = box_y + box_h - cell_h * 1.4;
     let hint_fg = [0.4, 0.4, 0.5, 0.7];
     state
         .renderer

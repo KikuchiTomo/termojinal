@@ -25,13 +25,13 @@ else
 fi
 
 echo "==> Building (release)..."
-cargo build --release --bin termojinal-dev --bin jt
+cargo build --release --bin termojinal
 cargo build --release -p termojinal-session --bin termojinald
 
 # Install binaries
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$INSTALL_DIR"
-cp target/release/termojinal-dev "$INSTALL_DIR/termojinal"
+cp target/release/termojinal "$INSTALL_DIR/termojinal"
 cp target/release/termojinald "$INSTALL_DIR/termojinald"
 cp target/release/tm "$INSTALL_DIR/tm"
 

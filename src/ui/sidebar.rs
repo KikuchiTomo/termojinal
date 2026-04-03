@@ -685,13 +685,16 @@ pub(crate) fn render_sidebar(state: &mut AppState, view: &wgpu::TextureView, phy
         );
 
         // --- Notification dot for unread activity ---
-        if !is_active {
+        // Skip when the agent indicator is active — the pulsing/colored
+        // dot already draws attention, and the two indicators overlap
+        // visually at small cell sizes.
+        if !is_active && !has_agent {
             if let Some(inf) = info {
                 if inf.has_unread {
-                    let notif_d = cell_h * 0.26;
+                    let notif_d = cell_h * 0.22;
                     let notif_r = notif_d / 2.0;
-                    let notif_x = dot_cx + dot_radius * 0.7;
-                    let notif_y = dot_cy - dot_radius * 0.9;
+                    let notif_x = dot_cx + dot_radius * 1.2;
+                    let notif_y = dot_cy - dot_radius * 1.2;
                     state.renderer.submit_rounded_rects(
                         view,
                         &[RoundedRect {

@@ -15,8 +15,8 @@ use termojinal_layout::PaneId;
 
 use crate::{
     active_tab, active_tab_mut, allow_flow, cleanup_session_to_workspace, dispatch_action,
-    notification, toggle_quick_terminal, update_window_title, AgentSessionInfo, AgentState,
-    AppState, UserEvent,
+    find_workspace_for_pane, find_workspace_for_session, notification, toggle_quick_terminal,
+    update_window_title, AgentSessionInfo, AgentState, AppState, UserEvent,
 };
 
 pub(crate) fn handle_app_ipc_request(
@@ -45,17 +45,21 @@ pub(crate) fn handle_app_ipc_request(
             .to_string();
         let detail = serde_json::to_string(&tool_input).unwrap_or_default();
 
-        // Resolve workspace index from session mapping, falling back to active.
+        // Resolve workspace index: cached mapping → pane lookup → active fallback.
         let ws_idx = session_id
             .as_ref()
-            .and_then(|sid| state.session_to_workspace.get(sid).copied())
+            .and_then(|sid| {
+                state
+                    .session_to_workspace
+                    .get(sid)
+                    .copied()
+                    .or_else(|| find_workspace_for_session(state, sid))
+            })
             .unwrap_or(state.active_workspace);
 
         // Record the mapping for future requests from this session.
         if let Some(sid) = session_id.as_ref() {
-            if !state.session_to_workspace.contains_key(sid) {
-                state.session_to_workspace.insert(sid.clone(), ws_idx);
-            }
+            state.session_to_workspace.insert(sid.clone(), ws_idx);
         }
 
         // Update agent session info for this workspace.
@@ -548,9 +552,16 @@ pub(crate) fn handle_app_ipc_request(
             summary,
             title,
         } => {
+            // Resolve workspace: cached map → pane_id lookup → session_id pane lookup → active fallback.
             let ws_idx = session_id
                 .as_ref()
                 .and_then(|sid| state.session_to_workspace.get(sid).copied())
+                .or_else(|| ipc_pane_id.as_ref().copied().and_then(|pid| find_workspace_for_pane(state, pid)))
+                .or_else(|| {
+                    session_id
+                        .as_ref()
+                        .and_then(|sid| find_workspace_for_session(state, sid))
+                })
                 .unwrap_or(state.active_workspace);
 
             while state.agent_infos.len() <= ws_idx {
@@ -582,10 +593,9 @@ pub(crate) fn handle_app_ipc_request(
             }
             agent.last_updated = std::time::Instant::now();
 
+            // Always update the mapping (pane may have moved between workspaces).
             if let Some(sid) = session_id.as_ref() {
-                if !state.session_to_workspace.contains_key(sid) {
-                    state.session_to_workspace.insert(sid.clone(), ws_idx);
-                }
+                state.session_to_workspace.insert(sid.clone(), ws_idx);
             }
 
             state.window.request_redraw();

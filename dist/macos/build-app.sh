@@ -15,12 +15,8 @@ if [[ "${1:-}" == "--debug" ]]; then
     PROFILE="debug"
 fi
 
-# Debug builds use termojinal-dev, release builds use termojinal
-if [[ "$PROFILE" == "debug" ]]; then
-    BINARY="$REPO_ROOT/target/$PROFILE/termojinal-dev"
-else
-    BINARY="$REPO_ROOT/target/$PROFILE/termojinal"
-fi
+# Both debug and release use the same binary name.
+BINARY="$REPO_ROOT/target/$PROFILE/termojinal"
 
 if [[ ! -f "$BINARY" ]]; then
     echo "Error: $BINARY not found. Build the binary first." >&2

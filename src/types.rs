@@ -545,6 +545,33 @@ pub(crate) struct AppState {
     pub(crate) shutdown: Arc<AtomicBool>,
 }
 
+/// Find which workspace contains a pane with the given daemon session ID.
+/// Searches all workspaces/tabs/panes to find the correct workspace index.
+pub(crate) fn find_workspace_for_session(state: &AppState, session_id: &str) -> Option<usize> {
+    for (ws_idx, ws) in state.workspaces.iter().enumerate() {
+        for tab in &ws.tabs {
+            for pane in tab.panes.values() {
+                if pane.session_id == session_id {
+                    return Some(ws_idx);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find which workspace contains a pane with the given PaneId.
+pub(crate) fn find_workspace_for_pane(state: &AppState, pane_id: PaneId) -> Option<usize> {
+    for (ws_idx, ws) in state.workspaces.iter().enumerate() {
+        for tab in &ws.tabs {
+            if tab.panes.contains_key(&pane_id) {
+                return Some(ws_idx);
+            }
+        }
+    }
+    None
+}
+
 /// Update session_to_workspace mapping after a workspace at `removed_idx` is removed.
 /// Removes entries pointing to the removed workspace and decrements indices above it.
 pub(crate) fn cleanup_session_to_workspace(state: &mut AppState, removed_idx: usize) {
