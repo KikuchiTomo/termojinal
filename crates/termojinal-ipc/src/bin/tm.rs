@@ -351,6 +351,12 @@ async fn send_status(
         }
     };
 
+    // Clone values needed for the app socket send below.
+    let session_id_clone = session_id.clone();
+    let final_state_clone = final_state.clone();
+    let final_agent_id_clone = final_agent_id.clone();
+    let description_clone = description.clone();
+
     let request = IpcRequest::ClaudeStatusUpdate {
         session_id,
         state: final_state,
@@ -371,6 +377,51 @@ async fn send_status(
         Err(_) => {
             // Daemon not running — silently ignore.
             // This is expected when hooks are configured but termojinal isn't running.
+        }
+    }
+
+    // Also forward to the app socket so the GUI sidebar updates immediately.
+    {
+        use std::io::{BufRead, Write};
+
+        let data_dir =
+            dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let sock_path = data_dir.join("termojinal").join("termojinal-app.sock");
+
+        let app_request = AppIpcRequest::UpdateAgentStatus {
+            session_id: session_id_clone,
+            pane_id: None,
+            subagent_count: if final_agent_id_clone.is_some() {
+                // For subagent events, don't update the count
+                None
+            } else {
+                None
+            },
+            state: Some(match final_state_clone.as_str() {
+                "running" => "running".to_string(),
+                "done" => "inactive".to_string(),
+                _ => final_state_clone.clone(),
+            }),
+            summary: description_clone,
+            title: None,
+        };
+
+        if let Ok(json) = serde_json::to_string(&app_request) {
+            let mut json_nl = json;
+            json_nl.push('\n');
+            if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock_path) {
+                let _ = stream.write_all(json_nl.as_bytes());
+                // Best-effort read response.
+                let _ =
+                    stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                let reader = std::io::BufReader::new(&stream);
+                for line in reader.lines() {
+                    if line.is_ok() {
+                        break;
+                    }
+                    break;
+                }
+            }
         }
     }
 }
