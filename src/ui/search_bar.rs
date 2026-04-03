@@ -29,13 +29,13 @@ pub(crate) fn render_search_bar(state: &mut AppState, view: &wgpu::TextureView, 
     let bar_h = cell_h as u32 + 4;
 
     // Draw search bar background.
-    let bar_bg = [0.15, 0.15, 0.20, 0.95];
+    let bar_bg = color_or(&state.config.search.bar_bg, [0.15, 0.15, 0.20, 0.95]);
     state
         .renderer
         .submit_separator(view, bar_x, bar_y, bar_w, bar_h, bar_bg);
 
     // Bottom border.
-    let border_color = [0.25, 0.25, 0.35, 1.0];
+    let border_color = color_or(&state.config.search.border_color, [0.25, 0.25, 0.35, 1.0]);
     state.renderer.submit_separator(
         view,
         bar_x,
@@ -49,7 +49,7 @@ pub(crate) fn render_search_bar(state: &mut AppState, view: &wgpu::TextureView, 
     let text_y = bar_y as f32 + 2.0;
     let text_x = sidebar_w + cell_w;
     let prompt = format!("Find: {}", search.query);
-    let input_fg = [0.92, 0.92, 0.95, 1.0];
+    let input_fg = color_or(&state.config.search.input_fg, [0.92, 0.92, 0.95, 1.0]);
     state
         .renderer
         .render_text(view, &prompt, text_x, text_y, input_fg, bar_bg);
